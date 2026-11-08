@@ -193,14 +193,14 @@ unproven. Paper always runs it. Live runs it only after the gate (g).
 
 MANUAL    Move to a strike with the arrows. b buys YES, n buys NO at the
 touch (immediate-or-cancel), x closes your position there at the touch.
-+/- or a number key changes the size. In live every order asks first.
++/- or keys 1-8 change the size. In live every order asks first.
 
 LIVE      L arms live: it asks you to type "live". Needs KALSHI_KEY_ID and
 KALSHI_KEY_FILE (in ~/.config/tern/kalshi.env). Caps: live.capital_usd at
 risk, live.max_order_usd per order, live.max_daily_loss turns live off.
 
   ↑↓ PgUp PgDn  move in the ladder     b / n / x   buy YES / buy NO / close
-  + - 1-9 0     order size             tab         BTC <-> ETH
+  + - 1-8       order size             tab         BTC <-> ETH
   a             rule on/off            r           rule trades this coin on/off
   c             chart: 15m / 24h       v           book shown: paper / live
   L             arm / disarm live      g           gate and checklist
@@ -383,7 +383,7 @@ class Screen:
         row = self.row(self.sel)
         if row:
             strike = row["k"] + 0.01
-        self.box(y, x, h, w, prod.lower(), CYAN, "¹", f"{self.chart} · c")
+        self.box(y, x, h, w, prod.lower(), CYAN, "", f"{self.chart} · c")
         gh = h - 3
         if not vals:
             self.put(y + h // 2, x + 3, "waiting for spot…", P(self.P.grey)); return
@@ -424,7 +424,7 @@ class Screen:
         P, st = self.P, self.st
         r = self.row(self.sel)
         title = f"yes {strike_label(r['k'])}" if r else "contract"
-        self.box(y, x, h, w, title, MAGENTA, "²", "")
+        self.box(y, x, h, w, title, MAGENTA, "", "")
         if not r:
             self.put(y + 2, x + 3, "pick a strike in the ladder", P(self.P.grey)); return
         hist = (st.get("hist") or {}).get(self.sel) or []
@@ -468,7 +468,7 @@ class Screen:
         P, st = self.P, self.st
         lad = self.ladder()
         size = SIZES[self.size_i]
-        self.box(y, x, h, w, "ladder", YELLOW, "³", f"size {size} · ↑↓ b n x")
+        self.box(y, x, h, w, "ladder", YELLOW, "", f"size {size} · ↑↓ b n x")
         if not lad:
             self.put(y + 2, x + 3, "waiting for the hourly event…", P(self.P.grey)); return
         prod = cfgmod.SERIES[self.series]
@@ -532,7 +532,7 @@ class Screen:
         P, st = self.P, self.st
         v = self.book_view or ("live" if st.get("mode") == "live" else "paper")
         b = st.get(v) or {}
-        self.box(y, x, h, w, "book", GREEN, "⁴", "v paper/live")
+        self.box(y, x, h, w, "book", GREEN, "", "v paper/live")
         tabs = x + 2
         for name in ("paper", "live"):
             a = P(WHITE, bold=True) | curses.A_REVERSE if name == v else P(self.P.grey)
@@ -580,7 +580,7 @@ class Screen:
         v = self.book_view or ("live" if st.get("mode") == "live" else "paper")
         b = st.get(v) or {}
         curve = [e for _, e in (b.get("curve") or [])]
-        self.box(y, x, h, w, f"equity · {v}", BLUE, "⁵", f"{len(curve)} min")
+        self.box(y, x, h, w, f"equity · {v}", BLUE, "", f"{len(curve)} min")
         if len(curve) < 2:
             self.put(y + h // 2, x + 3, "the curve starts after a couple of minutes", P(self.P.grey)); return
         lo, hi = min(curve), max(curve)
@@ -807,4 +807,7 @@ HELP_LINES = HELP.splitlines()
 
 def main(runtime: str = cfgmod.RUNTIME) -> None:
     os.environ.setdefault("ESCDELAY", "25")
+    # Name the terminal window, so the taskbar and title bar say "tern".
+    if sys.stdout.isatty():
+        sys.stdout.write("\033]2;tern\007"); sys.stdout.flush()
     curses.wrapper(lambda s: Screen(s, runtime).loop())
