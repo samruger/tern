@@ -82,12 +82,14 @@ After=network-online.target
 Wants=network-online.target
 
 [Service]
-WorkingDirectory={cfgmod.ROOT}
-Environment=TERN_RUNTIME={runtime}
+WorkingDirectory={os.path.realpath(cfgmod.ROOT)}
+Environment=TERN_RUNTIME={os.path.realpath(runtime)}
+Environment=PYTHONUNBUFFERED=1
 EnvironmentFile=-%h/.config/tern/kalshi.env
 ExecStart={sys.executable} -m tern run
 Restart=always
 RestartSec=15
+TimeoutStopSec=20
 
 [Install]
 WantedBy=default.target

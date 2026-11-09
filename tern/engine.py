@@ -9,6 +9,7 @@ import fcntl
 import hashlib
 import json
 import os
+import signal
 import threading
 import time
 import traceback
@@ -683,16 +684,24 @@ class Desk:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             print("tern engine already running"); return
+        def stop(signum, frame):
+            raise SystemExit(0)
+        signal.signal(signal.SIGTERM, stop)          # systemctl stop / restart: save before leaving
         self.spot.start()
         self.log(f"engine started (pid {os.getpid()}), mode paper{' — live armed, authenticating' if self.cfg.live.enabled else ''}")
-        while True:
-            t0 = time.time()
-            try:
-                self.step()
-            except Exception as ex:
-                self.log(f"step failed: {ex}", "error")
-                with open(os.path.join(self.runtime, "tern.log"), "a") as fh:
-                    fh.write(traceback.format_exc())
-            if once:
-                self._save_state(); self.rec.flush(); return
-            time.sleep(max(0.1, 1.0 - (time.time() - t0)))
+        try:
+            while True:
+                t0 = time.time()
+                try:
+                    self.step()
+                except Exception as ex:
+                    self.log(f"step failed: {ex}", "error")
+                    with open(os.path.join(self.runtime, "tern.log"), "a") as fh:
+                        fh.write(traceback.format_exc())
+                if once:
+                    return
+                time.sleep(max(0.1, 1.0 - (time.time() - t0)))
+        finally:
+            self._save_state(); self.shadow.save(); self.rec.flush()
+            if not once:
+                self.log("engine stopped, state saved")
