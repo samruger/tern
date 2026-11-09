@@ -78,6 +78,120 @@ class Rule(unittest.TestCase):
         self.assertIsNone(due_slot(25 * 60 - 120, [25, 20], set()))       # missed slots are not chased
 
 
+class State(unittest.TestCase):
+    def desk(self, d):
+        from tern.engine import Desk
+        return Desk(d)
+
+    def test_prunes_meta_and_skips_unchanged_saves(self):
+        import json, time
+        with tempfile.TemporaryDirectory() as d:
+            k = self.desk(d)
+            now = time.time()
+            k.events["KXBTCD"] = {"event": "E-1", "close": now + 600, "markets": [{"ticker": "E-1-T1"}], "fetched": now}
+            k.ev_close["E-1"] = now + 600
+            k.meta = {"E-1-T1": {}, "OLD-T1": {}, "HELD-T1": {"close": now - 60}, "OWED-T1": {}}
+            k.paper.trade("HELD-T1", 1, 0.5, 0.0, {}, "x")
+            k.auto = [{"ts": now, "ticker": "OWED-T1", "side": "yes", "n": 1, "cost": 0.5, "fee": 0, "slot": 10, "pnl": None}]
+            k.slots = {"paper|E-1": {25}, "paper|GONE": {25}}
+            k.hour_cost = {"paper|E-1": 1.0, "paper|GONE": 1.0}
+            k._save_state()
+            self.assertEqual(set(k.meta), {"E-1-T1", "HELD-T1", "OWED-T1"})
+            self.assertEqual(set(k.slots), {"paper|E-1"})
+            self.assertEqual(set(k.hour_cost), {"paper|E-1"})
+            p = os.path.join(d, "state.json")
+            self.assertTrue(os.path.exists(p + ".bak"))
+            os.remove(p)
+            k._save_state()                                   # unchanged: not rewritten
+            self.assertFalse(os.path.exists(p))
+
+    def test_damaged_state_falls_back_to_backup_and_is_kept(self):
+        with tempfile.TemporaryDirectory() as d:
+            k = self.desk(d)
+            k.paper.trade("A-T1", 2, 0.5, 0.0, {}, "x")
+            k._save_state()
+            p = os.path.join(d, "state.json")
+            open(p, "w").write('{"paper": {"na')               # cut off mid-write
+            k2 = self.desk(d)
+            self.assertAlmostEqual(k2.paper.pos["A-T1"]["q"], 2)
+            self.assertTrue(any(".damaged-" in f for f in os.listdir(d)))
+
+    def test_gate_days_count_hours_traded(self):
+        with tempfile.TemporaryDirectory() as d:
+            k = self.desk(d)
+            k.auto = [{"ts": 0, "ticker": f"KXBTCD-H{h}-T1", "side": "yes", "n": 1, "cost": 0.9, "fee": 0, "slot": 10, "pnl": 0.1}
+                      for h in range(12) for _ in range(3)]
+            self.assertIn("0.5 days", k.gate()["checks"][0]["detail"])   # 12 hours, however long ago they started
+
+    def test_unreadable_config_keeps_the_one_in_use(self):
+        from tern import config
+        with tempfile.TemporaryDirectory() as d:
+            cur = config.Config(); cur.strategy.contracts = 9
+            open(os.path.join(d, "config.json"), "w").write("{bad")
+            self.assertEqual(config.load(d, cur).strategy.contracts, 9)
+
+
+class Shadows(unittest.TestCase):
+    def m(self, t, bid, ask, k):
+        return {"ticker": t, "yes_bid_dollars": str(bid), "yes_ask_dollars": str(ask),
+                "yes_bid_size_fp": "50", "yes_ask_size_fp": "40", "floor_strike": k, "status": "active"}
+
+    def test_variants_stop_and_settle(self):
+        from tern.config import Strategy
+        from tern.shadow import Shadow
+        with tempfile.TemporaryDirectory() as d:
+            sh, S = Shadow(d), Strategy()
+            ms = [self.m("E-T1", 0.92, 0.93, 1), self.m("E-T2", 0.80, 0.81, 2), self.m("E-T3", 0.10, 0.11, 3)]
+            sh.step("E", 1000.0, ms, S, 1000.0 - 25 * 60 + 1)
+            by = lambda v: sorted(r["ticker"] for r in sh.rows if r["v"] == v)
+            self.assertEqual(by("base"), ["E-T1", "E-T2", "E-T3"])
+            self.assertEqual(by("band90"), ["E-T1"])                       # T3's NO mid is 89.5c: outside 90-95
+            self.assertEqual(by("stop20"), ["E-T1", "E-T2", "E-T3"])
+            sh.step("E", 1000.0, ms, S, 1000.0 - 25 * 60 + 3)              # same slot: no second entry
+            self.assertEqual(len(sh.rows), 7)
+            ms[1] = self.m("E-T2", 0.60, 0.62, 2)                          # T2 falls 21c: the stop sells at the 60c bid
+            sh.step("E", 1000.0, ms, S, 1000.0 - 22 * 60)
+            self.assertEqual(by("stop20"), ["E-T1", "E-T3"])
+            stopped = sh.agg["stop20"]["E"]
+            self.assertAlmostEqual(stopped[0], 5 * (0.60 - 0.81) - 0.06 - 0.09)   # entry fee 6c, exit fee 9c
+            self.assertEqual(sh.settle({"E-T1": True, "E-T2": False, "E-T3": False}), 6)
+            self.assertAlmostEqual(sh.agg["band90"]["E"][0], 5 * 0.07 - 0.03)
+            self.assertAlmostEqual(sh.agg["base"]["E"][0], 5 * 0.07 - 0.03 - 5 * 0.81 - 0.06 + 5 * 0.10 - 0.04)
+            sh.save()
+            again = Shadow(d)                                              # the record survives a restart
+            self.assertEqual(again.rows, [])
+            self.assertAlmostEqual(again.agg["base"]["E"][0], sh.agg["base"]["E"][0])
+
+    def test_arb_needs_more_than_the_fees(self):
+        from tern.config import Strategy
+        from tern.shadow import Shadow
+        with tempfile.TemporaryDirectory() as d:
+            sh, S = Shadow(d), Strategy()
+            tight = [self.m("E-T1", 0.50, 0.52, 1), self.m("E-T2", 0.53, 0.55, 2)]   # 1c gross, fees eat it
+            self.assertEqual(sh.step("E", 9e9, tight, S, 0.0), [])
+            wide = [self.m("E-T1", 0.50, 0.52, 1), self.m("E-T2", 0.60, 0.62, 2)]    # 8c gross
+            self.assertEqual(len(sh.step("E", 9e9, wide, S, 0.0)), 1)
+            self.assertEqual(sh.step("E", 9e9, wide, S, 5.0), [])                    # not counted twice within a minute
+            r = sh.rows[0]
+            self.assertAlmostEqual(r["cost"], 0.52 + 0.40)
+            sh.settle({"E-T1": True, "E-T2": False})                                 # between the strikes: both legs pay
+            self.assertAlmostEqual(sh.agg["arb"]["E"][0], 5 * (2 - 0.92) - r["fee"])
+
+    def test_recorder_round_trip(self):
+        import gzip
+        from tern.record import Recorder
+        with tempfile.TemporaryDirectory() as d:
+            rec = Recorder(d)
+            ms = [self.m("E-T1", 0.50, 0.52, 74999.99), self.m("E-T2", 0.99, 1.00, 70000)]
+            rec.snap("KXBTCD", 1000.0, 75001.5, ms, 400.0)
+            rec.snap("KXBTCD", 1000.0, 75001.5, ms, 401.0)                           # under 5 s later: skipped
+            rec.flush(); rec.snap("KXBTCD", 1000.0, None, ms, 460.0); rec.flush()
+            f = [x for x in os.listdir(os.path.join(d, "ticks"))][0]
+            lines = gzip.open(os.path.join(d, "ticks", f), "rt").read().splitlines()
+            self.assertEqual(lines, ["ts,tau,spot,strike,bid,ask,bid_size,ask_size",
+                                     "400,600,75001.5,74999.99,0.5,0.52,50,40", "460,540,,74999.99,0.5,0.52,50,40"])
+
+
 class Signing(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

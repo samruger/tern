@@ -70,7 +70,8 @@ class Config:
         return cls(**top)
 
 
-def load(runtime: str = RUNTIME) -> Config:
+def load(runtime: str = RUNTIME, fallback: Config | None = None) -> Config:
+    """Read config.json. If it is unreadable, keep `fallback` (the config already in use) over the defaults."""
     path = os.path.join(runtime, "config.json")
     try:
         with open(path) as fh:
@@ -79,8 +80,8 @@ def load(runtime: str = RUNTIME) -> Config:
         cfg = Config()
         save(cfg, runtime)
         return cfg
-    except (json.JSONDecodeError, TypeError):
-        return Config()
+    except (json.JSONDecodeError, TypeError, AttributeError):
+        return fallback or Config()
 
 
 def save(cfg: Config, runtime: str = RUNTIME) -> None:

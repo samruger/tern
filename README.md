@@ -11,6 +11,7 @@ is written in pure Python and checked against openssl in the tests.
 python3 -m tern               # the screen; starts the engine in paper if it isn't running
 python3 -m tern run           # the engine in the foreground
 python3 -m tern status        # plain-text summary
+python3 -m tern report        # the rule's variants side by side
 python3 -m tern live-check    # test your Kalshi key (balance, positions; no orders)
 python3 -m tern service       # a systemd user service so the engine keeps running
 python3 -m unittest tests.test_tern
@@ -57,7 +58,9 @@ once it has. Press `L` again to return to paper. Once live:
 - **Manual orders go live at once**, each after an Enter confirmation that
   shows the cost and fee.
 - **The rule goes live only after its paper record passes the gate** (`g`):
-  14 days, 300 settled entries, and P&L ≥ $0 after fees. A 0.6¢ edge is too
+  14 days, 300 settled entries, and P&L ≥ $0 after fees. Days are counted as
+  hours the rule actually traded ÷ 24, so time with the engine off does not
+  count. A 0.6¢ edge is too
   small for 14 days to prove. The gate catches a broken rule, not a weak one.
   Set `live.auto_needs_gate` to `false` to skip it.
 - **Caps:** `live.capital_usd` ($100) is the most at risk at once.
@@ -70,6 +73,25 @@ once it has. Press `L` again to return to paper. Once live:
   and overwrites its own when they differ. It reads the balance every 10
   seconds. Each order carries a unique `client_order_id`. If the reply is lost,
   the engine looks the order up by that id instead of sending it again.
+
+## Looking for a better edge
+
+The engine also runs these on paper, side by side, each with its own record
+and real fees. They were written down before seeing any data, so what they
+show after a few weeks is out of sample. `python3 -m tern report` (or `g` on
+the screen) compares them. None of them touches the paper or live book.
+
+| Variant | What it does |
+|---|---|
+| `base` | the rule as configured |
+| `band90` | only favorites at 90–95¢ |
+| `stop20` | the rule, but sells at the bid once the favorite's bid is 20¢ under the entry price |
+| `arb` | when a higher strike's YES bid is above a lower strike's YES ask by more than both fees, buys YES on the lower and NO on the higher. The pair pays at least $1 |
+
+It also records what it sees to `runtime/ticks/`: every 5 seconds, each
+near-the-money strike's bid, ask and sizes with spot, plus each hour's results
+(about 2 MB a day, gzipped). Kalshi keeps only minute candles, so this is the
+data for testing ideas the first research could not.
 
 ## Keys
 
@@ -111,7 +133,9 @@ so the gate judges the rule and not your exits.
 ## Files
 
 `runtime/` (gitignored) holds `config.json`, `state.json` (books, the rule's
-record, slots taken), `tern.log` and `cmd/` (orders from the screen). The live
+record, slots taken; written only when it changes, with an hourly
+`state.json.bak` that is loaded if the main file is damaged), `tern.log` and
+`cmd/` (orders from the screen). The live
 status file and the screen's selection live in tmpfs (`$XDG_RUNTIME_DIR/tern-*`),
 because they are rewritten every second.
 
@@ -123,6 +147,8 @@ because they are rewritten every second.
 | `kalshi.py` | public and signed REST, V2 orders (`/portfolio/events/orders`) |
 | `sign.py` | Ed25519 and RSA-PSS signing, PEM/DER parsing |
 | `spot.py` | Coinbase ticker and candles |
+| `shadow.py` | the variants and the arbitrage scan, each with its own paper record |
+| `record.py` | writes quotes and results to `runtime/ticks/` |
 | `dash.py` | the curses screen |
 | `research/` | the scripts and data behind the numbers above |
 

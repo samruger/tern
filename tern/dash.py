@@ -632,6 +632,9 @@ class Screen:
         out = ["The rule trades live only when every paper check passes", "(unless live.auto_needs_gate is false).", ""]
         for c in g.get("checks", []):
             out.append(f"  [{'x' if c['ok'] else ' '}] {c['name']}  ({c['detail']})")
+        if st.get("shadow"):
+            from .shadow import table
+            out += ["", "Variants running side by side on paper (tern report):"] + ["  " + l for l in table(st["shadow"])]
         out += ["", "To go live at all:"]
         out.append(f"  [{'x' if st.get('keys') else ' '}] Kalshi key present ({cfgmod.KEYFILE_ENV})")
         out.append(f"  [{'x' if st.get('live_enabled') else ' '}] armed with L")

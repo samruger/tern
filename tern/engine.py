@@ -17,6 +17,8 @@ import uuid
 from . import config as cfgmod
 from .book import Book, taker_fee
 from .kalshi import Kalshi, KalshiError, quote
+from .record import Recorder
+from .shadow import Shadow
 from .spot import coinbase, history
 from .strategy import due_slot, signals
 
@@ -24,7 +26,7 @@ from .strategy import due_slot, signals
 def live_dir(runtime: str) -> str:
     """Fast-changing files (status, view) live in tmpfs when there is one."""
     base = os.environ.get("XDG_RUNTIME_DIR")
-    tag = hashlib.sha1(os.path.abspath(runtime).encode()).hexdigest()[:8]
+    tag = hashlib.sha1(os.path.realpath(runtime).encode()).hexdigest()[:8]   # realpath: a symlinked path is the same desk
     d = os.path.join(base, f"tern-{tag}") if base and os.path.isdir(base) else os.path.join(runtime, "live")
     os.makedirs(d, exist_ok=True)
     return d
@@ -34,10 +36,21 @@ def _ts(s: str) -> float:
     return dt.datetime.fromisoformat(s.replace("Z", "+00:00")).timestamp()
 
 
-def _atomic_json(path: str, obj) -> None:
+def _atomic_write(path: str, text: str, sync: bool = False) -> None:
     with open(path + ".tmp", "w") as fh:
-        json.dump(obj, fh, separators=(",", ":"))
+        fh.write(text)
+        if sync:
+            fh.flush(); os.fsync(fh.fileno())
     os.replace(path + ".tmp", path)
+
+
+def _atomic_json(path: str, obj) -> None:
+    _atomic_write(path, json.dumps(obj, separators=(",", ":")))
+
+
+def _event_of(ticker: str) -> str:
+    """KXBTCD-26NOV0915-T74999.99 -> KXBTCD-26NOV0915"""
+    return ticker.rsplit("-", 1)[0]
 
 
 class SpotFeed(threading.Thread):
@@ -100,16 +113,33 @@ class Desk:
         self.balance: float | None = None
         self.last = collections.defaultdict(float)
         self._load_state()
+        self.shadow = Shadow(runtime, self.cfg.taker_fee)
+        self.rec = Recorder(runtime)
+        self.closed: dict[str, dict] = {}      # hourly events that have closed and still owe their results
+        for ev, close in self.shadow.pending(time.time()).items():
+            self.closed[ev] = {"series": ev.split("-", 1)[0], "close": close}
 
     # ------------------------------------------------------------ state
     def _load_state(self) -> None:
         p = os.path.join(self.runtime, "state.json")
         st = {}
-        try:
-            with open(p) as fh:
-                st = json.load(fh)
-        except (OSError, json.JSONDecodeError):
-            pass
+        self._saved = ""                             # the state text last written, to skip identical saves
+        for path in (p, p + ".bak"):                 # a damaged state file falls back to the hourly backup
+            if not os.path.exists(path):
+                continue
+            try:
+                with open(path) as fh:
+                    st = json.load(fh)
+                if path != p:
+                    self.log(f"state.json was unreadable; loaded the backup {os.path.basename(path)}", "error")
+                break
+            except (OSError, json.JSONDecodeError) as ex:
+                keep = f"{path}.damaged-{int(time.time())}"
+                try:
+                    os.replace(path, keep)           # never overwrite a record we could not read
+                except OSError:
+                    pass
+                self.log(f"{os.path.basename(path)} unreadable ({ex}); kept as {os.path.basename(keep)}", "error")
         self.paper = Book.from_dict(st["paper"]) if st.get("paper") else Book("paper", self.cfg.paper_capital)
         self.live = Book.from_dict(st["live"]) if st.get("live") else Book("live", 0.0)
         self.auto = st.get("auto", [])              # paper record of the rule: one row per entry
@@ -117,20 +147,34 @@ class Desk:
         self.hour_cost = st.get("hour_cost", {})     # "book|event" -> dollars
         self.day = st.get("day", {})                 # live daily-loss anchor {date, equity}
         self.meta = st.get("meta", {})               # ticker -> {event, strike, close, series}
+        self.ev_close = st.get("ev_close", {})       # event -> close time, for pruning
 
     def _save_state(self) -> None:
-        cutoff = time.time() - 3 * 86400
-        self.slots = {k: v for k, v in self.slots.items() if self._event_close(k.split("|", 1)[1]) > cutoff}
+        now = time.time()
+        cutoff = now - 3 * 86400
+        fresh = lambda k: self.ev_close.get(k.split("|", 1)[1], 0) > cutoff
+        self.ev_close = {k: v for k, v in self.ev_close.items() if v > cutoff}
+        self.slots = {k: v for k, v in self.slots.items() if fresh(k)}
+        self.hour_cost = {k: v for k, v in self.hour_cost.items() if fresh(k)}
+        # meta is only needed for strikes that are quoted now or still owed a settlement
+        need = {m["ticker"] for e in self.events.values() for m in e["markets"]}
+        need |= set(self.paper.pos) | set(self.live.pos) | {a["ticker"] for a in self.auto if a["pnl"] is None}
+        if any(e["markets"] for e in self.events.values()):
+            self.meta = {t: m for t, m in self.meta.items() if t in need}
+            for k in [k for k in self.last if k.startswith("st") and k[2:] not in need]:
+                del self.last[k]
         st = {"paper": self.paper.to_dict(), "live": self.live.to_dict(), "auto": self.auto[-20000:],
               "slots": {k: sorted(v) for k, v in self.slots.items()}, "hour_cost": self.hour_cost,
-              "day": self.day, "meta": self.meta}
-        _atomic_json(os.path.join(self.runtime, "state.json"), st)
-
-    def _event_close(self, event: str) -> float:
-        for e in self.events.values():
-            if e["event"] == event:
-                return e["close"]
-        return time.time()
+              "day": self.day, "meta": self.meta, "ev_close": self.ev_close}
+        text = json.dumps(st, separators=(",", ":"))
+        if text == self._saved:                      # nothing changed: spare the disk
+            return
+        path = os.path.join(self.runtime, "state.json")
+        _atomic_write(path, text, sync=True)
+        self._saved = text
+        if now - self.last["bak"] >= 3600:
+            self.last["bak"] = now
+            _atomic_write(path + ".bak", text, sync=True)
 
     def log(self, msg: str, level: str = "info") -> None:
         line = (time.time(), level, msg)
@@ -151,14 +195,19 @@ class Desk:
                 return
             x = min(evs, key=lambda x: _ts(x["strike_date"]))
             if not e or e["event"] != x["event_ticker"]:
+                if e:
+                    self.closed[e["event"]] = {"series": series, "close": e["close"]}
                 e = {"event": x["event_ticker"], "title": x.get("title", ""), "close": _ts(x["strike_date"]),
                      "markets": [], "fetched": 0.0}
                 self.events[series] = e
+                self.ev_close[e["event"]] = e["close"]
         if now - e["fetched"] >= 2.0:
             ms = self.pub.event_markets(e["event"])
             ms = [m for m in ms if m.get("floor_strike") is not None]
             ms.sort(key=lambda m: m["floor_strike"])
             e["markets"], e["fetched"] = ms, now
+            if e["close"] > now:
+                self.rec.snap(series, e["close"], self.spot.now.get(cfgmod.SERIES[series]), ms, now)
             for m in ms:
                 self.meta.setdefault(m["ticker"], {"event": e["event"], "strike": m["floor_strike"],
                                                    "close": e["close"], "series": series})
@@ -393,11 +442,10 @@ class Desk:
     def gate(self) -> dict:
         G = self.cfg.gate
         rows = [a for a in self.auto if a["pnl"] is not None]
-        first = self.auto[0]["ts"] if self.auto else None
-        days = (time.time() - first) / 86400 if first else 0.0
+        days = len({_event_of(a["ticker"]) for a in rows}) / 24      # hours the rule actually traded, not time elapsed
         pnl = sum(a["pnl"] for a in rows)
         checks = [
-            {"name": f"rule on paper ≥ {G.min_days:g} days", "ok": days >= G.min_days, "detail": f"{days:.1f} days"},
+            {"name": f"rule on paper ≥ {G.min_days:g} days", "ok": days >= G.min_days, "detail": f"{days:.1f} days of hours traded"},
             {"name": f"≥ {G.min_entries} settled paper entries", "ok": len(rows) >= G.min_entries, "detail": f"{len(rows)}"},
             {"name": f"paper P&L of the rule ≥ ${G.min_pnl:g}", "ok": bool(rows) and pnl >= G.min_pnl, "detail": f"${pnl:+,.2f}"},
         ]
@@ -406,6 +454,36 @@ class Desk:
         return {"checks": checks, "passed": all(c["ok"] for c in checks), "entries": len(rows),
                 "open": len(self.auto) - len(rows), "pnl": pnl, "win": wins / len(rows) if rows else None,
                 "per_contract": per}
+
+    # ------------------------------------------------------------ shadow variants and the recorder
+    def _shadow(self) -> None:
+        now = time.time()
+        for series in self.cfg.strategy.series:
+            e = self.events.get(series)
+            if e and e["markets"] and now - e["fetched"] <= 10 and e["close"] > now and e.get("shadowed") != e["fetched"]:
+                e["shadowed"] = e["fetched"]
+                for note in self.shadow.step(e["event"], e["close"], e["markets"], self.cfg.strategy, now):
+                    self.log(note)
+        for ev, c in list(self.closed.items()):
+            if now < c["close"] + 45 or now - c.get("tried", 0) < 20:
+                continue
+            c["tried"] = now
+            try:
+                ms = self.pub.event_markets(ev)
+            except KalshiError:
+                continue
+            res = {m["ticker"]: m["result"] == "yes" for m in ms if m.get("result") in ("yes", "no")}
+            late = now > c["close"] + 1800
+            if not late and (not res or len(res) < len(ms) or not self.shadow.needs(ev) <= set(res)):
+                continue
+            n = self.shadow.settle(res)
+            self.rec.results(c["series"], c["close"], [(m["floor_strike"], m["result"]) for m in ms
+                                                        if m["ticker"] in res and m.get("floor_strike") is not None])
+            del self.closed[ev]
+            if n:
+                self.log("shadow: " + ev + " settled · " + " · ".join(
+                    f"{r['name']} {r['pnl']:+.2f}" for r in self.shadow.summary() if r["entries"]))
+        self.shadow.save()
 
     # ------------------------------------------------------------ settlement
     def _settle(self) -> None:
@@ -557,7 +635,7 @@ class Desk:
               "live_error": self.live_error, "keys": cfgmod.keys() is not None, "balance": self.balance,
               "spot": sp, "events": evs, "hist": hist, "view": self.view,
               "paper": book_view(self.paper), "live": book_view(self.live),
-              "gate": self.gate(), "strategy": self.cfg.strategy.__dict__, "live_cfg": self.cfg.live.__dict__,
+              "gate": self.gate(), "shadow": self.shadow.summary(), "strategy": self.cfg.strategy.__dict__, "live_cfg": self.cfg.live.__dict__,
               "logs": [list(x) for x in list(self.logs)[-200:]], "results": self.results,
               "auto_live": self.mode == "live" and self.cfg.strategy.auto and (self.gate()["passed"] or not self.cfg.live.auto_needs_gate)}
         _atomic_json(os.path.join(self.fast, "status.json"), st)
@@ -576,7 +654,7 @@ class Desk:
         now = time.time()
         if now - self.last["cfg"] >= 5:
             self.last["cfg"] = now
-            self.cfg = cfgmod.load(self.runtime)
+            self.cfg = cfgmod.load(self.runtime, self.cfg)
         self._read_view()
         wanted = set(self.cfg.strategy.series) | {self.view["series"]}
         for s in wanted:
@@ -589,6 +667,7 @@ class Desk:
         self._live_ready()
         self._commands()
         self._auto()
+        self._shadow()
         self._settle()
         mids = self._mids()
         self.paper.mark_curve(self.paper.equity(mids), now)
@@ -615,5 +694,5 @@ class Desk:
                 with open(os.path.join(self.runtime, "tern.log"), "a") as fh:
                     fh.write(traceback.format_exc())
             if once:
-                self._save_state(); return
+                self._save_state(); self.rec.flush(); return
             time.sleep(max(0.1, 1.0 - (time.time() - t0)))

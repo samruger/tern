@@ -3,6 +3,7 @@
   tern                  the screen (starts the engine in paper if it is not running)
   tern run              run the engine in the foreground
   tern status           a plain-text summary
+  tern report           the rule's variants side by side (shadow records, paper only)
   tern live-check       test the Kalshi key: balance and positions, no orders
   tern service          write a systemd user service that keeps the engine running
 """
@@ -110,6 +111,13 @@ def main(argv: list[str]) -> int:
         Desk(runtime, echo=True).run(once="--once" in argv); return 0
     if cmd == "status":
         return _status(runtime)
+    if cmd == "report":
+        from .shadow import Shadow, table
+        print("\n".join(table(Shadow(runtime).summary())))
+        print("\nbase: the rule · band90: 90-95¢ favorites only · stop20: sell when the favorite's bid is 20¢ under entry"
+              "\narb: YES on a lower strike + NO on a higher one when the pair costs under $1 after fees"
+              "\nt is by hour and shows after 10 hours; under about 2 it is still noise.")
+        return 0
     if cmd == "live-check":
         return _live_check()
     if cmd == "service":
