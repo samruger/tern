@@ -193,6 +193,104 @@ class Shutdown(unittest.TestCase):
         self.assertIn('ExecStart="/usr/bin/python3" -m tern run', u)
 
 
+class Commands(unittest.TestCase):
+    T = "KXBTCD-E1-T100"
+
+    def desk(self, d, bid="0.58", ask="0.60", age=0.0, close=600.0):
+        import time
+        from tern.engine import Desk
+        k = Desk(d)
+        now = time.time()
+        m = {"ticker": self.T, "floor_strike": 100.0, "yes_bid_dollars": bid, "yes_ask_dollars": ask,
+             "yes_bid_size_fp": "50", "yes_ask_size_fp": "50"}
+        k.events["KXBTCD"] = {"event": "KXBTCD-E1", "title": "", "close": now + close, "markets": [m], "fetched": now - age}
+        k.meta[self.T] = {"event": "KXBTCD-E1", "strike": 100.0, "close": now + close, "series": "KXBTCD"}
+        return k
+
+    def order(self, **kw):
+        return {"op": "order", "ticker": self.T, "action": "buy_yes", "n": 5, "book": "paper", "px": 0.60, **kw}
+
+    def test_paper_order_fills_at_the_price_shown(self):
+        with tempfile.TemporaryDirectory() as d:
+            k = self.desk(d)
+            self.assertIn("bought 5 YES", k._command(self.order()))
+            self.assertAlmostEqual(k.paper.pos[self.T]["q"], 5)
+
+    def test_order_for_another_book_is_refused(self):
+        with tempfile.TemporaryDirectory() as d:
+            k = self.desk(d)
+            k.mode = "live"; k.api = object()                 # live came up after the key was pressed
+            self.assertIn("order was for the paper book", k._command(self.order()))
+            self.assertIn("order was for the paper book", k._command({k_: v for k_, v in self.order().items() if k_ != "book"}))
+            k.mode = "paper"
+            self.assertIn("order was for the live book", k._command(self.order(book="live")))
+            self.assertFalse(k.paper.pos or k.live.pos)
+
+    def test_live_order_never_goes_out_at_a_worse_price(self):
+        with tempfile.TemporaryDirectory() as d:
+            k = self.desk(d, bid="0.93", ask="0.95")
+            sent = []
+            class Api:
+                def order(self, *a, **kw):
+                    sent.append(a); return {"fill_count": 0}
+            k.mode = "live"; k.api = Api()
+            self.assertIn("moved from 60.0¢ to 95.0¢", k._command(self.order(book="live")))
+            self.assertIn("must carry the price", k._command({k_: v for k_, v in self.order(book="live").items() if k_ != "px"}))
+            self.assertIn("moved from 5.0¢ to 7.0¢", k._command(self.order(book="live", action="buy_no", px=0.95)))
+            self.assertEqual(sent, [])
+            k._command(self.order(book="live", px=0.95))      # the confirmed price: sent
+            self.assertEqual(len(sent), 1)
+
+    def test_paper_slip_is_small(self):
+        with tempfile.TemporaryDirectory() as d:
+            self.assertIn("bought", self.desk(d, ask="0.61")._command(self.order()))
+            self.assertIn("moved", self.desk(d, ask="0.63")._command(self.order()))
+            self.assertIn("bought", self.desk(d, ask="0.50")._command(self.order()))    # better is fine
+
+    def test_stale_or_closed_quote_is_refused(self):
+        with tempfile.TemporaryDirectory() as d:
+            self.assertIn("is 60s old", self.desk(d, age=60)._command(self.order()))
+            self.assertIn("has closed", self.desk(d, close=-5)._command(self.order()))
+            self.assertIn("bad order", self.desk(d)._command(self.order(n=float("nan"))))
+            self.assertIn("bad order", self.desk(d)._command(self.order(n=-5)))
+
+    def test_old_command_files_are_ignored(self):
+        import json, time
+        with tempfile.TemporaryDirectory() as d:
+            k = self.desk(d)
+            for name, c in ((f"{time.time() - 3600:.6f}-old.json", {k_: v for k_, v in self.order(id="old").items()}),
+                            ("x-stamped.json", self.order(id="stamped", ts=time.time() - 3600)),
+                            (f"{time.time():.6f}-new.json", self.order(id="new", ts=time.time()))):
+                with open(os.path.join(k.cmd_dir, name), "w") as fh:
+                    json.dump(c, fh)
+            k._commands()
+            self.assertIn("too old", k.results["old"])
+            self.assertIn("too old", k.results["stamped"])
+            self.assertIn("bought", k.results["new"])
+            self.assertAlmostEqual(k.paper.pos[self.T]["q"], 5)
+            self.assertEqual(os.listdir(k.cmd_dir), [])
+
+    def test_unknown_series_is_ignored_not_fatal(self):
+        with tempfile.TemporaryDirectory() as d:
+            k = self.desk(d)
+            self.assertIn("unknown series", k._command({"op": "series", "series": "KXSOLD"}))
+            self.assertEqual(k.cfg.strategy.series, ["KXBTCD"])
+            k.cfg.strategy.series = ["KXSOLD"]; k.view = {"series": "KXSOLD", "ticker": None}
+            k.last["cfg"] = __import__("time").time()
+            k._read_view = lambda: None
+            for name in ("_live_ready", "_commands", "_auto", "_shadow", "_settle", "_status"):
+                setattr(k, name, lambda: None)
+            k.step()                                          # no KeyError, no network
+            self.assertTrue(any("unknown series KXSOLD" in m for _, _, m in k.logs))
+
+    def test_reset_paper_clears_the_hour_budget(self):
+        with tempfile.TemporaryDirectory() as d:
+            k = self.desk(d)
+            k.hour_cost = {"paper|KXBTCD-E1": 60.0, "live|KXBTCD-E1": 10.0}
+            k._command({"op": "reset_paper"})
+            self.assertEqual(k.hour_cost, {"live|KXBTCD-E1": 10.0})
+
+
 class Shadows(unittest.TestCase):
     def m(self, t, bid, ask, k):
         return {"ticker": t, "yes_bid_dollars": str(bid), "yes_ask_dollars": str(ask),

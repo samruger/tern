@@ -24,6 +24,16 @@ from .spot import coinbase, history
 from .strategy import due_slot, signals
 
 
+CMD_MAX_AGE = 30.0     # seconds a command from the screen stays valid
+QUOTE_MAX_AGE = 10.0   # manual orders need a ladder at least this fresh, as the rule does
+PAPER_SLIP = 0.01      # a paper order may fill this much worse than the price on the screen; live may not
+
+
+def _ago(sec: float) -> str:
+    sec = abs(sec)
+    return f"{sec:.0f}s ago" if sec < 120 else f"{sec/60:.0f}m ago" if sec < 7200 else f"{sec/3600:.0f}h ago"
+
+
 def live_dir(runtime: str) -> str:
     """Fast-changing files (status, view) live in tmpfs when there is one."""
     base = os.environ.get("XDG_RUNTIME_DIR")
@@ -528,8 +538,18 @@ class Desk:
                     os.remove(path)
                 except OSError:
                     pass
+            if not isinstance(c, dict):
+                continue
             try:
-                msg = self._command(c)
+                sent = float(c.get("ts") or name.split("-", 1)[0])
+            except ValueError:
+                sent = 0.0
+            age = time.time() - sent
+            try:
+                if not -CMD_MAX_AGE <= age <= CMD_MAX_AGE:   # queued while the desk was down: never run it late
+                    msg = f"ignored {c.get('op')!r} command sent {_ago(age)}: too old, send it again"
+                else:
+                    msg = self._command(c)
             except Exception as ex:
                 msg = f"error: {ex}"
             self.results[c.get("id", name)] = msg
@@ -537,15 +557,35 @@ class Desk:
         while len(self.results) > 50:
             self.results.pop(next(iter(self.results)))
 
+    def _stale(self, ticker: str) -> str | None:
+        """Why `ticker` cannot be traded by hand right now, or None when its quote is current."""
+        now = time.time()
+        for e in self.events.values():
+            if any(m["ticker"] == ticker for m in e["markets"]):
+                if e["close"] <= now:
+                    return f"{ticker} has closed"
+                if now - e["fetched"] > QUOTE_MAX_AGE:
+                    return f"the quote for {ticker} is {now - e['fetched']:.0f}s old"
+                return None
+        return f"no quote for {ticker}"
+
     def _command(self, c: dict) -> str:
         op = c.get("op")
         if op == "order":
             t = c["ticker"]; n = float(c["n"]); act = c["action"]
+            if act not in ("buy_yes", "buy_no", "close") or not (0 <= n < float("inf")) or (n == 0 and act != "close"):
+                return f"bad order: {act} {c['n']}"
+            book = self.live if self.mode == "live" else self.paper
+            want = c.get("book", "paper")            # the book the screen showed when the key was pressed
+            if want != book.name:
+                return f"not sent: the order was for the {want} book and the desk is now in {book.name}. Send it again."
+            stale = self._stale(t)
+            if stale:
+                return f"not sent: {stale}"
             q = self._quotes().get(t)
             if not q:
                 return f"no quote for {t}"
             bid, ask, bs, az = q
-            book = self.live if self.mode == "live" else self.paper
             if act == "close":
                 have = book.pos.get(t, {}).get("q", 0.0)
                 if not have:
@@ -557,6 +597,16 @@ class Desk:
             price, avail = (ask, az) if delta > 0 else (bid, bs)
             if price is None:
                 return f"{t}: no {'ask' if delta > 0 else 'bid'} to trade against"
+            seen = c.get("px")                       # the YES price on the screen; live never trades at a worse one
+            if seen is None and book is self.live:
+                return "not sent: a live order must carry the price it was confirmed at"
+            if seen is not None:
+                slip = (price - float(seen)) * (1 if delta > 0 else -1)
+                if not slip <= (0.0 if book is self.live else PAPER_SLIP) + 1e-9:
+                    was, cur = (float(seen), price) if delta > 0 else (1 - float(seen), 1 - price)
+                    if act == "close":
+                        was, cur = 1 - was, 1 - cur
+                    return f"not sent: {t} moved from {was*100:.1f}¢ to {cur*100:.1f}¢ since you pressed the key"
             rec = self._exec(book, t, delta, price, avail, "manual")
             if not rec:
                 return f"{book.name}: {act} {t} did not fill"
@@ -583,6 +633,8 @@ class Desk:
             return "live armed: authenticating with Kalshi"
         if op == "series":
             s = c["series"]
+            if s not in cfgmod.SERIES:
+                return f"unknown series {s!r} (known: {', '.join(cfgmod.SERIES)})"
             lst = list(self.cfg.strategy.series)
             lst = [x for x in lst if x != s] if s in lst else lst + [s]
             self.cfg.strategy.series = lst; cfgmod.save(self.cfg, self.runtime)
@@ -590,6 +642,7 @@ class Desk:
         if op == "reset_paper":
             self.paper = Book("paper", self.cfg.paper_capital); self.auto = []
             self.slots = {k: v for k, v in self.slots.items() if not k.startswith("paper|")}
+            self.hour_cost = {k: v for k, v in self.hour_cost.items() if not k.startswith("paper|")}
             return f"paper reset to ${self.cfg.paper_capital:,.2f}"
         return f"unknown command {op!r}"
 
@@ -658,7 +711,11 @@ class Desk:
             self.cfg = cfgmod.load(self.runtime, self.cfg)
         self._read_view()
         wanted = set(self.cfg.strategy.series) | {self.view["series"]}
-        for s in wanted:
+        unknown = sorted(wanted - set(cfgmod.SERIES))
+        if unknown and now - self.last["badseries"] > 60:
+            self.last["badseries"] = now
+            self.log(f"config: ignoring unknown series {', '.join(unknown)} (known: {', '.join(cfgmod.SERIES)})", "warn")
+        for s in sorted(wanted & set(cfgmod.SERIES)):
             self.spot.want(cfgmod.SERIES[s])
             try:
                 self._refresh_event(s)

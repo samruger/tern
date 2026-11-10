@@ -255,6 +255,7 @@ class Screen:
     def send(self, **cmd) -> None:
         cid = uuid.uuid4().hex[:12]
         cmd["id"] = cid
+        cmd["ts"] = time.time()                      # the desk ignores commands older than a few seconds
         path = os.path.join(self.cmd_dir, f"{time.time():.6f}-{cid}.json")
         with open(path + ".tmp", "w") as fh:
             json.dump(cmd, fh)
@@ -688,7 +689,8 @@ class Screen:
         if px is None:
             self.say("nothing on that side of the book"); return
         fee = taker_fee(n, px)
-        cmd = {"op": "order", "ticker": r["t"], "action": action, "n": n if action != "close" else 0}
+        cmd = {"op": "order", "ticker": r["t"], "action": action, "n": n if action != "close" else 0,
+               "book": "live" if live else "paper", "px": px}      # the desk refuses another book or a worse price
         if live:
             self.modal = {"title": "LIVE ORDER", "color": RED, "cmd": cmd,
                           "lines": [f"{desc} on {r['t']}", f"strike {strike_label(r['k'])}  ·  ${n*unit:,.2f} + fee ≈ ${fee:.2f}",
