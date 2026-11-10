@@ -50,14 +50,14 @@ class Recorder:
 
     def flush(self, now: float | None = None) -> None:
         self.flushed = now or time.time()
-        for name, lines in self.buf.items():
-            if not lines:
-                continue
-            path = os.path.join(self.dir, name)
-            text = ("" if os.path.exists(path) else HEADER) + "".join(lines)
-            with open(path, "ab") as fh:
-                fh.write(gzip.compress(text.encode()))
-        self.buf = {}
+        for name in list(self.buf):
+            lines = self.buf[name]
+            if lines:
+                path = os.path.join(self.dir, name)
+                text = ("" if os.path.exists(path) else HEADER) + "".join(lines)
+                with open(path, "ab") as fh:
+                    fh.write(gzip.compress(text.encode()))
+            del self.buf[name]                    # written files leave the buffer, so a failed flush never repeats them
 
     def results(self, series: str, close: float, rows: list[tuple]) -> None:
         """rows: (strike, 'yes' | 'no')"""

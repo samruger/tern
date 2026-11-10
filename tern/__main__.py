@@ -71,29 +71,44 @@ def _live_check() -> int:
     return 0
 
 
-def _service(runtime: str) -> int:
-    unit_dir = os.path.expanduser("~/.config/systemd/user")
-    os.makedirs(unit_dir, exist_ok=True)
-    path = os.path.join(unit_dir, "tern.service")
-    with open(path, "w") as fh:
-        fh.write(f"""[Unit]
+def _unit_quote(text: str) -> str:
+    """One systemd word: quoted so spaces survive, with % and $ kept literal."""
+    text = text.replace("\\", "\\\\").replace('"', '\\"').replace("%", "%%").replace("$", "$$")
+    return f'"{text}"'
+
+
+def _unit(root: str, runtime: str, python: str) -> str:
+    # The desk may live on a removable card. A user unit cannot order itself after a udisks mount,
+    # so the pre-check fails while the runtime is absent and Restart= retries until the card is in.
+    # It also keeps the desk from ever starting on a blank runtime.
+    return f"""[Unit]
 Description=tern Kalshi hourly desk
 After=network-online.target
 Wants=network-online.target
 
 [Service]
-WorkingDirectory={os.path.realpath(cfgmod.ROOT)}
-Environment=TERN_RUNTIME={os.path.realpath(runtime)}
+WorkingDirectory={root.replace("%", "%%")}
+Environment={_unit_quote("TERN_RUNTIME=" + runtime)}
 Environment=PYTHONUNBUFFERED=1
 EnvironmentFile=-%h/.config/tern/kalshi.env
-ExecStart={sys.executable} -m tern run
+ExecStartPre=/usr/bin/test -d {_unit_quote(runtime)}
+ExecStart={_unit_quote(python)} -m tern run
 Restart=always
 RestartSec=15
-TimeoutStopSec=20
+TimeoutStopSec=60
 
 [Install]
 WantedBy=default.target
-""")
+"""
+
+
+def _service(runtime: str) -> int:
+    unit_dir = os.path.expanduser("~/.config/systemd/user")
+    os.makedirs(unit_dir, exist_ok=True)
+    os.makedirs(runtime, exist_ok=True)
+    path = os.path.join(unit_dir, "tern.service")
+    with open(path, "w") as fh:
+        fh.write(_unit(os.path.realpath(cfgmod.ROOT), os.path.realpath(runtime), sys.executable))
     print(f"Wrote {path}\n\nStart it now and at every login:\n"
           "  systemctl --user daemon-reload\n  systemctl --user enable --now tern\n\n"
           "To keep it running while you are logged out:\n  loginctl enable-linger $USER")

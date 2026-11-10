@@ -131,6 +131,68 @@ class State(unittest.TestCase):
             self.assertEqual(config.load(d, cur).strategy.contracts, 9)
 
 
+class Shutdown(unittest.TestCase):
+    def setUp(self):
+        import signal
+        old = {s: signal.getsignal(s) for s in (signal.SIGTERM, signal.SIGINT)}
+        self.addCleanup(lambda: [signal.signal(s, h) for s, h in old.items()])
+
+    def desk(self, d):
+        from tern.engine import Desk
+        k = Desk(d)
+        k.spot.start = lambda: None
+        return k
+
+    def test_stop_signal_lets_the_step_finish_then_saves(self):
+        import signal
+        with tempfile.TemporaryDirectory() as d:
+            k = self.desk(d)
+            seen = []
+            def step():
+                os.kill(os.getpid(), signal.SIGTERM)          # a stop lands mid-step
+                os.kill(os.getpid(), signal.SIGINT)
+                k.paper.trade("A-T1", 2, 0.5, 0.0, {}, "x")   # the rest of the step still runs
+                seen.append(1)
+            k.step = step
+            k.run()
+            self.assertEqual(seen, [1])                       # finished once, no second step
+            self.assertAlmostEqual(self.desk(d).paper.pos["A-T1"]["q"], 2)
+            self.assertEqual(signal.getsignal(signal.SIGTERM), signal.SIG_IGN)   # a second stop cannot cut the saves
+
+    def test_one_failed_save_does_not_skip_the_others(self):
+        with tempfile.TemporaryDirectory() as d:
+            k = self.desk(d)
+            done = []
+            def boom():
+                raise OSError("disk full")
+            k._save_state = boom
+            k.shadow.save = lambda: done.append("shadow")
+            k.rec.flush = lambda: done.append("quotes")
+            k._shutdown()
+            self.assertEqual(done, ["shadow", "quotes"])
+            self.assertIn("could not save: state", k.logs[-1][2])
+
+    def test_failed_flush_does_not_repeat_written_files(self):
+        import gzip
+        from tern.record import Recorder
+        with tempfile.TemporaryDirectory() as d:
+            r = Recorder(d)
+            r.buf = {"a.csv.gz": ["1\n"], "missing/b.csv.gz": ["2\n"]}
+            with self.assertRaises(OSError):
+                r.flush()
+            self.assertEqual(list(r.buf), ["missing/b.csv.gz"])
+            del r.buf["missing/b.csv.gz"]
+            r.flush()
+            self.assertEqual(gzip.open(os.path.join(r.dir, "a.csv.gz"), "rt").read().count("1\n"), 1)
+
+    def test_unit_quotes_paths_and_waits_for_the_runtime(self):
+        from tern.__main__ import _unit
+        u = _unit("/run/media/d/My Card/tern", "/run/media/d/My Card/tern/runtime", "/usr/bin/python3")
+        self.assertIn('Environment="TERN_RUNTIME=/run/media/d/My Card/tern/runtime"', u)
+        self.assertIn('ExecStartPre=/usr/bin/test -d "/run/media/d/My Card/tern/runtime"', u)
+        self.assertIn('ExecStart="/usr/bin/python3" -m tern run', u)
+
+
 class Shadows(unittest.TestCase):
     def m(self, t, bid, ask, k):
         return {"ticker": t, "yes_bid_dollars": str(bid), "yes_ask_dollars": str(ask),

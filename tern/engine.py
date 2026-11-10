@@ -684,13 +684,15 @@ class Desk:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             print("tern engine already running"); return
+        self.stopping = False
         def stop(signum, frame):
-            raise SystemExit(0)
-        signal.signal(signal.SIGTERM, stop)          # systemctl stop / restart: save before leaving
+            self.stopping = True                     # only a flag: the step in progress finishes first
+        signal.signal(signal.SIGTERM, stop)          # systemctl stop / restart
+        signal.signal(signal.SIGINT, stop)           # Ctrl-C on `tern run`
         self.spot.start()
         self.log(f"engine started (pid {os.getpid()}), mode paper{' — live armed, authenticating' if self.cfg.live.enabled else ''}")
         try:
-            while True:
+            while not self.stopping:
                 t0 = time.time()
                 try:
                     self.step()
@@ -700,8 +702,32 @@ class Desk:
                         fh.write(traceback.format_exc())
                 if once:
                     return
-                time.sleep(max(0.1, 1.0 - (time.time() - t0)))
+                if not self.stopping:
+                    time.sleep(max(0.1, 1.0 - (time.time() - t0)))
         finally:
-            self._save_state(); self.shadow.save(); self.rec.flush()
-            if not once:
-                self.log("engine stopped, state saved")
+            self._shutdown(quiet=once)
+
+    def _shutdown(self, quiet: bool = False) -> None:
+        """Save everything between steps. A second signal must not cut a save short, and one
+        failed save must not stop the others."""
+        for sig in (signal.SIGTERM, signal.SIGINT):
+            try:
+                signal.signal(sig, signal.SIG_IGN)
+            except ValueError:                       # not the main thread
+                pass
+        failed = []
+        for name, save in (("state", self._save_state), ("shadow", self.shadow.save), ("quotes", self.rec.flush)):
+            try:
+                save()
+            except Exception as ex:
+                failed.append(name)
+                try:
+                    self.log(f"shutdown: saving {name} failed: {ex}", "error")
+                except Exception:
+                    pass
+        if not quiet:
+            try:
+                self.log("engine stopped, " + (f"could not save: {', '.join(failed)}" if failed else "state saved"),
+                         "error" if failed else "info")
+            except Exception:
+                pass
