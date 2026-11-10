@@ -81,6 +81,15 @@ class Book:
     def at_risk(self) -> float:
         return sum(abs(p["q"]) * p["avg"] for p in self.pos.values())
 
+    def unrealized(self, mids: dict[str, float]) -> float:
+        """Open P&L against cost; a position with no quote counts as flat."""
+        v = 0.0
+        for t, p in self.pos.items():
+            m = mids.get(t)
+            if m is not None:
+                v += abs(p["q"]) * ((m if p["q"] > 0 else 1 - m) - p["avg"])
+        return v
+
     def equity(self, mids: dict[str, float]) -> float:
         v = self.cash
         for t, p in self.pos.items():

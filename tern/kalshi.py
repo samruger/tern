@@ -131,6 +131,9 @@ class Kalshi:
                 return o
         return None
 
+    def order_fills(self, order_id: str) -> list[dict]:
+        return self._req("GET", "/portfolio/fills", {"order_id": order_id, "limit": 1000}, signed=True).get("fills", [])
+
     def fills(self, min_ts: int) -> list[dict]:
         out, cur = [], None
         while True:

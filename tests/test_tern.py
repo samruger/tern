@@ -291,6 +291,125 @@ class Commands(unittest.TestCase):
             self.assertEqual(k.hour_cost, {"live|KXBTCD-E1": 10.0})
 
 
+class Live(unittest.TestCase):
+    T = "KXBTCD-E1-T100"
+
+    def desk(self, d, api):
+        import time
+        from tern import engine
+        engine.LOST_REPLY_WAITS = (0.0, 0.0)
+        k = engine.Desk(d)
+        now = time.time()
+        m = {"ticker": self.T, "floor_strike": 100.0, "yes_bid_dollars": "0.80", "yes_ask_dollars": "0.82",
+             "yes_bid_size_fp": "50", "yes_ask_size_fp": "50"}
+        k.events["KXBTCD"] = {"event": "KXBTCD-E1", "title": "", "close": now + 1200, "markets": [m], "fetched": now}
+        k.ev_close["KXBTCD-E1"] = now + 1200
+        k.meta[self.T] = {"event": "KXBTCD-E1", "strike": 100.0, "close": now + 1200, "series": "KXBTCD"}
+        k.mode = "live"; k.api = api; k.balance = 500.0
+        return k
+
+    def api(self, **kw):
+        from tern.kalshi import KalshiError
+        class Api:
+            sent = 0
+            def order(self, *a, **k):
+                Api.sent += 1
+                if "reply" in kw:
+                    return kw["reply"]
+                raise KalshiError("timed out")                 # no status: the reply was lost
+            def find_order(self, t, cid):
+                if "found" not in kw:
+                    raise KalshiError("timed out")
+                return kw["found"]
+            def order_fills(self, oid):
+                return kw.get("fills", [])
+        return Api()
+
+    def test_reply_fields_are_read_as_documented(self):
+        with tempfile.TemporaryDirectory() as d:
+            k = self.desk(d, self.api(reply={"order_id": "o1", "fill_count": "5.00", "remaining_count": "0.00",
+                                             "average_fill_price": "0.8100", "average_fee_paid": "0.0120"}))
+            r = k._exec(k.live, self.T, 5, 0.82, 50, "manual")
+            self.assertAlmostEqual(r["price"], 0.81); self.assertAlmostEqual(r["fee"], 0.06)
+            self.assertAlmostEqual(k.live.pos[self.T]["q"], 5)
+
+    def test_lost_reply_is_booked_from_the_fills(self):
+        with tempfile.TemporaryDirectory() as d:
+            k = self.desk(d, self.api(found={"order_id": "o1", "fill_count_fp": "5.00", "yes_price_dollars": "0.8200",
+                                             "taker_fees_dollars": "0.0600"},
+                                      fills=[{"count_fp": "2.00", "yes_price_dollars": "0.8000", "fee_cost": "0.0300"},
+                                             {"count_fp": "3.00", "yes_price_dollars": "0.8200", "fee_cost": "0.0400"}]))
+            r = k._exec(k.live, self.T, 5, 0.82, 50, "manual")
+            self.assertAlmostEqual(r["price"], 0.812); self.assertAlmostEqual(r["fee"], 0.07)
+
+    def test_lost_reply_not_on_kalshi_is_unfilled(self):
+        with tempfile.TemporaryDirectory() as d:
+            k = self.desk(d, self.api(found=None))
+            self.assertIsNone(k._exec(k.live, self.T, 5, 0.82, 50, "manual"))
+            self.assertFalse(k.live.pos)
+
+    def test_unconfirmed_order_spends_the_budget_and_stops_the_slot(self):
+        from tern import engine
+        with tempfile.TemporaryDirectory() as d:
+            api = self.api()
+            k = self.desk(d, api)
+            with self.assertRaises(engine.Unconfirmed):
+                k._exec(k.live, self.T, 5, 0.82, 50, "manual")
+            k.cfg.live.auto_needs_gate = False
+            k.cfg.strategy.minutes = [20]
+            k.slots["paper|KXBTCD-E1"] = {20}
+            type(api).sent = 0
+            k._auto()
+            self.assertEqual(type(api).sent, 1)
+            self.assertAlmostEqual(k.hour_cost["live|KXBTCD-E1"], 5 * 0.82)
+            self.assertEqual(k.last["pos"], 0)
+            self.assertEqual(engine.Desk(d).slots["live|KXBTCD-E1"], {20})    # on disk: a restart does not repeat it
+
+    def test_kill_switch_ignores_when_the_balance_is_credited(self):
+        with tempfile.TemporaryDirectory() as d:
+            k = self.desk(d, self.api())
+            k.cfg.live.enabled = True
+            k.live.cash = 500.0
+            k.live.trade(self.T, 50, 0.80, 0.0, k.meta[self.T], "x")
+            k._daily_loss()
+            for cash in (460.0, 510.0):                       # payout not credited yet, then credited
+                k.live.settle(self.T, True) if self.T in k.live.pos else None
+                k.live.cash = cash
+                k._daily_loss()
+                self.assertTrue(k.cfg.live.enabled)
+            k.live.trade(self.T, 50, 0.80, 0.0, k.meta[self.T], "x")
+            k.live.settle(self.T, False)                      # a real $40 loss
+            k._daily_loss()
+            self.assertFalse(k.cfg.live.enabled)
+
+    def test_reconcile_leaves_other_markets_alone(self):
+        with tempfile.TemporaryDirectory() as d:
+            api = self.api()
+            api.positions = lambda: {"AAAPRES-28-X": 10.0, self.T: 3.0}
+            k = self.desk(d, api)
+            k._reconcile()
+            self.assertEqual(set(k.live.pos), {self.T})
+            self.assertEqual(k.foreign, ["AAAPRES-28-X"])
+
+    def test_unsettled_tickers_do_not_hold_the_queue(self):
+        import time
+        with tempfile.TemporaryDirectory() as d:
+            k = self.desk(d, self.api())
+            asked = []
+            k.pub.market = lambda t: asked.append(t) or {}
+            for i in range(8):
+                k.paper.pos[f"A{i}"] = {"q": 1.0, "avg": 0.5, "close": time.time() - 100}
+            k._settle(); k._settle()
+            self.assertEqual(len(asked), 8); self.assertEqual(len(set(asked)), 8)
+
+    def test_gate_hours_are_not_doubled_by_a_second_series(self):
+        with tempfile.TemporaryDirectory() as d:
+            k = self.desk(d, self.api())
+            k.auto = [{"ts": 0, "ticker": f"{s}-H{h}-T1", "side": "yes", "n": 1, "cost": 0.9, "fee": 0, "slot": 10, "pnl": 0.1}
+                      for h in range(12) for s in ("KXBTCD", "KXETHD")]
+            self.assertIn("0.5 days", k.gate()["checks"][0]["detail"])
+
+
 class Shadows(unittest.TestCase):
     def m(self, t, bid, ask, k):
         return {"ticker": t, "yes_bid_dollars": str(bid), "yes_ask_dollars": str(ask),

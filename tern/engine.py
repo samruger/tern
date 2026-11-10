@@ -29,6 +29,13 @@ QUOTE_MAX_AGE = 10.0   # manual orders need a ladder at least this fresh, as the
 PAPER_SLIP = 0.01      # a paper order may fill this much worse than the price on the screen; live may not
 
 
+LOST_REPLY_WAITS = (1.0, 2.0, 4.0)   # seconds between looks for an order whose reply never came
+
+
+class Unconfirmed(KalshiError):
+    """An order was sent and Kalshi could not say what became of it."""
+
+
 def _ago(sec: float) -> str:
     sec = abs(sec)
     return f"{sec:.0f}s ago" if sec < 120 else f"{sec/60:.0f}m ago" if sec < 7200 else f"{sec/3600:.0f}h ago"
@@ -121,6 +128,7 @@ class Desk:
         self.seeded: set[str] = set()
         self.mode = "paper"
         self.live_error = ""
+        self.foreign: list[str] = []
         self.balance: float | None = None
         self.last = collections.defaultdict(float)
         self._load_state()
@@ -330,7 +338,12 @@ class Desk:
         except KalshiError as e:
             self.live_error = str(e)[:160]; return
         mids = self._mids()
-        for t in set(ex) | set(self.live.pos):
+        other = sorted(t for t in ex if t.split("-", 1)[0] not in cfgmod.SERIES)
+        if other and other != self.foreign:      # positions the desk did not open and cannot settle
+            self.log(f"reconcile: leaving {len(other)} position(s) outside tern's markets alone: {', '.join(other[:5])}"
+                     + ("…" if len(other) > 5 else ""), "warn")
+        self.foreign = other
+        for t in (set(ex) - set(other)) | set(self.live.pos):
             have = self.live.pos.get(t, {}).get("q", 0.0)
             real = ex.get(t, 0.0)
             if abs(have - real) > 1e-6:
@@ -348,12 +361,14 @@ class Desk:
                 self.log(f"reconcile: {t} {have:+g} -> {real:+g} (Kalshi is the record)", "warn")
 
     def _daily_loss(self) -> None:
+        # Measured on the ledger (realized + open P&L), not on cash: the balance comes from Kalshi and
+        # a settlement reaches it at a different moment than it reaches the book.
         today = time.strftime("%Y-%m-%d")
-        eq = self.live.equity(self._mids())
-        if self.day.get("date") != today:
-            self.day = {"date": today, "equity": eq}
-        if eq < self.day["equity"] - self.cfg.live.max_daily_loss:
-            self.log(f"KILL: live down ${self.day['equity'] - eq:,.2f} today (limit ${self.cfg.live.max_daily_loss:,.2f}). "
+        pnl = self.live.realized + self.live.unrealized(self._mids())
+        if self.day.get("date") != today or "pnl" not in self.day:
+            self.day = {"date": today, "pnl": pnl}
+        if pnl < self.day["pnl"] - self.cfg.live.max_daily_loss:
+            self.log(f"KILL: live down ${self.day['pnl'] - pnl:,.2f} today (limit ${self.cfg.live.max_daily_loss:,.2f}). "
                      "Live switched off; open positions ride to settlement.", "error")
             self.cfg.live.enabled = False
             cfgmod.save(self.cfg, self.runtime)
@@ -393,18 +408,43 @@ class Desk:
         except KalshiError as ex:
             if ex.status is not None:
                 raise
-            time.sleep(1.0)                      # reply lost: find the order by its client id
-            o = self.api.find_order(ticker, cid)
-            if not o:
-                self.log(f"order {cid} reply lost and not found on Kalshi; treating as unfilled", "warn")
-                return None
-            filled = float(o.get("fill_count_fp") or 0)
-            px = float(o.get("yes_price_dollars") or price)
-            fee = float(o.get("taker_fees_dollars") or 0)
+            filled, px, fee = self._lost_reply(ticker, cid, price)
         if filled <= 0:
             return None
         self.last["bal"] = 0                     # refresh balance soon
+        self.last["save"] = 0                    # and put the fill on disk at the end of this step
         return book.trade(ticker, filled if delta > 0 else -filled, px, round(fee, 4), meta, tag)
+
+    def _lost_reply(self, ticker: str, cid: str, price: float) -> tuple[float, float, float]:
+        """The order was sent and no answer came back. Find it by its client id: (filled, YES price, fee).
+        Raises Unconfirmed when Kalshi cannot be asked, so the caller counts the order as possibly filled."""
+        o, asked = None, False
+        for wait in LOST_REPLY_WAITS:
+            time.sleep(wait)
+            try:
+                o = self.api.find_order(ticker, cid); asked = True
+            except KalshiError:
+                continue
+            if o:
+                break
+        if not asked:
+            self.last["pos"] = 0                 # reconcile on the next step: Kalshi is the record
+            raise Unconfirmed(f"order {cid} on {ticker}: no reply and Kalshi could not be asked; it may have filled")
+        if not o:
+            self.log(f"order {cid} reply lost and not found on Kalshi; treating as unfilled", "warn")
+            return 0.0, price, 0.0
+        filled = float(o.get("fill_count_fp") or 0)
+        px, fee = price, float(o.get("taker_fees_dollars") or 0) + float(o.get("maker_fees_dollars") or 0)
+        if filled > 0 and o.get("order_id"):     # the order shows its limit; the fills show what was paid
+            try:
+                fs = self.api.order_fills(o["order_id"])
+                n = sum(float(f.get("count_fp") or 0) for f in fs)
+                if n > 0:
+                    px = sum(float(f.get("count_fp") or 0) * float(f["yes_price_dollars"]) for f in fs) / n
+                    fee = sum(float(f.get("fee_cost") or 0) for f in fs)
+            except (KalshiError, KeyError, TypeError, ValueError):
+                pass                             # keep the limit price: never better than the real fill
+        return filled, px, fee
 
     # ------------------------------------------------------------ the rule
     def _auto(self) -> None:
@@ -429,6 +469,8 @@ class Desk:
                     continue
                 done.add(slot)
                 sig = signals(e["markets"], S.band_lo, S.band_hi, S.max_spread)
+                if book is self.live and sig:
+                    self._save_state()               # the slot is on disk before any order: a restart never repeats it
                 placed = 0
                 for s in sig:
                     spent = self.hour_cost.get(key, 0.0)
@@ -439,6 +481,9 @@ class Desk:
                         break
                     try:
                         rec = self._exec(book, s["ticker"], s["delta_sign"] * n, s["price"], s["size"], "auto")
+                    except Unconfirmed as ex:        # count it as filled and stop: the budget must not be overspent
+                        self.hour_cost[key] = spent + n * unit
+                        self.log(f"{book.name} rule stopped for this slot: {ex}", "error"); break
                     except KalshiError as ex:
                         self.log(f"{book.name} rule order {s['ticker']} rejected: {ex}", "warn"); continue
                     if not rec:
@@ -449,11 +494,14 @@ class Desk:
                         self.auto.append({"ts": now, "ticker": s["ticker"], "side": s["side"], "n": abs(rec["delta"]),
                                           "cost": unit, "fee": rec["fee"], "slot": slot, "pnl": None})
                 self.log(f"{book.name}: {slot}m slot on {e['event']}: {len(sig)} favorites in band, {placed} bought")
+                if book is self.live and sig:
+                    self._save_state()
 
     def gate(self) -> dict:
         G = self.cfg.gate
         rows = [a for a in self.auto if a["pnl"] is not None]
-        days = len({_event_of(a["ticker"]) for a in rows}) / 24      # hours the rule actually traded, not time elapsed
+        # hours the rule actually traded, not time elapsed; two series in one hour are still one hour
+        days = len({_event_of(a["ticker"]).split("-", 1)[-1] for a in rows}) / 24
         pnl = sum(a["pnl"] for a in rows)
         checks = [
             {"name": f"rule on paper ≥ {G.min_days:g} days", "ok": days >= G.min_days, "detail": f"{days:.1f} days of hours traded"},
@@ -501,9 +549,8 @@ class Desk:
         now = time.time()
         due = {t for b in (self.paper, self.live) for t, p in b.pos.items() if (p.get("close") or 0) < now - 20}
         due |= {a["ticker"] for a in self.auto if a["pnl"] is None and self.meta.get(a["ticker"], {}).get("close", now) < now - 20}
-        for t in sorted(due)[:6]:
-            if now - self.last["st" + t] < 20:
-                continue
+        ready = [t for t in due if now - self.last["st" + t] >= 20]   # throttle first, so nothing holds the queue
+        for t in sorted(ready, key=lambda t: (self.last["st" + t], t))[:6]:   # longest-waiting first
             self.last["st" + t] = now
             try:
                 m = self.pub.market(t)
@@ -685,13 +732,14 @@ class Desk:
             return {"cash": b.cash, "equity": eq, "start": b.start, "realized": b.realized, "fees": b.fees,
                     "at_risk": b.at_risk(), "pos": pos, "curve": b.curve[-1500:],
                     "trades": b.trades[-30:]}
+        gate = self.gate()
         st = {"heartbeat": now, "pid": os.getpid(), "mode": self.mode, "live_enabled": self.cfg.live.enabled,
               "live_error": self.live_error, "keys": cfgmod.keys() is not None, "balance": self.balance,
               "spot": sp, "events": evs, "hist": hist, "view": self.view,
               "paper": book_view(self.paper), "live": book_view(self.live),
-              "gate": self.gate(), "shadow": self.shadow.summary(), "strategy": self.cfg.strategy.__dict__, "live_cfg": self.cfg.live.__dict__,
+              "gate": gate, "shadow": self.shadow.summary(), "strategy": self.cfg.strategy.__dict__, "live_cfg": self.cfg.live.__dict__,
               "logs": [list(x) for x in list(self.logs)[-200:]], "results": self.results,
-              "auto_live": self.mode == "live" and self.cfg.strategy.auto and (self.gate()["passed"] or not self.cfg.live.auto_needs_gate)}
+              "auto_live": self.mode == "live" and self.cfg.strategy.auto and (gate["passed"] or not self.cfg.live.auto_needs_gate)}
         _atomic_json(os.path.join(self.fast, "status.json"), st)
 
     # ------------------------------------------------------------ loop
