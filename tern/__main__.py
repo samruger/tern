@@ -35,7 +35,8 @@ def _status(runtime: str) -> int:
         b = st.get(name) or {}
         if not b or (name == "live" and not b.get("start")):
             continue
-        print(f"\n{name}: equity ${b['equity']:,.2f} (start ${b['start']:,.2f}), cash ${b['cash']:,.2f}, "
+        print(f"\n{name}: equity ${b['equity']:,.2f} (start ${b['start']:,.2f}), purse ${b.get('purse', b['cash']):,.2f}, "
+              f"profit purse ${b.get('vault', 0):,.2f}, "
               f"at risk ${b['at_risk']:,.2f}, fees ${b['fees']:,.2f}")
         for p in b["pos"]:
             print(f"  {'YES' if p['q'] > 0 else 'NO ':3s} {abs(p['q']):g} @ {p['avg']*100:.1f}c  {p['t']}")

@@ -544,7 +544,7 @@ class Screen:
         pnl = (eq - start) if eq is not None and start else None
         lines = [("equity", money(eq), WHITE), ("P&L", money(pnl, True) + (f"  {pnl/start:+.2%}" if pnl is not None and start else ""),
                                                  GREEN if (pnl or 0) >= 0 else RED),
-                 ("cash", money(b.get("cash")), WHITE), ("at risk", money(b.get("at_risk")), YELLOW),
+                 ("purse", money(b.get("purse", b.get("cash"))), WHITE), ("profit", money(b.get("vault") or 0), GREEN), ("at risk", money(b.get("at_risk")), YELLOW),
                  ("fees", money(b.get("fees")), self.P.grey)]
         if v == "live":
             L = st.get("live_cfg") or {}
