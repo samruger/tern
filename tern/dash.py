@@ -200,6 +200,7 @@ KALSHI_KEY_FILE (in ~/.config/tern/kalshi.env). Caps: live.capital_usd at
 risk, live.max_order_usd per order, live.max_daily_loss turns live off.
 
   ↑↓ PgUp PgDn  move in the ladder     b / n / x   buy YES / buy NO / close
+  mouse wheel   scrolls the panel under the pointer: ladder, log, open positions
   + - 1-8       order size             tab         BTC <-> ETH
   a             rule on/off            r           rule trades this coin on/off
   c             chart: 15m / 24h       v           book shown: paper / live
@@ -231,6 +232,9 @@ class Screen:
         self.alive, self.alive_at = False, 0.0
         self.P = Pal()
         self.clip: int | None = None
+        self.rects: dict[str, tuple[int, int, int, int]] = {}   # panel -> (y, x, h, w) as last drawn
+        self.log_anchor: float | None = None   # ts of the bottom log line while scrolled back; None follows new lines
+        self.pos_off = 0                       # first open position shown in the book
 
     # ------------------------------------------------------------ io
     def read(self) -> None:
@@ -564,7 +568,13 @@ class Screen:
         self.put(yy, x + 2, f"{'strike':>9} {'side':<4} {'qty':>6} {'avg':>5} {'mark':>5} {'P&L':>8} {'closes':>7}"[:w - 4], P(self.P.grey, bold=True))
         yy += 1
         now = time.time()
-        for p in pos[:max(0, y + h - 1 - yy)]:
+        room = max(0, y + h - 1 - yy)
+        self.pos_off = max(0, min(self.pos_off, len(pos) - room))
+        if self.pos_off > 0:
+            self.put(yy, x + w - 2, "▲", P(YELLOW))
+        if self.pos_off + room < len(pos):
+            self.put(y + h - 1, x + w - 2, "▼", P(YELLOW))
+        for p in pos[self.pos_off:self.pos_off + room]:
             side = "YES" if p["q"] > 0 else "NO"
             pl = p.get("pnl")
             self.put(yy, x + 2, f"{strike_label(p.get('k')):>9} ", P(WHITE))
@@ -598,9 +608,47 @@ class Screen:
         self.box(y, x, h, w, "log", self.P.grey, "", "")
         logs = self.st.get("logs") or []
         colors = {"error": RED, "warn": YELLOW, "live": RED, "cmd": CYAN}
-        for j, (ts, lvl, msg) in enumerate(logs[-(h - 2):]):
+        rows = h - 2
+        end = self.log_end(logs, rows)
+        for j, (ts, lvl, msg) in enumerate(logs[max(0, end - rows):end]):
             self.put(y + 1 + j, x + 2, time.strftime("%H:%M:%S", time.localtime(ts)), P(self.P.grey))
             self.put(y + 1 + j, x + 11, msg[:w - 13], P(colors.get(lvl, WHITE)))
+        if end - rows > 0:
+            self.put(y, x + w - 2, "▲", P(YELLOW))
+        if end < len(logs):
+            note = f"▼ {len(logs) - end} newer"
+            self.put(y + h - 1, x + w - 2 - len(note), note, P(YELLOW))
+
+    def log_end(self, logs: list, rows: int) -> int:
+        """One past the bottom log line shown: the newest, or the line scrolled back to."""
+        if self.log_anchor is None:
+            return len(logs)
+        end = 0
+        for k, e in enumerate(logs):
+            if e[0] <= self.log_anchor:
+                end = k + 1
+        return max(end, min(rows, len(logs)))
+
+    def wheel(self, my: int, mx: int, d: int) -> None:
+        """Mouse wheel over a panel: d is -1 (up) or +1 (down)."""
+        name = next((n for n, (y, x, h, w) in self.rects.items() if y <= my < y + h and x <= mx < x + w), None)
+        if name == "ladder":
+            self.step_ladder(d)
+        elif name == "book":
+            self.pos_off = max(0, self.pos_off + d)    # book_panel clamps the far end
+        elif name == "log":
+            logs = self.st.get("logs") or []
+            rows = self.rects["log"][2] - 2
+            end = max(min(rows, len(logs)), min(len(logs), self.log_end(logs, rows) + 3 * d))
+            self.log_anchor = None if end >= len(logs) else logs[end - 1][0]
+
+    def step_ladder(self, d: int) -> None:
+        tickers = [r["t"] for r in self.ladder()]
+        if not tickers:
+            return
+        i = tickers.index(self.sel) if self.sel in tickers else len(tickers) // 2
+        self.sel = tickers[max(0, min(len(tickers) - 1, i + d))]
+        self.write_view()
 
     def footer(self, H: int, W: int) -> None:
         P = self.P
@@ -656,6 +704,7 @@ class Screen:
         for fn, y, x, h, w in [(self.spot_panel, 1, 0, top, lw), (self.contract_panel, 1, lw, top, rw),
                                (self.ladder_panel, 1 + top, 0, mid, lw), (self.book_panel, 1 + top, lw, mid, rw),
                                (self.equity_panel, 1 + top + mid, 0, bot, ew), (self.log_panel, 1 + top + mid, ew, bot, W - ew)]:
+            self.rects[fn.__name__.removesuffix("_panel")] = (y, x, h, w)
             self.clip = x + w - 1
             fn(y, x, h, w)
         self.clip = None
@@ -699,6 +748,15 @@ class Screen:
             self.send(**cmd); self.say(f"paper: {desc} sent")
 
     def key(self, ch: int) -> bool:
+        if ch == curses.KEY_MOUSE:
+            try:
+                _, mx, my, _, bs = curses.getmouse()
+            except curses.error:
+                return True
+            d = -1 if bs & curses.BUTTON4_PRESSED else 1 if bs & curses.BUTTON5_PRESSED else 0
+            if d and not self.modal and not self.overlay:
+                self.wheel(my, mx, d)
+            return True
         if self.modal:
             m = self.modal; self.modal = None
             if m.get("type") == "arm":
@@ -730,12 +788,9 @@ class Screen:
             self.overlay = None; return True
         if ch in (ord("q"), ord("Q")):
             return False
-        tickers = [r["t"] for r in self.ladder()]
-        if ch in (curses.KEY_UP, curses.KEY_DOWN, curses.KEY_PPAGE, curses.KEY_NPAGE, ord("k"), ord("j")) and tickers:
-            i = tickers.index(self.sel) if self.sel in tickers else len(tickers) // 2
-            d = {curses.KEY_UP: -1, ord("k"): -1, curses.KEY_DOWN: 1, ord("j"): 1, curses.KEY_PPAGE: -10, curses.KEY_NPAGE: 10}[ch]
-            self.sel = tickers[max(0, min(len(tickers) - 1, i + d))]
-            self.write_view()
+        if ch in (curses.KEY_UP, curses.KEY_DOWN, curses.KEY_PPAGE, curses.KEY_NPAGE, ord("k"), ord("j")):
+            self.step_ladder({curses.KEY_UP: -1, ord("k"): -1, curses.KEY_DOWN: 1, ord("j"): 1,
+                              curses.KEY_PPAGE: -10, curses.KEY_NPAGE: 10}[ch])
         elif ch == ord("b"):
             self.order("buy_yes")
         elif ch == ord("n"):
@@ -789,6 +844,10 @@ class Screen:
         self.s.nodelay(True)
         self.s.keypad(True)
         curses.set_escdelay(25)
+        # Wheel only, so the wheel scrolls the panel under the pointer. Clicks stay with
+        # the terminal; shift+drag still selects text in foot.
+        curses.mousemask(curses.BUTTON4_PRESSED | curses.BUTTON5_PRESSED)
+        curses.mouseinterval(0)
         if not engine_alive(self.runtime):
             self.say(start_engine(self.runtime))
         self.write_view()
