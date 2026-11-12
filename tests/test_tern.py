@@ -529,20 +529,5 @@ class Charts(unittest.TestCase):
         self.assertEqual(by_time(pts, 0, 40, 4), [1.0, 2.0, 2.0, 2.0])     # the last value carries forward
 
 
-
-class ProfitPurse(unittest.TestCase):
-    def test_sweeps_and_ratchets(self):
-        b = Book("paper", 100.0)
-        b.trade("T1", 10, 0.80, 0.0, {}, "auto")
-        self.assertTrue(b.sweep() == 0.0)  # money is out, nothing to lock
-        b.settle("T1", True)                        # +$2.00
-        self.assertTrue(b.sweep() == 2.0 and b.vault == 2.0 and b.purse() == 100.0)
-        b.trade("T2", 10, 0.80, 0.0, {}, "auto")
-        b.settle("T2", False)                       # -$8.00 comes from the purse, not the vault
-        self.assertTrue(b.sweep() == 0.0 and b.vault == 2.0 and abs(b.purse() - 92.0) < 1e-9)
-        self.assertTrue(abs(b.cash - 94.0) < 1e-9)  # equity still counts the vault
-        self.assertTrue(Book.from_dict(b.to_dict()).vault == 2.0)
-
-
 if __name__ == "__main__":
     unittest.main()

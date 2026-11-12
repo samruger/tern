@@ -6,7 +6,6 @@ from __future__ import annotations
 import collections
 import datetime as dt
 import fcntl
-import math
 import hashlib
 import json
 import os
@@ -379,13 +378,8 @@ class Desk:
     def _exec(self, book: Book, ticker: str, delta: float, price: float, avail: float, tag: str) -> dict | None:
         """Fill a taker order of `delta` YES at limit `price` in `book`. Returns the trade record."""
         meta = {k: self.meta.get(ticker, {}).get(k) for k in ("event", "strike", "close", "series")}
-        q = book.pos.get(ticker, {}).get("q", 0.0)
-        reducing = q and (q > 0) != (delta > 0) and abs(delta) <= abs(q) + 1e-9
         if book is self.paper:
             n = min(abs(delta), avail) if avail else 0
-            if not reducing:                     # opening trades are paid from the purse, never the vault
-                unit = price if delta > 0 else 1 - price
-                n = min(n, math.floor(max(0.0, book.purse() - taker_fee(n, price, self.cfg.taker_fee)) / max(unit, 1e-6)))
             if n <= 0:
                 return None
             d = n if delta > 0 else -n
@@ -393,6 +387,8 @@ class Desk:
         # live
         if self.mode != "live" or not self.api:
             raise KalshiError("live is not active")
+        q = book.pos.get(ticker, {}).get("q", 0.0)
+        reducing = q and (q > 0) != (delta > 0) and abs(delta) <= abs(q) + 1e-9
         cost = abs(delta) * (price if delta > 0 else 1 - price)
         if not reducing:
             L = self.cfg.live
@@ -400,9 +396,8 @@ class Desk:
                 raise KalshiError(f"order ${cost:,.2f} is over live.max_order_usd ${L.max_order_usd:,.2f}")
             if book.at_risk() + cost > L.capital_usd + 1e-9:
                 raise KalshiError(f"would put ${book.at_risk() + cost:,.2f} at risk, over live.capital_usd ${L.capital_usd:,.2f}")
-            if self.balance is not None and cost > self.balance - book.vault:
-                raise KalshiError(f"order ${cost:,.2f} is over the trading purse ${self.balance - book.vault:,.2f}"
-                                  f" (${book.vault:,.2f} of profit is locked)")
+            if self.balance is not None and cost > self.balance:
+                raise KalshiError(f"order ${cost:,.2f} is over the balance ${self.balance:,.2f}")
         cid = f"tern-{uuid.uuid4().hex[:20]}"
         side = "bid" if delta > 0 else "ask"
         try:
@@ -735,7 +730,7 @@ class Desk:
                             "close": p.get("close"), "series": p.get("series"),
                             "pnl": None if val is None else abs(p["q"]) * (val - p["avg"])})
             return {"cash": b.cash, "equity": eq, "start": b.start, "realized": b.realized, "fees": b.fees,
-                    "vault": b.vault, "purse": b.purse(), "at_risk": b.at_risk(), "pos": pos, "curve": b.curve[-1500:],
+                    "at_risk": b.at_risk(), "pos": pos, "curve": b.curve[-1500:],
                     "trades": b.trades[-30:]}
         gate = self.gate()
         st = {"heartbeat": now, "pid": os.getpid(), "mode": self.mode, "live_enabled": self.cfg.live.enabled,
@@ -780,10 +775,6 @@ class Desk:
         self._auto()
         self._shadow()
         self._settle()
-        for b in (self.paper, self.live) if self.mode == "live" else (self.paper,):
-            got = b.sweep()
-            if got:
-                self.log(f"{b.name}: ${got:,.2f} profit moved to the profit purse (now ${b.vault:,.2f})", "info")
         mids = self._mids()
         self.paper.mark_curve(self.paper.equity(mids), now)
         if self.mode == "live":

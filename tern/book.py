@@ -24,7 +24,6 @@ class Book:
         self.pos: dict[str, dict] = {}    # ticker -> {q, avg, event, strike, close, series}
         self.realized = 0.0
         self.fees = 0.0
-        self.vault = 0.0                  # profit purse: locked out of trading, still counted in cash/equity
         self.trades: list[dict] = []      # every fill and settlement, newest last
         self.curve: list[list[float]] = []  # [ts, equity] per minute
 
@@ -78,22 +77,6 @@ class Book:
         self.trades.append(rec)
         return rec
 
-    # ------------------------------------------------------------ profit purse
-    def purse(self) -> float:
-        """Cash the desk may trade with: cash less the locked profit."""
-        return self.cash - self.vault
-
-    def sweep(self) -> float:
-        """Lock any purse cash above the starting capital into the vault. One way: losses later come out
-        of the trading purse, never back out of the vault. Returns the amount swept."""
-        if not self.start:
-            return 0.0
-        extra = round(self.purse() - self.start, 2)
-        if extra >= 0.01:
-            self.vault = round(self.vault + extra, 2)
-            return extra
-        return 0.0
-
     # ------------------------------------------------------------ marks
     def at_risk(self) -> float:
         return sum(abs(p["q"]) * p["avg"] for p in self.pos.values())
@@ -124,11 +107,11 @@ class Book:
     # ------------------------------------------------------------ persistence
     def to_dict(self) -> dict:
         return {"name": self.name, "cash": self.cash, "start": self.start, "pos": self.pos,
-                "realized": self.realized, "fees": self.fees, "vault": self.vault, "trades": self.trades[-5000:], "curve": self.curve}
+                "realized": self.realized, "fees": self.fees, "trades": self.trades[-5000:], "curve": self.curve}
 
     @classmethod
     def from_dict(cls, d: dict) -> "Book":
         b = cls(d["name"], d["cash"])
         b.start = d.get("start", d["cash"]); b.pos = d.get("pos", {}); b.realized = d.get("realized", 0.0)
-        b.fees = d.get("fees", 0.0); b.vault = d.get("vault", 0.0); b.trades = d.get("trades", []); b.curve = d.get("curve", [])
+        b.fees = d.get("fees", 0.0); b.trades = d.get("trades", []); b.curve = d.get("curve", [])
         return b
