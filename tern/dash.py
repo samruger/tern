@@ -7,6 +7,7 @@ import curses
 import fcntl
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -58,6 +59,22 @@ class Pal:
     def grad(self, name: str) -> list[int]:
         return (GRAD256 if self.many else GRAD8)[name]
 
+
+# log colors: the line's level tints its plain text and its marker; tokens get their own colors
+LOG_BASE = {"error": RED, "warn": YELLOW, "live": RED, "cmd": CYAN}
+LOG_MARK = {"error": "✖", "warn": "▲", "live": "●", "cmd": "›"}
+LOG_BOOK = {"paper": CYAN, "live": RED, "shadow": MAGENTA, "kill": RED}
+LOG_TOKENS = re.compile(
+    r"(?P<book>^[A-Za-z]+:)(?=\s)"
+    r"|(?P<ticker>\bKX[A-Z0-9]+-[0-9A-Z]+(?P<strike>-[TB][0-9.]+)?)"
+    r"|(?P<yes>\bYES\b)|(?P<no>\bNO\b)"
+    r"|(?P<signed>(?<![\w.])[+-]\$?[0-9][0-9,]*(?:\.[0-9]+)?[¢%]?)"
+    r"|(?P<money>\$[0-9][0-9,]*(?:\.[0-9]+)?)"
+    r"|(?P<slot>\b[0-9]+m slot\b)"
+    r"|(?P<good>\b(?:bought|authenticated|state saved)\b)"
+    r"|(?P<bad>\b(?:KILL|rejected|failed|unreadable|error|stopped for this slot)\b)"
+    r"|(?P<num>\b[0-9]+(?:\.[0-9]+)?\b)"
+    r"|(?P<sep>[·→]|->)")
 
 # ---------------------------------------------------------------- formatting
 
@@ -193,7 +210,7 @@ unproven. Paper always runs it. Live runs it only after the gate (g).
 
 MANUAL    Move to a strike with the arrows. b buys YES, n buys NO at the
 touch (immediate-or-cancel), x closes your position there at the touch.
-+/- or keys 1-8 change the size. In live every order asks first.
++/- change the size. In live every order asks first.
 
 LIVE      L arms live: it asks you to type "live". Needs KALSHI_KEY_ID and
 KALSHI_KEY_FILE (in ~/.config/tern/kalshi.env). Caps: live.capital_usd at
@@ -201,7 +218,8 @@ risk, live.max_order_usd per order, live.max_daily_loss turns live off.
 
   ↑↓ PgUp PgDn  move in the ladder     b / n / x   buy YES / buy NO / close
   mouse wheel   scrolls the panel under the pointer: ladder, log, open positions
-  + - 1-8       order size             tab         BTC <-> ETH
+  + -           order size             tab         BTC <-> ETH
+  1-6           show / hide a box: spot, contract, ladder, book, equity, log
   a             rule on/off            r           rule trades this coin on/off
   c             chart: 15m / 24h       v           book shown: paper / live
   L             arm / disarm live      g           gate and checklist
@@ -210,6 +228,12 @@ risk, live.max_order_usd per order, live.max_daily_loss turns live off.
 """
 
 SIZES = [1, 2, 5, 10, 25, 50, 100, 250]
+
+# the boxes, in the order their number keys toggle them, as rows of (left, right)
+PANELS = ["spot", "contract", "ladder", "book", "equity", "log"]
+ROWS = [("spot", "contract", 0.36, 0.6), ("ladder", "book", 0.44, 0.52), ("equity", "log", 0.20, 0.4)]   # (.., height share, left width share)
+SUPER = "¹²³⁴⁵⁶⁷⁸⁹"
+LEFT_MIN = {"ladder": 56}    # the ladder's columns need this much before its bar has any room
 
 
 class Screen:
@@ -235,6 +259,14 @@ class Screen:
         self.rects: dict[str, tuple[int, int, int, int]] = {}   # panel -> (y, x, h, w) as last drawn
         self.log_anchor: float | None = None   # ts of the bottom log line while scrolled back; None follows new lines
         self.pos_off = 0                       # first open position shown in the book
+        self.prefs_path = os.path.join(runtime, "dash.json")
+        self.hidden: set[str] = set()          # boxes turned off with 1-6
+        self.panel_key = ""                    # the number drawn in the title of the box being drawn
+        try:
+            with open(self.prefs_path) as fh:
+                self.hidden = set(json.load(fh).get("hidden", [])) & set(PANELS)
+        except (OSError, json.JSONDecodeError, AttributeError, TypeError):
+            pass
 
     # ------------------------------------------------------------ io
     def read(self) -> None:
@@ -255,6 +287,37 @@ class Screen:
         with open(tmp, "w") as fh:
             json.dump({"series": self.series, "ticker": self.sel}, fh)
         os.replace(tmp, os.path.join(self.fast, "view.json"))
+
+    def save_prefs(self) -> None:
+        try:
+            with open(self.prefs_path + ".tmp", "w") as fh:
+                json.dump({"hidden": sorted(self.hidden)}, fh)
+            os.replace(self.prefs_path + ".tmp", self.prefs_path)
+        except OSError:
+            pass
+
+    def toggle(self, i: int) -> None:
+        name = PANELS[i]
+        self.hidden ^= {name}
+        self.save_prefs()
+        self.say(f"{name} {'hidden' if name in self.hidden else 'shown'}"
+                 + (" · every box is hidden: 1-6 bring them back" if self.hidden >= set(PANELS) else ""))
+
+    def layout(self, H: int, W: int) -> list[tuple[str, int, int, int, int]]:
+        """(panel, y, x, h, w) for every box shown. A row's survivor takes the full width; rows share the height."""
+        rows = [(l, r, share, lw) for l, r, share, lw in ROWS if l not in self.hidden or r not in self.hidden]
+        avail, total = H - 2, sum(r[2] for r in rows)
+        out, y = [], 1
+        for i, (l, r, share, lws) in enumerate(rows):
+            h = avail - (y - 1) if i == len(rows) - 1 else max(7, int(avail * share / total))
+            shown = [n for n in (l, r) if n not in self.hidden]
+            if len(shown) == 2:
+                lw = max(int(W * lws), LEFT_MIN.get(l, 0))
+                out += [(l, y, 0, h, lw), (r, y, lw, h, W - lw)]
+            else:
+                out.append((shown[0], y, 0, h, W))
+            y += h
+        return out
 
     def send(self, **cmd) -> None:
         cid = uuid.uuid4().hex[:12]
@@ -289,6 +352,7 @@ class Screen:
     def box(self, y: int, x: int, h: int, w: int, title: str, color: int, key: str = "", right: str = "") -> None:
         P = self.P
         a = P(color)
+        key = key or self.panel_key
         saved, self.clip = self.clip, None
         self.put(y, x, "╭" + "─" * (w - 2) + "╮", a)
         for r in range(1, h - 1):
@@ -607,17 +671,67 @@ class Screen:
         P = self.P
         self.box(y, x, h, w, "log", self.P.grey, "", "")
         logs = self.st.get("logs") or []
-        colors = {"error": RED, "warn": YELLOW, "live": RED, "cmd": CYAN}
         rows = h - 2
         end = self.log_end(logs, rows)
+        saved, self.clip = self.clip, x + w - 2
         for j, (ts, lvl, msg) in enumerate(logs[max(0, end - rows):end]):
-            self.put(y + 1 + j, x + 2, time.strftime("%H:%M:%S", time.localtime(ts)), P(self.P.grey))
-            self.put(y + 1 + j, x + 11, msg[:w - 13], P(colors.get(lvl, WHITE)))
+            yy = y + 1 + j
+            self.put(yy, x + 2, time.strftime("%H:%M:%S", time.localtime(ts)), P(self.P.grey))
+            self.put(yy, x + 10, LOG_MARK.get(lvl, " "), P(LOG_BASE.get(lvl, WHITE), bold=True))
+            cx = x + 11
+            for text, attr in self.log_spans(msg, lvl):
+                self.put(yy, cx, text, attr); cx += len(text)
+                if cx >= x + w - 2:
+                    break
+        self.clip = saved
         if end - rows > 0:
             self.put(y, x + w - 2, "▲", P(YELLOW))
         if end < len(logs):
             note = f"▼ {len(logs) - end} newer"
             self.put(y + h - 1, x + w - 2 - len(note), note, P(YELLOW))
+
+    def log_spans(self, msg: str, lvl: str) -> list[tuple[str, int]]:
+        """Split one log line into colored pieces: book names, tickers, YES/NO, signed money, slots, numbers."""
+        P, many = self.P, self.P.many
+        base = LOG_BASE.get(lvl)
+        plain = P(base) if base is not None else P(250 if many else WHITE)
+        out, i = [], 0
+        for m in LOG_TOKENS.finditer(msg):
+            if m.start() > i:
+                out.append((msg[i:m.start()], plain))
+            g, t = m.lastgroup, m.group()
+            if g == "book":
+                name = t[:-1]
+                out.append((name, P(LOG_BOOK.get(name.lower(), YELLOW), bold=True)))
+                out.append((":", P(self.P.grey)))
+            elif g == "ticker":
+                ev, _, k = t.rpartition("-") if m.group("strike") else (t, "", "")
+                out.append((ev, P(73 if many else CYAN)))
+                if k:
+                    out.append(("-", P(self.P.grey)))
+                    out.append((k, P(WHITE, bold=True)))
+            elif g == "yes":
+                out.append((t, P(GREEN, bold=True)))
+            elif g == "no":
+                out.append((t, P(MAGENTA, bold=True)))
+            elif g == "signed":
+                out.append((t, P(GREEN if t[0] == "+" else RED, bold=True)))
+            elif g == "money":
+                out.append((t, P(YELLOW)))
+            elif g == "slot":
+                out.append((t, P(214 if many else YELLOW, bold=True)))
+            elif g == "good":
+                out.append((t, P(GREEN)))
+            elif g == "bad":
+                out.append((t, P(RED, bold=True)))
+            elif g == "num":
+                out.append((t, P(WHITE, bold=True)))
+            else:   # sep
+                out.append((t, P(self.P.grey)))
+            i = m.end()
+        if i < len(msg):
+            out.append((msg[i:], plain))
+        return out
 
     def log_end(self, logs: list, rows: int) -> int:
         """One past the bottom log line shown: the newest, or the line scrolled back to."""
@@ -654,7 +768,7 @@ class Screen:
         P = self.P
         if self.flash and time.time() - self.flash_at < 8:
             self.put(H - 1, 0, (" " + self.flash).ljust(W), P(YELLOW, bold=True) | curses.A_REVERSE); return
-        keys = [("b", "uy yes"), ("n", "o"), ("x", " close"), ("+-", " size"), ("tab", " coin"), ("a", "uto"),
+        keys = [("b", "uy yes"), ("n", "o"), ("x", " close"), ("+-", " size"), ("1-6", " boxes"), ("tab", " coin"), ("a", "uto"),
                 ("r", "ule coin"), ("c", "hart"), ("v", "iew"), ("L", "ive"), ("g", "ate"), ("?", "help"), ("q", "uit")]
         x = 1
         for k, rest in keys:
@@ -698,16 +812,18 @@ class Screen:
         if W < 100 or H < 30:
             self.put(0, 0, f"tern needs at least 100x30 (now {W}x{H})", self.P(RED, bold=True)); self.s.refresh(); return
         self.header(W)
-        top = max(10, int(H * 0.36)); bot = max(7, int(H * 0.2)); mid = H - 2 - top - bot
-        lw = int(W * 0.6); rw = W - lw
-        ew = int(W * 0.4)
-        for fn, y, x, h, w in [(self.spot_panel, 1, 0, top, lw), (self.contract_panel, 1, lw, top, rw),
-                               (self.ladder_panel, 1 + top, 0, mid, lw), (self.book_panel, 1 + top, lw, mid, rw),
-                               (self.equity_panel, 1 + top + mid, 0, bot, ew), (self.log_panel, 1 + top + mid, ew, bot, W - ew)]:
-            self.rects[fn.__name__.removesuffix("_panel")] = (y, x, h, w)
+        self.rects = {}
+        boxes = self.layout(H, W)
+        for name, y, x, h, w in boxes:
+            self.rects[name] = (y, x, h, w)
             self.clip = x + w - 1
-            fn(y, x, h, w)
+            self.panel_key = SUPER[PANELS.index(name)]
+            getattr(self, name + "_panel")(y, x, h, w)
         self.clip = None
+        self.panel_key = ""
+        if not boxes:
+            msg = "every box is hidden · press 1-6 to show spot, contract, ladder, book, equity, log"
+            self.put(H // 2, max(0, (W - len(msg)) // 2), msg, self.P(self.P.grey))
         self.footer(H, W)
         if self.overlay:
             self.draw_overlay(self.overlay, "help" if self.overlay is HELP_LINES else "gate", CYAN)
@@ -801,8 +917,8 @@ class Screen:
             self.size_i = min(len(SIZES) - 1, self.size_i + 1)
         elif ch in (ord("-"), ord("_")):
             self.size_i = max(0, self.size_i - 1)
-        elif ord("1") <= ch <= ord("8"):
-            self.size_i = ch - ord("1")
+        elif ord("1") <= ch <= ord(str(len(PANELS))):
+            self.toggle(ch - ord("1"))
         elif ch == 9:
             self.series = "KXETHD" if self.series == "KXBTCD" else "KXBTCD"
             self.sel = None; self.write_view(); self.say(f"viewing {cfgmod.SERIES[self.series]}")
