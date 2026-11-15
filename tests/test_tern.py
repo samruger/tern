@@ -427,19 +427,33 @@ class Shadows(unittest.TestCase):
             self.assertEqual(by("band90"), ["E-T1"])                       # T3's NO mid is 89.5c: outside 90-95
             self.assertEqual(by("stop20"), ["E-T1", "E-T2", "E-T3"])
             sh.step("E", 1000.0, ms, S, 1000.0 - 25 * 60 + 3)              # same slot: no second entry
-            self.assertEqual(len(sh.rows), 7)
+            self.assertEqual(len(sh.rows), 10)
             ms[1] = self.m("E-T2", 0.60, 0.62, 2)                          # T2 falls 21c: the stop sells at the 60c bid
             sh.step("E", 1000.0, ms, S, 1000.0 - 22 * 60)
             self.assertEqual(by("stop20"), ["E-T1", "E-T3"])
             stopped = sh.agg["stop20"]["E"]
             self.assertAlmostEqual(stopped[0], 5 * (0.60 - 0.81) - 0.06 - 0.09)   # entry fee 6c, exit fee 9c
-            self.assertEqual(sh.settle({"E-T1": True, "E-T2": False, "E-T3": False}), 6)
+            self.assertEqual(sh.settle({"E-T1": True, "E-T2": False, "E-T3": False}), 9)
             self.assertAlmostEqual(sh.agg["band90"]["E"][0], 5 * 0.07 - 0.03)
             self.assertAlmostEqual(sh.agg["base"]["E"][0], 5 * 0.07 - 0.03 - 5 * 0.81 - 0.06 + 5 * 0.10 - 0.04)
             sh.save()
             again = Shadow(d)                                              # the record survives a restart
             self.assertEqual(again.rows, [])
             self.assertAlmostEqual(again.agg["base"]["E"][0], sh.agg["base"]["E"][0])
+
+    def test_cap1_takes_each_strike_once_per_hour(self):
+        from tern.config import Strategy
+        from tern.shadow import Shadow
+        with tempfile.TemporaryDirectory() as d:
+            sh, S = Shadow(d), Strategy()
+            ms = [self.m("E-T1", 0.92, 0.93, 1), self.m("E-T2", 0.80, 0.81, 2)]
+            sh.step("E", 1000.0, ms, S, 1000.0 - 25 * 60 + 1)
+            ms.append(self.m("E-T3", 0.10, 0.11, 3))                       # T3 comes into the band at the 20m slot
+            sh.step("E", 1000.0, ms, S, 1000.0 - 20 * 60 + 1)
+            sh.step("E", 1000.0, ms, S, 1000.0 - 15 * 60 + 1)
+            by = lambda v: sorted(r["ticker"] for r in sh.rows if r["v"] == v)
+            self.assertEqual(by("cap1"), ["E-T1", "E-T2", "E-T3"])
+            self.assertEqual(len(by("base")), 8)                           # base buys every strike at every slot
 
     def test_arb_needs_more_than_the_fees(self):
         from tern.config import Strategy

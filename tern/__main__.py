@@ -132,6 +132,7 @@ def main(argv: list[str]) -> int:
         from .shadow import Shadow, table
         print("\n".join(table(Shadow(runtime).summary())))
         print("\nbase: the rule · band90: 90-95¢ favorites only · stop20: sell when the favorite's bid is 20¢ under entry"
+              "\ncap1: one entry per strike per hour (added 2026-11-14; only hours after that count)"
               "\narb: YES on a lower strike + NO on a higher one when the pair costs under $1 after fees"
               "\nt is by hour and shows after 10 hours; under about 2 it is still noise.")
         return 0

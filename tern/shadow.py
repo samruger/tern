@@ -6,6 +6,8 @@ so after a few weeks the comparison is out of sample. Nothing here touches the p
   base     the rule as configured (favorite mid 75-95c)
   band90   only favorites at 90-95c
   stop20   the rule, but sell at the bid once the favorite's bid is 20c under the entry price
+  cap1     the rule, but at most one entry per strike per hour: later slots skip a strike already held
+           (added 2026-11-14 after two hours lost on strikes bought at every slot; judge it on later hours only)
   arb      when a higher strike's YES bid is above a lower strike's YES ask by more than both fees:
            buy YES on the lower strike and NO on the higher one. The pair pays at least $1.
 """
@@ -20,12 +22,13 @@ from .book import taker_fee
 from .kalshi import quote
 from .strategy import due_slot, signals
 
-VARIANTS = {            # name -> (band_lo, band_hi, stop); None takes the configured value
-    "base": (None, None, None),
-    "band90": (0.90, None, None),
-    "stop20": (None, None, 0.20),
+VARIANTS = {            # name -> (band_lo, band_hi, stop, entries per strike); None takes the configured value / no cap
+    "base": (None, None, None, None),
+    "band90": (0.90, None, None, None),
+    "stop20": (None, None, 0.20, None),
+    "cap1": (None, None, None, 1),
 }
-ORDER = ["base", "band90", "stop20", "arb"]
+ORDER = ["base", "band90", "stop20", "cap1", "arb"]
 
 
 def event_of(ticker: str) -> str:
@@ -98,15 +101,22 @@ class Shadow:
         slot = due_slot(close - now, S.minutes, set(done))
         if slot is not None:
             done.append(slot); self.dirty = True
-            for name, (lo, hi, stop) in VARIANTS.items():
-                spent = sum(r["n"] * r["cost"] + r["fee"] for r in self.rows if r["v"] == name and r["event"] == event)
+            for name, (lo, hi, stop, cap) in VARIANTS.items():
+                mine = [r for r in self.rows if r["v"] == name and r["event"] == event]
+                spent = sum(r["n"] * r["cost"] + r["fee"] for r in mine)
+                held = {}
+                for r in mine:
+                    held[r["ticker"]] = held.get(r["ticker"], 0) + 1
                 for s in signals(markets, lo or S.band_lo, hi or S.band_hi, S.max_spread):
+                    if cap is not None and held.get(s["ticker"], 0) >= cap:
+                        continue
                     unit = s["price"] if s["delta_sign"] > 0 else 1 - s["price"]
                     n = float(int(min(S.contracts, s["size"], max(0.0, (S.max_hour_cost - spent) / max(unit, 1e-6)))))
                     if n < 1:
                         continue
                     fee = self._fee(n, s["price"])
                     spent += n * unit + fee
+                    held[s["ticker"]] = held.get(s["ticker"], 0) + 1
                     self.rows.append({"v": name, "ts": now, "event": event, "close": close, "ticker": s["ticker"],
                                       "side": s["side"], "n": n, "cost": unit, "fee": fee, "slot": slot, "stop": stop, "pnl": None})
         # arbitrage: strikes ascending, so YES on a lower strike is never worth less than YES on a higher one
