@@ -19,6 +19,7 @@ from .engine import live_dir
 # ---------------------------------------------------------------- colors
 
 BLACK, RED, GREEN, YELLOW, BLUE, MAGENTA, CYAN, WHITE = range(8)
+PINK = 205                                  # 256-color: box numbers and key hints on the borders
 
 GRAD256 = {
     "spot": [24, 25, 26, 32, 38, 44, 50, 87],
@@ -288,7 +289,7 @@ LEFT_MIN = {"ladder": 56}    # the ladder's columns need this much before its ba
 # key hints drawn on each box's top border (btop style); a hidden box's hints move to the bottom row
 PANEL_KEYS = {
     "spot": lambda s: [("tab", " next coin"), ("r", "ule on/off", "") if s.rule_on() is None
-                       else ("r", "ule ", "on", "/off") if s.rule_on() else ("r", "ule on/", "off"),   # red: the state now
+                       else ("r", "ule ", "on", "/off") if s.rule_on() else ("r", "ule on/", "off"),   # pink: the state now
                        ("c", "hart " + s.chart)],
     "book": lambda s: [("v", "iew"), ("L", "ive"), ("R", "eset")],
     "log": lambda s: [("g", "ate"), ("s", "top" if s.alive else "tart"), ("h", "elp"), ("q", "uit")],
@@ -423,7 +424,7 @@ class Screen:
     def box(self, y: int, x: int, h: int, w: int, title: str, color: int, key: str = "", right=()) -> None:
         """A rounded box with its number and title on the top border, btop style. `right` holds the
         segments drawn at the top border's right end: a plain string (grey info) or a (key, rest)
-        hint whose key shows red, like the box numbers. Segments that don't fit drop from the left."""
+        hint whose key shows pink (PINK). Segments that don't fit drop from the left."""
         P = self.P
         a = P(color)
         key = key or self.panel_key
@@ -436,7 +437,7 @@ class Screen:
         cx = x + 2
         self.put(y, cx, "┤", a); cx += 1
         if key:
-            self.put(y, cx, key, P(RED, bold=True)); cx += len(key)
+            self.put(y, cx, key, P(PINK if P.many else MAGENTA, bold=True)); cx += len(key)
         self.put(y, cx, title, P(WHITE, bold=True)); cx += len(title)
         self.put(y, cx, "├", a)
         segs = [right] if isinstance(right, str) else list(right)
@@ -455,9 +456,9 @@ class Screen:
         self.put(y, x, "┤", border); x += 1
         if isinstance(seg, str):
             self.put(y, x, seg, P(P.grey)); x += len(seg)
-        else:                                    # pieces alternate red (a key, or what it switches to) and white
+        else:                                    # pieces alternate pink (a key, or the rule's state) and white
             for i, piece in enumerate(seg):
-                self.put(y, x, piece, P(RED, bold=True) if i % 2 == 0 else P(WHITE)); x += len(piece)
+                self.put(y, x, piece, P(PINK if P.many else MAGENTA, bold=True) if i % 2 == 0 else P(WHITE)); x += len(piece)
         self.put(y, x, "├", border)
 
     def rule_on(self) -> bool | None:
@@ -645,7 +646,7 @@ class Screen:
     def ladder_panel(self, y, x, h, w) -> None:
         P, st = self.P, self.st
         lad = self.ladder()
-        self.box(y, x, h, w, "ladder", YELLOW, "", "↑↓")
+        self.box(y, x, h, w, "ladder", 208 if self.P.many else YELLOW, "", "↑↓")
         if not lad:
             self.put(y + 2, x + 3, "waiting for the hourly event…", P(self.P.grey)); return
         prod = cfgmod.SERIES[self.series]
@@ -709,7 +710,7 @@ class Screen:
         P, st = self.P, self.st
         v = self.book_view or ("live" if st.get("mode") == "live" else "paper")
         b = st.get(v) or {}
-        self.box(y, x, h, w, "book", GREEN, "", PANEL_KEYS["book"](self))
+        self.box(y, x, h, w, "book", YELLOW, "", PANEL_KEYS["book"](self))
         tabs: list[tuple[str, int]] = []
         for name in ("paper", "live"):
             tabs += [(f" {name} ", P(WHITE, bold=True) | curses.A_REVERSE if name == v else P(self.P.grey)), (" ", 0)]
@@ -803,7 +804,7 @@ class Screen:
         v = self.book_view or ("live" if st.get("mode") == "live" else "paper")
         b = st.get(v) or {}
         curve = [e for _, e in (b.get("curve") or [])]
-        self.box(y, x, h, w, f"equity · {v}", BLUE, "", f"{len(curve)} min")
+        self.box(y, x, h, w, f"equity · {v}", GREEN, "", f"{len(curve)} min")
         if len(curve) < 2:
             self.put(y + h // 2, x + 3, "the curve starts after a couple of minutes", P(self.P.grey)); return
         lo, hi = min(curve), max(curve)
@@ -817,7 +818,7 @@ class Screen:
 
     def log_panel(self, y, x, h, w) -> None:
         P = self.P
-        self.box(y, x, h, w, "log", 205 if self.P.many else MAGENTA, "", PANEL_KEYS["log"](self))
+        self.box(y, x, h, w, "log", BLUE, "", PANEL_KEYS["log"](self))
         logs = self.st.get("logs") or []
         rows = h - 2
         end = self.log_end(logs, rows)
