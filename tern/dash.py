@@ -952,15 +952,15 @@ class Screen:
             self.put(gy + gh, x + 2, f"P&L over its last {len(curve)} hours", P(self.P.grey))
         elif gh >= 1 and len(curve) < 2:
             self.put(gy + 1, x + 3, "the curve starts after a couple of settled hours", P(self.P.grey))
-        if cur["name"] == active:
-            tip, c = (f"● {active} is in use: paper now, live " + ("too" if (cur.get("gate") or {}).get("passed")
-                      else "once it passes the gate")), GREEN
-        elif cur["name"] == self.watch:
-            tip, c = f"◉ watching {cur['name']} (view only) · w stops · enter trades it", YELLOW
-        else:
-            live = st.get("mode") == "live" or st.get("live_enabled")
-            tip, c = f"w: watch {cur['name']} · enter: paper{' and live' if live else ''} trade it instead of {active}", self.P.c("key")
-        self.put(y + h - 2, x + 2, tip[:w - 4], P(c, bold=True))
+        # The bottom row says what the highlighted variant is doing, when it is the one in use or the one
+        # watched. What w and enter do is on the top border; on a short box the row is the last variant's.
+        if y + 1 + len(vs) < y + h - 2:
+            if cur["name"] == active:
+                tip = f"● {active} is in use: paper now, live " + ("too" if (cur.get("gate") or {}).get("passed")
+                                                                  else "once it passes the gate")
+                self.put(y + h - 2, x + 2, tip[:w - 4], P(GREEN, bold=True))
+            elif cur["name"] == self.watch:
+                self.put(y + h - 2, x + 2, f"◉ watching {cur['name']} (view only)"[:w - 4], P(YELLOW, bold=True))
 
     def toggle_watch(self) -> None:
         """w: show the highlighted variant as if it traded (book, equity, band), or stop. View only."""
