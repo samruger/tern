@@ -142,6 +142,7 @@ class Desk:
         st = {}
         self._saved = ""                             # the state text last written, to skip identical saves
         self._saved_sig: tuple | None = None         # cheap fingerprint of that state (see _fingerprint)
+        self.lost_replies = 0                        # orders whose reply was lost or unreadable, ever
         for path in (p, p + ".bak"):                 # a damaged state file falls back to the hourly backup
             if not os.path.exists(path):
                 continue
@@ -186,16 +187,16 @@ class Desk:
         sig = self._fingerprint()
         if sig == self._saved_sig and now - self.last["fullsave"] < 60:
             return
-        self._saved_sig, self.last["fullsave"] = sig, now
         st = {"paper": self.paper.to_dict(), "live": self.live.to_dict(), "auto": self.auto[-20000:],
               "slots": {k: sorted(v) for k, v in self.slots.items()}, "hour_cost": self.hour_cost,
               "day": self.day, "meta": self.meta, "ev_close": self.ev_close}
         text = json.dumps(st, separators=(",", ":"))
-        if text == self._saved:                      # nothing changed: spare the disk
-            return
+        if text != self._saved:                      # identical text: spare the disk
+            _atomic_write(os.path.join(self.runtime, "state.json"), text, sync=True)
+            self._saved = text
+        # only now: a write that raised leaves the fingerprint stale, so the next save tries again
+        self._saved_sig, self.last["fullsave"] = sig, now
         path = os.path.join(self.runtime, "state.json")
-        _atomic_write(path, text, sync=True)
-        self._saved = text
         if now - self.last["bak"] >= 3600:
             self.last["bak"] = now
             _atomic_write(path + ".bak", text, sync=True)
@@ -395,14 +396,22 @@ class Desk:
         # live
         if self.mode != "live" or not self.api:
             raise KalshiError("live is not active")
-        cost = abs(delta) * (price if delta > 0 else 1 - price)
-        L = self.cfg.live                        # every live order meets the caps: the rule only buys
-        if cost > L.max_order_usd + 1e-9:
-            raise KalshiError(f"order ${cost:,.2f} is over live.max_order_usd ${L.max_order_usd:,.2f}")
-        if book.at_risk() + cost > L.capital_usd + 1e-9:
-            raise KalshiError(f"would put ${book.at_risk() + cost:,.2f} at risk, over live.capital_usd ${L.capital_usd:,.2f}")
-        if self.balance is not None and cost > self.balance:
-            raise KalshiError(f"order ${cost:,.2f} is over the balance ${self.balance:,.2f}")
+        # The rule only buys, but a strike's favorite can flip between slots (YES at 25m, NO at 15m), and
+        # then part of the order closes what is held. Only the part that opens a position adds risk, so
+        # only it meets the caps, as paper books it (Kalshi nets a buy of NO against held YES).
+        held = book.pos.get(ticker, {})
+        q, avg = held.get("q", 0.0), held.get("avg", 0.0)
+        closing = min(abs(delta), abs(q)) if q and (q > 0) != (delta > 0) else 0.0
+        cost = (abs(delta) - closing) * (price if delta > 0 else 1 - price)
+        risk_after = book.at_risk() - closing * avg + cost
+        L = self.cfg.live
+        if cost > 1e-9:
+            if cost > L.max_order_usd + 1e-9:
+                raise KalshiError(f"order ${cost:,.2f} is over live.max_order_usd ${L.max_order_usd:,.2f}")
+            if risk_after > L.capital_usd + 1e-9:
+                raise KalshiError(f"would put ${risk_after:,.2f} at risk, over live.capital_usd ${L.capital_usd:,.2f}")
+            if self.balance is not None and cost > self.balance:
+                raise KalshiError(f"order ${cost:,.2f} is over the balance ${self.balance:,.2f}")
         cid = f"tern-{uuid.uuid4().hex[:20]}"
         side = "bid" if delta > 0 else "ask"
         try:
@@ -415,9 +424,11 @@ class Desk:
             # a gateway that may have passed the order on) means the order may exist: look it up.
             if ex.status is not None and ex.status < 500:
                 raise
+            self.lost_replies += 1
             filled, px, fee = self._lost_reply(ticker, cid, price)
         except (AttributeError, TypeError, ValueError):
             # Kalshi answered but the reply can't be read: the order went through, so look it up
+            self.lost_replies += 1
             filled, px, fee = self._lost_reply(ticker, cid, price)
         if filled <= 0:
             return None
@@ -489,7 +500,13 @@ class Desk:
                 if book is self.live and sig:
                     self._save_state()               # the slot is on disk before any order: a restart never repeats it
                 placed = 0
+                lost0 = self.lost_replies
                 for s in sig:
+                    if book is self.live and self.lost_replies > lost0:
+                        # Kalshi's order endpoint is failing: each lookup sleeps ~7s, and a run of them
+                        # would stall settling, the loss check and the screen while prices go stale.
+                        self.log(f"live rule stopped for this slot: an order reply was lost, the rest are skipped", "warn")
+                        break
                     spent = self.hour_cost.get(key, 0.0)
                     unit = s["price"] if s["delta_sign"] > 0 else 1 - s["price"]
                     n = min(S.contracts, max(0.0, (S.max_hour_cost - spent) / max(unit, 1e-6)))

@@ -421,6 +421,49 @@ class Live(unittest.TestCase):
             k._settle()
             self.assertIn(self.T, k.paper.pos)
 
+    def test_failed_save_is_retried_at_once(self):
+        from tern import engine
+        with tempfile.TemporaryDirectory() as d:
+            k = self.desk(d, self.api())
+            real = engine._atomic_write
+            def boom(*a, **kw):
+                raise OSError("disk full")
+            engine._atomic_write = boom
+            try:
+                k.slots["live|KXBTCD-E1"] = {20}
+                with self.assertRaises(OSError):
+                    k._save_state()
+            finally:
+                engine._atomic_write = real
+            k._save_state()                                    # same fingerprint, but it never reached disk
+            self.assertEqual(engine.Desk(d).slots["live|KXBTCD-E1"], {20})
+
+    def test_order_that_closes_a_position_is_not_counted_as_new_risk(self):
+        with tempfile.TemporaryDirectory() as d:
+            k = self.desk(d, self.api(reply={"order_id": "o1", "fill_count": "10.00", "average_fill_price": "0.20",
+                                             "average_fee_paid": "0"}))
+            k.cfg.live.capital_usd = 10.0; k.cfg.live.max_order_usd = 5.0
+            k.live.trade(self.T, 10, 0.95, 0.0, k.meta[self.T], "auto")     # $9.50 at risk, near the cap
+            r = k._exec(k.live, self.T, -10, 0.20, 50, "auto")            # the favorite flipped: NO closes the YES
+            self.assertAlmostEqual(r["delta"], -10)
+            self.assertNotIn(self.T, k.live.pos)
+
+    def test_a_lost_reply_skips_the_rest_of_the_live_slot(self):
+        import time
+        with tempfile.TemporaryDirectory() as d:
+            api = self.api(status=503, found={"order_id": "o1", "fill_count_fp": "0"})
+            k = self.desk(d, api)
+            m2 = dict(k.events["KXBTCD"]["markets"][0], ticker="KXBTCD-E1-T90", floor_strike=90.0)
+            k.events["KXBTCD"]["markets"].append(m2)
+            k.meta["KXBTCD-E1-T90"] = dict(k.meta[self.T], strike=90.0)
+            k.cfg.live.auto_needs_gate = False
+            k.cfg.strategy.minutes = [20]
+            k.slots["paper|KXBTCD-E1"] = {20}
+            type(api).sent = 0
+            k._auto()
+            self.assertEqual(type(api).sent, 1)                          # two favorites, one order
+            self.assertTrue(any("rest are skipped" in m for _, _, m in k.logs))
+
     def test_lost_reply_not_on_kalshi_is_unfilled(self):
         with tempfile.TemporaryDirectory() as d:
             k = self.desk(d, self.api(found=None))
