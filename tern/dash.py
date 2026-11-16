@@ -436,6 +436,7 @@ class Screen:
         self.focus = "ladder"                  # the box ↑↓ scroll; ←→ move it
         self.slot3 = "ladder"                  # what sits in the ladder's place: ladder or variants
         self.var_sel: str | None = None        # the variant the cursor is on in the variants box
+        self.var_top = 0                       # first variant row shown when the list is taller than its box
         self.watch: str | None = None          # w: a variant shown as if it traded (view only; trading is unchanged)
         try:
             with open(self.prefs_path) as fh:
@@ -897,10 +898,17 @@ class Screen:
         head = P(self.P.c("head"), bold=True)
         hdr = f"  {'variant':<8} {'hours':>5} {'entries':>7} {'P&L':>9} {'¢/ct':>6} {'win':>4} {'t':>6} gate"
         self.put(y + 1, x + 2, hdr[:w - 4], head)
-        for j, v in enumerate(vs):
-            yy = y + 2 + j
-            if yy >= y + h - 1:
-                break
+        # The list scrolls under the fixed header: the rows that fit, moved so the highlighted one shows
+        rows = max(1, min(len(vs), h - 3))
+        si = names.index(self.var_sel)
+        self.var_top = max(0, min(self.var_top, len(vs) - rows))
+        if si < self.var_top:
+            self.var_top = si
+        elif si >= self.var_top + rows:
+            self.var_top = si - rows + 1
+        top = self.var_top
+        for j, v in enumerate(vs[top:top + rows], start=top):
+            yy = y + 2 + j - top
             sel = v["name"] == self.var_sel
             base = curses.A_REVERSE if sel else 0
             self.put(yy, x + 1, " " * (w - 2), base)
@@ -932,8 +940,12 @@ class Screen:
                     self.put(yy, cx, txt + " ", P(GREEN if c["ok"] else YELLOW) | base)
                     cx += len(txt) + 1
         # the picked variant: what it is, its cumulative P&L by hour, and what enter would do
+        if top > 0:
+            self.put(y + 1, x + w - 2, "▲", P(YELLOW))
+        if top + rows < len(vs):
+            self.put(y + 2 + rows - 1, x + w - 2, "▼", P(YELLOW))
         cur = next(v for v in vs if v["name"] == self.var_sel)
-        yy = y + 3 + len(vs)
+        yy = y + 3 + rows
         if yy >= y + h - 2:                            # a short box: the rows and the tip line are all that fit
             yy = y + h - 2
         else:
@@ -954,7 +966,7 @@ class Screen:
             self.put(gy + 1, x + 3, "the curve starts after a couple of settled hours", P(self.P.grey))
         # The bottom row says what the highlighted variant is doing, when it is the one in use or the one
         # watched. What w and enter do is on the top border; on a short box the row is the last variant's.
-        if y + 1 + len(vs) < y + h - 2:
+        if y + 1 + rows < y + h - 2:
             if cur["name"] == active:
                 tip = f"● {active} is in use: paper now, live " + ("too" if (cur.get("gate") or {}).get("passed")
                                                                   else "once it passes the gate")
