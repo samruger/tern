@@ -119,8 +119,7 @@ class State(unittest.TestCase):
     def test_gate_days_count_hours_traded(self):
         with tempfile.TemporaryDirectory() as d:
             k = self.desk(d)
-            k.auto = [{"ts": 0, "ticker": f"KXBTCD-H{h}-T1", "side": "yes", "n": 1, "cost": 0.9, "fee": 0, "slot": 10, "pnl": 0.1}
-                      for h in range(12) for _ in range(3)]
+            k.shadow.agg = {"base": {f"KXBTCD-H{h}": [0.1, 3, 3, 3, 0] for h in range(12)}}
             self.assertIn("0.5 days", k.gate()["checks"][0]["detail"])   # 12 hours, however long ago they started
 
     def test_unreadable_config_keeps_the_one_in_use(self):
@@ -256,6 +255,46 @@ class Commands(unittest.TestCase):
             k.hour_cost = {"paper|KXBTCD-E1": 60.0, "live|KXBTCD-E1": 10.0}
             k._command({"op": "reset_paper"})
             self.assertEqual(k.hour_cost, {"live|KXBTCD-E1": 10.0})
+
+
+    def test_the_variant_in_use_is_the_one_paper_trades(self):
+        with tempfile.TemporaryDirectory() as d:
+            k = self.desk(d, bid="0.80", ask="0.81")
+            self.assertIn("unknown variant", k._command({"op": "variant", "name": "stop20"}))
+            self.assertIn("base → band90", k._command({"op": "variant", "name": "band90"}))
+            from tern import config
+            self.assertEqual(config.load(d).strategy.variant, "band90")
+            k._auto()
+            self.assertFalse(k.paper.pos)                      # 80c is under band90's 90c floor
+            k2 = self.desk(d, bid="0.80", ask="0.81")
+            k2._command({"op": "variant", "name": "base"})
+            k2._auto()
+            self.assertIn(self.T, k2.paper.pos)
+
+    def test_cap1_skips_a_strike_already_held_this_hour(self):
+        with tempfile.TemporaryDirectory() as d:
+            k = self.desk(d, bid="0.80", ask="0.81")
+            k.cfg.strategy.variant = "cap1"
+            k.taken = {"paper|KXBTCD-E1": {self.T: 1}}
+            k._auto()
+            self.assertFalse(k.paper.pos)
+            k.cfg.strategy.variant = "nonsense"                # unknown in config.json: falls back to base
+            k.slots = {}
+            k._auto()
+            self.assertIn(self.T, k.paper.pos)
+            self.assertEqual(k.taken["paper|KXBTCD-E1"][self.T], 2)
+
+    def test_gate_judges_the_variant_on_its_own_record(self):
+        with tempfile.TemporaryDirectory() as d:
+            k = self.desk(d)
+            k.shadow.agg = {"base": {f"KXBTCD-H{h}": [1.0, 5, 2, 2, 0] for h in range(24 * 15)},
+                            "cap1": {f"KXBTCD-H{h}": [1.0, 5, 2, 2, 0] for h in range(24)}}
+            self.assertTrue(k.gate()["passed"])
+            k._command({"op": "variant", "name": "cap1"})
+            g = k.gate()
+            self.assertFalse(g["passed"]); self.assertEqual(g["variant"], "cap1")
+            k.mode = "live"
+            self.assertFalse(k._live_rule_on(g))               # switching never skips the gate
 
 
 class Robust(unittest.TestCase):
@@ -623,8 +662,7 @@ class Live(unittest.TestCase):
     def test_gate_hours_are_not_doubled_by_a_second_series(self):
         with tempfile.TemporaryDirectory() as d:
             k = self.desk(d, self.api())
-            k.auto = [{"ts": 0, "ticker": f"{s}-H{h}-T1", "side": "yes", "n": 1, "cost": 0.9, "fee": 0, "slot": 10, "pnl": 0.1}
-                      for h in range(12) for s in ("KXBTCD", "KXETHD")]
+            k.shadow.agg = {"base": {f"{s}-H{h}": [0.1, 1, 1, 1, 0] for h in range(12) for s in ("KXBTCD", "KXETHD")}}
             self.assertIn("0.5 days", k.gate()["checks"][0]["detail"])
 
 
@@ -633,7 +671,7 @@ class Shadows(unittest.TestCase):
         return {"ticker": t, "yes_bid_dollars": str(bid), "yes_ask_dollars": str(ask),
                 "yes_bid_size_fp": "50", "yes_ask_size_fp": "40", "floor_strike": k, "status": "active"}
 
-    def test_variants_stop_and_settle(self):
+    def test_variants_enter_and_settle(self):
         from tern.config import Strategy
         from tern.shadow import Shadow
         with tempfile.TemporaryDirectory() as d:
@@ -643,21 +681,30 @@ class Shadows(unittest.TestCase):
             by = lambda v: sorted(r["ticker"] for r in sh.rows if r["v"] == v)
             self.assertEqual(by("base"), ["E-T1", "E-T2", "E-T3"])
             self.assertEqual(by("band90"), ["E-T1"])                       # T3's NO mid is 89.5c: outside 90-95
-            self.assertEqual(by("stop20"), ["E-T1", "E-T2", "E-T3"])
+            self.assertEqual(by("cap1"), ["E-T1", "E-T2", "E-T3"])
             sh.step("E", 1000.0, ms, S, 1000.0 - 25 * 60 + 3)              # same slot: no second entry
-            self.assertEqual(len(sh.rows), 10)
-            ms[1] = self.m("E-T2", 0.60, 0.62, 2)                          # T2 falls 21c: the stop sells at the 60c bid
-            sh.step("E", 1000.0, ms, S, 1000.0 - 22 * 60)
-            self.assertEqual(by("stop20"), ["E-T1", "E-T3"])
-            stopped = sh.agg["stop20"]["E"]
-            self.assertAlmostEqual(stopped[0], 5 * (0.60 - 0.81) - 0.06 - 0.09)   # entry fee 6c, exit fee 9c
-            self.assertEqual(sh.settle({"E-T1": True, "E-T2": False, "E-T3": False}), 9)
+            self.assertEqual(len(sh.rows), 7)
+            self.assertEqual(sh.settle({"E-T1": True, "E-T2": False, "E-T3": False}), 7)
             self.assertAlmostEqual(sh.agg["band90"]["E"][0], 5 * 0.07 - 0.03)
             self.assertAlmostEqual(sh.agg["base"]["E"][0], 5 * 0.07 - 0.03 - 5 * 0.81 - 0.06 + 5 * 0.10 - 0.04)
             sh.save()
             again = Shadow(d)                                              # the record survives a restart
             self.assertEqual(again.rows, [])
             self.assertAlmostEqual(again.agg["base"]["E"][0], sh.agg["base"]["E"][0])
+            self.assertEqual(again.summary(["base"])[0]["curve"], [round(sh.agg["base"]["E"][0], 2)])
+
+    def test_retired_variants_keep_their_record_but_stop_trading(self):
+        import json
+        from tern.config import Strategy
+        from tern.shadow import Shadow
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, "shadow-settled.jsonl"), "w") as fh:
+                fh.write(json.dumps({"v": "stop20", "event": "E0", "close": 1, "ticker": "E0-T1", "n": 5, "pnl": -1.0}) + "\n")
+            sh = Shadow(d)
+            sh.step("E", 1000.0, [self.m("E-T1", 0.92, 0.93, 1)], Strategy(), 1000.0 - 25 * 60 + 1)
+            self.assertNotIn("stop20", {r["v"] for r in sh.rows})
+            self.assertNotIn("stop20", [r["name"] for r in sh.summary()])
+            self.assertAlmostEqual(sh.summary(["stop20"])[0]["pnl"], -1.0)
 
     def test_cap1_takes_each_strike_once_per_hour(self):
         from tern.config import Strategy
@@ -691,21 +738,6 @@ class Shadows(unittest.TestCase):
             again = Shadow(d)
             self.assertEqual(again.rows, [])
             self.assertEqual(again.summary()[0]["entries"], 2)
-
-    def test_arb_needs_more_than_the_fees(self):
-        from tern.config import Strategy
-        from tern.shadow import Shadow
-        with tempfile.TemporaryDirectory() as d:
-            sh, S = Shadow(d), Strategy()
-            tight = [self.m("E-T1", 0.50, 0.52, 1), self.m("E-T2", 0.53, 0.55, 2)]   # 1c gross, fees eat it
-            self.assertEqual(sh.step("E", 9e9, tight, S, 0.0), [])
-            wide = [self.m("E-T1", 0.50, 0.52, 1), self.m("E-T2", 0.60, 0.62, 2)]    # 8c gross
-            self.assertEqual(len(sh.step("E", 9e9, wide, S, 0.0)), 1)
-            self.assertEqual(sh.step("E", 9e9, wide, S, 5.0), [])                    # not counted twice within a minute
-            r = sh.rows[0]
-            self.assertAlmostEqual(r["cost"], 0.52 + 0.40)
-            sh.settle({"E-T1": True, "E-T2": False})                                 # between the strikes: both legs pay
-            self.assertAlmostEqual(sh.agg["arb"]["E"][0], 5 * (2 - 0.92) - r["fee"])
 
     def test_recorder_round_trip(self):
         import gzip

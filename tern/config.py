@@ -31,6 +31,8 @@ class Strategy:
     max_spread: float = 0.02
     contracts: float = 5.0                     # per strike per slot
     max_hour_cost: float = 60.0                # dollars the rule may put into one hourly event
+    variant: str = "base"                      # the shadow variant paper and live trade (shadow.VARIANTS); set from
+                                               # the screen's variants box. Live needs that variant's own record past the gate.
 
 
 @dataclass

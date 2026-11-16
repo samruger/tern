@@ -20,6 +20,7 @@ from . import config as cfgmod
 from .book import Book, taker_fee
 from .kalshi import Kalshi, KalshiError, quote
 from .record import Recorder
+from . import shadow as shadowmod
 from .shadow import Shadow
 from .spot import coinbase, history
 from .strategy import due_slot, signals
@@ -180,6 +181,7 @@ class Desk:
         self.auto = st.get("auto", [])              # paper record of the rule: one row per entry
         self.slots = {k: set(v) for k, v in st.get("slots", {}).items()}     # "book|event" -> minutes done
         self.hour_cost = st.get("hour_cost", {})     # "book|event" -> dollars
+        self.taken = st.get("taken", {})             # "book|event" -> {ticker: entries}, for a variant's per-strike cap
         self.day = st.get("day", {})                 # live daily-loss anchor {date, equity}
         self.meta = st.get("meta", {})               # ticker -> {event, strike, close, series}
         self.ev_close = st.get("ev_close", {})       # event -> close time, for pruning
@@ -191,6 +193,7 @@ class Desk:
         self.ev_close = {k: v for k, v in self.ev_close.items() if v > cutoff}
         self.slots = {k: v for k, v in self.slots.items() if fresh(k)}
         self.hour_cost = {k: v for k, v in self.hour_cost.items() if fresh(k)}
+        self.taken = {k: v for k, v in self.taken.items() if fresh(k)}
         # meta is only needed for strikes that are quoted now or still owed a settlement
         need = {m["ticker"] for e in self.events.values() for m in e["markets"]}
         need |= set(self.paper.pos) | set(self.live.pos) | {a["ticker"] for a in self.auto if a["pnl"] is None}
@@ -204,7 +207,7 @@ class Desk:
         if sig == self._saved_sig and now - self.last["fullsave"] < 60:
             return
         st = {"paper": self.paper.to_dict(), "live": self.live.to_dict(), "auto": self.auto[-20000:],
-              "slots": {k: sorted(v) for k, v in self.slots.items()}, "hour_cost": self.hour_cost,
+              "slots": {k: sorted(v) for k, v in self.slots.items()}, "hour_cost": self.hour_cost, "taken": self.taken,
               "day": self.day, "meta": self.meta, "ev_close": self.ev_close}
         text = json.dumps(st, separators=(",", ":"))
         if text != self._saved:                      # identical text: spare the disk
@@ -224,7 +227,7 @@ class Desk:
                     sum(round(p["q"], 6) for p in b.pos.values()))
         return (book(self.paper), book(self.live), len(self.auto), sum(1 for a in self.auto if a["pnl"] is not None),
                 sum(len(v) for v in self.slots.values()), len(self.slots), round(sum(self.hour_cost.values()), 6),
-                len(self.hour_cost), json.dumps(self.day, sort_keys=True), len(self.meta), len(self.ev_close))
+                len(self.hour_cost), sum(sum(v.values()) for v in self.taken.values()), json.dumps(self.day, sort_keys=True), len(self.meta), len(self.ev_close))
 
     def _load_log_tail(self, nbytes: int = 96_000) -> None:
         """Seed the in-memory log from the end of tern.log, newest lines first until the deque is
@@ -525,8 +528,14 @@ class Desk:
     def _live_rule_on(self, gate: dict) -> bool:
         return self.mode == "live" and (gate["passed"] or not self.cfg.live.auto_needs_gate)
 
+    def variant(self) -> str:
+        """The variant paper and live trade. A name config.json doesn't know falls back to base."""
+        v = self.cfg.strategy.variant
+        return v if v in shadowmod.VARIANTS else "base"
+
     def _auto(self, gate: dict | None = None) -> None:
         S = self.cfg.strategy
+        lo, hi, cap = shadowmod.params(self.variant(), S)
         gate = gate or self.gate()
         books = [self.paper]
         if self._live_rule_on(gate):
@@ -544,7 +553,8 @@ class Desk:
                 if slot is None:
                     continue
                 done.add(slot)
-                sig = signals(e["markets"], S.band_lo, S.band_hi, S.max_spread)
+                held = self.taken.setdefault(key, {})
+                sig = [s for s in signals(e["markets"], lo, hi, S.max_spread) if cap is None or held.get(s["ticker"], 0) < cap]
                 if book is self.live and sig:
                     self._save_state()               # the slot is on disk before any order: a restart never repeats it
                 placed = 0
@@ -565,34 +575,43 @@ class Desk:
                         rec = self._exec(book, s["ticker"], s["delta_sign"] * n, s["price"], s["size"], "auto")
                     except Unconfirmed as ex:        # count it as filled and stop: the budget must not be overspent
                         self.hour_cost[key] = spent + n * unit + taker_fee(n, s["price"], self.cfg.taker_fee)
+                        held[s["ticker"]] = held.get(s["ticker"], 0) + 1
                         self.log(f"{book.name} rule stopped for this slot: {ex}", "error"); break
                     except KalshiError as ex:
                         self.log(f"{book.name} rule order {s['ticker']} rejected: {ex}", "warn"); continue
                     if not rec:
                         continue
                     self.hour_cost[key] = spent + abs(rec["delta"]) * unit + rec["fee"]
+                    held[s["ticker"]] = held.get(s["ticker"], 0) + 1
                     placed += 1
                     if book is self.paper:
                         self.auto.append({"ts": now, "ticker": s["ticker"], "side": s["side"], "n": abs(rec["delta"]),
                                           "cost": unit, "fee": rec["fee"], "slot": slot, "pnl": None})
-                self.log(f"{book.name}: {slot}m slot on {e['event']}: {len(sig)} favorites in band, {placed} bought")
+                self.log(f"{book.name}: {slot}m slot on {e['event']} ({self.variant()}): {len(sig)} favorites in band, {placed} bought")
                 if book is self.live and sig:
                     self._save_state()
 
-    def gate(self) -> dict:
+    def gate(self, name: str | None = None, rec: dict | None = None) -> dict:
+        """The gate for a variant (the one in use by default), judged on that variant's own shadow
+        record, so switching variants never lets a short or losing record trade live. The paper
+        book's record of the rule rides along for the book box."""
         G = self.cfg.gate
-        rows = [a for a in self.auto if a["pnl"] is not None]
-        # hours the rule actually traded, not time elapsed; two series in one hour are still one hour
-        days = len({_event_of(a["ticker"]).split("-", 1)[-1] for a in rows}) / 24
-        pnl = sum(a["pnl"] for a in rows)
+        name = name or self.variant()
+        r = rec or self.shadow.summary([name])[0]
+        days = r["hours"] / 24              # hours it actually traded, not time elapsed
         checks = [
-            {"name": f"rule on paper ≥ {G.min_days:g} days", "ok": days >= G.min_days, "detail": f"{days:.1f} days of hours traded"},
-            {"name": f"≥ {G.min_entries} settled paper entries", "ok": len(rows) >= G.min_entries, "detail": f"{len(rows)}"},
-            {"name": f"paper P&L of the rule ≥ ${G.min_pnl:g}", "ok": bool(rows) and pnl >= G.min_pnl, "detail": f"${pnl:+,.2f}"},
+            {"name": f"{name} on paper ≥ {G.min_days:g} days", "ok": days >= G.min_days, "detail": f"{days:.1f} days of hours traded",
+             "key": "days", "have": days, "need": G.min_days},
+            {"name": f"≥ {G.min_entries} settled {name} entries", "ok": r["entries"] >= G.min_entries, "detail": f"{r['entries']}",
+             "key": "entries", "have": r["entries"], "need": G.min_entries},
+            {"name": f"{name} P&L ≥ ${G.min_pnl:g}", "ok": r["entries"] > 0 and r["pnl"] >= G.min_pnl, "detail": f"{'-' if r['pnl'] < 0 else '+'}${abs(r['pnl']):,.2f}",
+             "key": "pnl", "have": r["pnl"], "need": G.min_pnl},
         ]
+        rows = [a for a in self.auto if a["pnl"] is not None]
+        pnl = sum(a["pnl"] for a in rows)
         wins = sum(1 for a in rows if a["pnl"] > 0)
         per = sum(a["pnl"] / a["n"] for a in rows) / len(rows) if rows else 0.0
-        return {"checks": checks, "passed": all(c["ok"] for c in checks), "entries": len(rows),
+        return {"variant": name, "checks": checks, "passed": all(c["ok"] for c in checks), "entries": len(rows),
                 "open": len(self.auto) - len(rows), "pnl": pnl, "win": wins / len(rows) if rows else None,
                 "per_contract": per}
 
@@ -719,10 +738,26 @@ class Desk:
             lst = [x for x in lst if x != s] if s in lst else lst + [s]
             self.cfg.strategy.series = lst; cfgmod.save(self.cfg, self.runtime)
             return f"rule trades: {', '.join(lst) or 'nothing'}"
+        if op == "variant":
+            name = c.get("name")
+            if name not in shadowmod.VARIANTS:
+                return f"unknown variant {name!r} (known: {', '.join(shadowmod.VARIANTS)})"
+            if name == self.variant():
+                return f"{name} is already in use"
+            was = self.variant()
+            self.cfg.strategy.variant = name; cfgmod.save(self.cfg, self.runtime)
+            g = self.gate(name)
+            msg = f"variant {was} → {name}: paper trades it from the next slot (open positions ride to settlement)"
+            if self.mode == "live" or self.cfg.live.enabled:
+                msg += " · live trades it now" if g["passed"] or not self.cfg.live.auto_needs_gate else \
+                       f" · live waits: {name} has not passed the gate"
+            self.log(msg, "warn" if self.mode == "live" else "info")
+            return msg
         if op == "reset_paper":
             self.paper = Book("paper", self.cfg.paper_capital); self.auto = []
             self.slots = {k: v for k, v in self.slots.items() if not k.startswith("paper|")}
             self.hour_cost = {k: v for k, v in self.hour_cost.items() if not k.startswith("paper|")}
+            self.taken = {k: v for k, v in self.taken.items() if not k.startswith("paper|")}
             return f"paper reset to ${self.cfg.paper_capital:,.2f}"
         return f"unknown command {op!r}"
 
@@ -773,11 +808,17 @@ class Desk:
                     "at_risk": b.at_risk(), "pos": pos, "curve": b.curve[-1500:],
                     "trades": b.trades[-30:]}
         gate = gate or self.gate()
+        shadow = self.shadow.summary()
+        variants = [{**r, "desc": shadowmod.DESC.get(r["name"], ""), "active": r["name"] == self.variant(),
+                     "gate": self.gate(r["name"], r)} for r in shadow]
+        lo, hi, cap = shadowmod.params(self.variant(), self.cfg.strategy)
+        strategy = {**self.cfg.strategy.__dict__, "variant": self.variant(), "band_lo": lo, "band_hi": hi, "cap": cap}
         st = {"heartbeat": now, "stopped": stopped, "pid": os.getpid(), "mode": self.mode, "live_enabled": self.cfg.live.enabled,
               "live_error": self.live_error, "keys": self._has_keys(now), "balance": self.balance,
               "spot": sp, "events": evs, "hist": hist, "view": self.view,
               "paper": book_view(self.paper), "live": book_view(self.live),
-              "gate": gate, "shadow": self.shadow.summary(), "strategy": self.cfg.strategy.__dict__, "live_cfg": self.cfg.live.__dict__,
+              "gate": gate, "shadow": shadow, "variants": variants, "gate_cfg": self.cfg.gate.__dict__,
+              "strategy": strategy, "live_cfg": self.cfg.live.__dict__,
               "logs": [list(x) for x in list(self.logs)[-200:]], "results": self.results,
               "auto_live": self._live_rule_on(gate)}
         _atomic_json(os.path.join(self.fast, "status.json"), st)

@@ -130,12 +130,18 @@ def main(argv: list[str]) -> int:
     if cmd == "status":
         return _status(runtime)
     if cmd == "report":
-        from .shadow import Shadow, table
-        print("\n".join(table(Shadow(runtime).summary())))
-        print("\nbase: the rule · band90: 90-95¢ favorites only · stop20: sell when the favorite's bid is 20¢ under entry"
-              "\ncap1: one entry per strike per hour (added 2026-11-14; only hours after that count)"
-              "\narb: YES on a lower strike + NO on a higher one when the pair costs under $1 after fees"
-              "\nt is by hour and shows after 10 hours; under about 2 it is still noise.")
+        from . import config as cfg
+        from .shadow import DESC, RETIRED, Shadow, table
+        sh = Shadow(runtime)
+        use = cfg.load(runtime).strategy.variant
+        print("\n".join(table(sh.summary())))
+        print("\n" + "\n".join(f"{n}: {d}" + ("  ← in use" if n == use else "") for n, d in DESC.items()))
+        old = [r for r in sh.summary(list(RETIRED)) if r["entries"]]
+        if old:
+            print("\nretired, kept for the record:")
+            print("\n".join(table(old)[1:]))
+            print("\n".join(f"{n}: {d}" for n, d in RETIRED.items()))
+        print("\nt is by hour and shows after 10 hours; under about 2 it is still noise.")
         return 0
     if cmd == "live-check":
         return _live_check()

@@ -57,10 +57,10 @@ while live is on, so its record keeps growing.
 config. The engine then authenticates with your key, and the header turns red
 once it has. Press `L` again to return to paper. Once live:
 
-- **The rule goes live only after its paper record passes the gate** (`g`):
-  14 days, 300 settled entries, and P&L ≥ $0 after fees. Days are counted as
-  hours the rule actually traded ÷ 24, so time with the engine off does not
-  count. A 0.6¢ edge is too
+- **The variant in use goes live only after its own shadow record passes the
+  gate** (`g`): 14 days, 300 settled entries, and P&L ≥ $0 after fees. Days are
+  counted as hours it actually traded ÷ 24, so time with the engine off does
+  not count. Switching variants never skips this: the new one needs its own record. A 0.6¢ edge is too
   small for 14 days to prove. The gate catches a broken rule, not a weak one.
   Set `live.auto_needs_gate` to `false` to skip it.
 - **Caps:** `live.capital_usd` ($100) is the most at risk at once.
@@ -78,15 +78,22 @@ once it has. Press `L` again to return to paper. Once live:
 
 The engine also runs these on paper, side by side, each with its own record
 and real fees. They were written down before seeing any data, so what they
-show after a few weeks is out of sample. `python3 -m tern report` (or `g` on
-the screen) compares them. None of them touches the paper or live book.
+show after a few weeks is out of sample. `python3 -m tern report`, `g`, or the
+variants box (press `3` twice) compares them. The paper and live books trade
+whichever one `strategy.variant` names (`base` by default). Pick it in the
+variants box with `↑↓` and `enter`. While live is on or armed, switching asks
+you to type `live`. Choosing whichever looks best after watching them flatters
+it; the gate is the check.
 
 | Variant | What it does |
 |---|---|
 | `base` | the rule as configured |
 | `band90` | only favorites at 90–95¢ |
-| `stop20` | the rule, but sells at the bid once the favorite's bid is 20¢ under the entry price |
-| `arb` | when a higher strike's YES bid is above a lower strike's YES ask by more than both fees, buys YES on the lower and NO on the higher. The pair pays at least $1 |
+| `cap1` | the rule, but at most one entry per strike per hour (its hours start 2026-11-15) |
+
+Retired 2026-11-16, records kept in `runtime/shadow-settled.jsonl` and listed by `report`:
+`stop20` (sell 20¢ under entry: −$191 over 165 hours, t −3.0) and `arb`
+(cross-strike pair under $1: never fired in 165 hours).
 
 It also records what it sees to `runtime/ticks/`: every 5 seconds, each
 near-the-money strike's bid, ask and sizes with spot, plus each hour's results
@@ -115,12 +122,13 @@ python3 -m tern live-check
 | header | paper/live, spot and 1-hour change, the event and its countdown, the rule's next slot, engine health |
 | ¹ spot | Coinbase spot (a BRTI constituent), 15 minutes at 1 s or 24 hours at 1 min (`c`), with the selected strike as a dotted line |
 | ² contract | the selected strike's YES price this hour, seeded from Kalshi's minute candles, with the rule's band edges marked |
+| ³ ladder / variants | `3` cycles ladder → variants → hidden. The variants box shows each variant's record and gate progress, ● on the one in use, and the highlighted one's P&L by hour |
 | ³ ladder | every strike, high to low: bid, ask, probability bar, spread, volume, your position. ★ marks strikes in the rule's band |
 | ⁴ book | equity, P&L, cash, at risk, fees, the rule's paper record, and open positions. `v` switches between paper and live |
 | ⁵ equity | that book's equity by the minute |
 | log | what the engine did |
 
-Keys: `↑↓` / `PgUp PgDn` move in the ladder · `1`–`6` show/hide a box · `tab` next coin · `r` rule trades this coin ·
+Keys: `↑↓` / `PgUp PgDn` move in the focused box · `←→` focus · `1`–`6` show/hide a box (`3` cycles ladder/variants/hidden) · `enter` use the highlighted variant · `tab` next coin · `r` rule trades this coin ·
 `c` chart range · `v` book · `L` arm/disarm live · `g` gate · `R` reset paper ·
 `s` start the engine · `?` help · `q` close (the engine keeps running).
 
@@ -141,7 +149,7 @@ because they are rewritten every second.
 | `kalshi.py` | public and signed REST, V2 orders (`/portfolio/events/orders`) |
 | `sign.py` | Ed25519 and RSA-PSS signing, PEM/DER parsing |
 | `spot.py` | Coinbase ticker and candles |
-| `shadow.py` | the variants and the arbitrage scan, each with its own paper record |
+| `shadow.py` | the variants, each with its own paper record (also each one's gate) |
 | `record.py` | writes quotes and results to `runtime/ticks/` |
 | `dash.py` | the curses screen |
 | `research/` | the scripts and data behind the numbers above |
