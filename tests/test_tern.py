@@ -246,7 +246,7 @@ class Commands(unittest.TestCase):
             k.last["cfg"] = __import__("time").time()
             k._read_view = lambda: None
             for name in ("_live_ready", "_commands", "_auto", "_shadow", "_settle", "_status"):
-                setattr(k, name, lambda: None)
+                setattr(k, name, lambda *a: None)
             k.step()                                          # no KeyError, no network
             self.assertTrue(any("unknown series KXFAKED" in m for _, _, m in k.logs))
 
@@ -256,6 +256,53 @@ class Commands(unittest.TestCase):
             k.hour_cost = {"paper|KXBTCD-E1": 60.0, "live|KXBTCD-E1": 10.0}
             k._command({"op": "reset_paper"})
             self.assertEqual(k.hour_cost, {"live|KXBTCD-E1": 10.0})
+
+
+class Robust(unittest.TestCase):
+    def test_bad_view_file_is_ignored(self):
+        import json
+        from tern.engine import Desk
+        with tempfile.TemporaryDirectory() as d:
+            k = Desk(d)
+            before = dict(k.view)
+            for bad in ("null", "[]", '{"series": "KXBTCD", "ticker": [1]}'):
+                with open(os.path.join(k.fast, "view.json"), "w") as fh:
+                    fh.write(bad)
+                k._read_view()
+                self.assertEqual(k.view, before)
+
+    def test_closed_event_is_relooked_every_5s_not_every_step(self):
+        import time
+        from tern.engine import Desk
+        with tempfile.TemporaryDirectory() as d:
+            k = Desk(d)
+            asked = []
+            k.pub.open_events = lambda s: asked.append(s) or []
+            k.pub.event_markets = lambda e: []
+            k.events["KXBTCD"] = {"event": "E", "title": "", "close": time.time() - 1, "markets": [], "fetched": time.time()}
+            for _ in range(5):
+                k._refresh_event("KXBTCD")
+            self.assertEqual(len(asked), 1)
+
+    def test_budget_skips_a_signal_it_cannot_afford(self):
+        import time
+        from tern.engine import Desk
+        with tempfile.TemporaryDirectory() as d:
+            k = Desk(d)
+            now = time.time()
+            mk = lambda t, k_, b, a: {"ticker": t, "floor_strike": k_, "yes_bid_dollars": b, "yes_ask_dollars": a,
+                                      "yes_bid_size_fp": "100", "yes_ask_size_fp": "100"}
+            k.events["KXBTCD"] = {"event": "E1", "title": "", "close": now + 1200, "fetched": now,
+                                  "markets": [mk("E1-A", 1, "0.93", "0.94"), mk("E1-B", 2, "0.75", "0.76")]}
+            S = k.cfg.strategy
+            S.minutes = [20]; S.contracts = 10
+            from tern.strategy import signals
+            sig = signals(k.events["KXBTCD"]["markets"], S.band_lo, S.band_hi, S.max_spread)
+            first = sig[0]["price"] if sig[0]["delta_sign"] > 0 else 1 - sig[0]["price"]
+            k.hour_cost["paper|E1"] = S.max_hour_cost - 0.8 if first > 0.8 else S.max_hour_cost - first + 0.01
+            k._auto()
+            bought = {a["ticker"] for a in k.auto}
+            self.assertTrue(bought, "a cheaper favorite after an unaffordable one is still bought")
 
 
 class Live(unittest.TestCase):
@@ -279,12 +326,20 @@ class Live(unittest.TestCase):
         from tern.kalshi import KalshiError
         class Api:
             sent = 0
+            looks = list(kw.get("looks", []))                  # per look: a reply, or an exception to raise
             def order(self, *a, **k):
                 Api.sent += 1
+                if "status" in kw:
+                    raise KalshiError("HTTP", kw["status"])
                 if "reply" in kw:
                     return kw["reply"]
                 raise KalshiError("timed out")                 # no status: the reply was lost
             def find_order(self, t, cid):
+                if self.looks:
+                    x = self.looks.pop(0)
+                    if isinstance(x, Exception):
+                        raise x
+                    return x
                 if "found" not in kw:
                     raise KalshiError("timed out")
                 return kw["found"]
@@ -309,6 +364,63 @@ class Live(unittest.TestCase):
             r = k._exec(k.live, self.T, 5, 0.82, 50, "auto")
             self.assertAlmostEqual(r["price"], 0.812); self.assertAlmostEqual(r["fee"], 0.07)
 
+    def test_gateway_error_looks_the_order_up(self):
+        from tern import engine
+        with tempfile.TemporaryDirectory() as d:
+            k = self.desk(d, self.api(status=504, found={"order_id": "o1", "fill_count_fp": "5.00", "taker_fees_dollars": "0.06"}))
+            r = k._exec(k.live, self.T, 5, 0.82, 50, "auto")          # 504: the order may have gone through
+            self.assertAlmostEqual(r["delta"], 5); self.assertAlmostEqual(k.live.pos[self.T]["q"], 5)
+            k = self.desk(d, self.api(status=400))
+            with self.assertRaises(engine.KalshiError):               # 4xx: refused, no lookup
+                k._exec(k.live, self.T, 5, 0.82, 50, "auto")
+
+    def test_unreadable_reply_looks_the_order_up(self):
+        with tempfile.TemporaryDirectory() as d:
+            k = self.desk(d, self.api(reply={"fill_count": "five"}, found={"order_id": "o1", "fill_count_fp": "5.00"}))
+            r = k._exec(k.live, self.T, 5, 0.82, 50, "auto")
+            self.assertAlmostEqual(r["delta"], 5)
+
+    def test_not_found_then_no_answer_is_unconfirmed(self):
+        from tern import engine
+        from tern.kalshi import KalshiError
+        engine.LOST_REPLY_WAITS = (0.0, 0.0, 0.0)
+        with tempfile.TemporaryDirectory() as d:
+            k = self.desk(d, self.api(looks=[None, KalshiError("down"), KalshiError("down")]))
+            engine.LOST_REPLY_WAITS = (0.0, 0.0, 0.0)
+            with self.assertRaises(engine.Unconfirmed):
+                k._exec(k.live, self.T, 5, 0.82, 50, "auto")
+            k = self.desk(d, self.api(looks=[KalshiError("down"), None]))
+            self.assertIsNone(k._exec(k.live, self.T, 5, 0.82, 50, "auto"))   # the last look answered: unfilled
+
+    def test_rearming_live_resets_the_daily_loss_anchor(self):
+        with tempfile.TemporaryDirectory() as d:
+            k = self.desk(d, self.api())
+            k.day = {"date": __import__("time").strftime("%Y-%m-%d"), "pnl": 100.0}
+            k._command({"op": "live", "on": True})
+            self.assertEqual(k.day, {})
+            k.cfg.live.enabled = True
+            k._daily_loss()                                   # anchors at the current P&L, no KILL
+            self.assertTrue(k.cfg.live.enabled)
+
+    def test_voided_market_returns_the_stake(self):
+        import time
+        with tempfile.TemporaryDirectory() as d:
+            k = self.desk(d, self.api())
+            k.paper.trade(self.T, 10, 0.80, 0.05, k.meta[self.T], "auto")
+            cash = k.paper.cash
+            k.paper.pos[self.T]["close"] = time.time() - 100
+            k.auto = [{"ts": 0, "ticker": self.T, "side": "yes", "n": 10, "cost": 0.8, "fee": 0.05, "slot": 20, "pnl": None}]
+            k.pub.market = lambda t: {"status": "finalized", "result": "void"}
+            k._settle()
+            self.assertNotIn(self.T, k.paper.pos)
+            self.assertAlmostEqual(k.paper.cash, cash + 8.0)
+            self.assertEqual(k.auto[0]["pnl"], -0.05)
+            k.paper.trade(self.T, 10, 0.80, 0.0, k.meta[self.T], "auto")
+            k.paper.pos[self.T]["close"] = time.time() - 100; k.last.clear()
+            k.pub.market = lambda t: {"status": "closed", "result": ""}   # not decided yet: left alone
+            k._settle()
+            self.assertIn(self.T, k.paper.pos)
+
     def test_lost_reply_not_on_kalshi_is_unfilled(self):
         with tempfile.TemporaryDirectory() as d:
             k = self.desk(d, self.api(found=None))
@@ -328,7 +440,8 @@ class Live(unittest.TestCase):
             type(api).sent = 0
             k._auto()
             self.assertEqual(type(api).sent, 1)
-            self.assertAlmostEqual(k.hour_cost["live|KXBTCD-E1"], 5 * 0.82)
+            from tern.book import taker_fee
+            self.assertAlmostEqual(k.hour_cost["live|KXBTCD-E1"], 5 * 0.82 + taker_fee(5, 0.82, k.cfg.taker_fee))
             self.assertEqual(k.last["pos"], 0)
             self.assertEqual(engine.Desk(d).slots["live|KXBTCD-E1"], {20})    # on disk: a restart does not repeat it
 

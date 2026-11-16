@@ -6,6 +6,7 @@ side "ask" sells YES (and, with no YES held, opens NO at 1 - price).
 
 from __future__ import annotations
 
+import http.client
 import json
 import time
 import urllib.error
@@ -59,7 +60,13 @@ class Kalshi:
             try:
                 with urllib.request.urlopen(req, timeout=timeout) as r:
                     raw = r.read()
-                    return json.loads(raw) if raw else {}
+                try:
+                    out = json.loads(raw) if raw else {}
+                except ValueError as e:              # a truncated or garbled reply: no status, like a lost one
+                    raise KalshiError(f"{method} {path}: unreadable reply ({e})")
+                if not isinstance(out, dict):
+                    raise KalshiError(f"{method} {path}: reply is not an object")
+                return out
             except urllib.error.HTTPError as e:
                 text = e.read().decode(errors="replace")[:300]
                 if e.code == 429 and attempt + 1 < tries:
@@ -68,7 +75,7 @@ class Kalshi:
                 if e.code >= 500 and attempt + 1 < tries and method == "GET":
                     time.sleep(0.5 * 2 ** attempt); continue
                 raise KalshiError(f"{method} {path}: HTTP {e.code} {text}", e.code)
-            except (urllib.error.URLError, TimeoutError, OSError) as e:
+            except (urllib.error.URLError, TimeoutError, OSError, http.client.HTTPException) as e:   # HTTPException: a reply cut off mid-read
                 if attempt + 1 < tries and method == "GET":
                     time.sleep(0.5 * 2 ** attempt); continue
                 raise KalshiError(f"{method} {path}: {e}")

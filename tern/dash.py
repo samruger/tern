@@ -760,8 +760,9 @@ class Screen:
         for t in settled:
             q = -t["delta"]
             won = (t.get("result") == "yes") == (q > 0)
+            word, wc = ("void", grey) if t.get("result") == "void" else ("won", P(GREEN)) if won else ("lost", P(RED))
             out.append([(f"{'':<5}{strike(t['ticker'])}", white), *side(q),
-                        (f" {abs(q):>6g} ", white), (f"{'won' if won else 'lost':>11} ", P(GREEN if won else RED)),
+                        (f" {abs(q):>6g} ", white), (f"{word:>11} ", wc),
                         (f"{money(t['realized'], True):>8}", P(GREEN if t["realized"] >= 0 else RED)),
                         (f" {ago(now - t['ts']):>7}", grey)])
         if not settled:

@@ -77,6 +77,18 @@ class Book:
         self.trades.append(rec)
         return rec
 
+    def void(self, ticker: str) -> dict | None:
+        """The market was voided: the stake comes back at cost, no profit or loss (fees stay paid)."""
+        p = self.pos.pop(ticker, None)
+        if not p:
+            return None
+        q, avg = p["q"], p["avg"]
+        self.cash += abs(q) * avg
+        rec = {"ts": time.time(), "ticker": ticker, "delta": -q, "price": avg if q > 0 else 1 - avg, "fee": 0.0,
+               "realized": 0.0, "tag": "void", "kind": "settle", "result": "void"}
+        self.trades.append(rec)
+        return rec
+
     # ------------------------------------------------------------ marks
     def at_risk(self) -> float:
         return sum(abs(p["q"]) * p["avg"] for p in self.pos.values())
