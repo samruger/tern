@@ -306,8 +306,9 @@ RULE_LINE = "\0rule"                              # placeholder text: draw_overl
 
 # the help's key legend: two columns of (section, [(keys, what they do)])
 HELP_KEYS = [
-    [("move", [("↑↓ PgUp PgDn", "move in the ladder"), ("mouse wheel", "scroll the panel under the pointer"),
-               ("tab", "next coin: BTC ETH SOL XRP BNB HYPE")]),
+    [("move", [("←→", "focus ladder / book / log"), ("↑↓ PgUp PgDn", "scroll the focused box"),
+               ("mouse wheel", "scroll the panel under the pointer"),
+               ("tab S-tab", "coin → / ←: BTC ETH SOL XRP BNB HYPE")]),
      ("look", [("1-6", "show / hide a box"), ("c", "chart span: 5m 15m 1h 24h"), ("v", "book shown: paper / live"),
                ("t T", "next / previous color theme")])],
     [("trade", [("r", "the rule trades this coin on / off"), ("g", "gate and checklist"),
@@ -322,7 +323,8 @@ CHARTS = {"5m": 300, "15m": 900, "1h": 3600, "24h": 86400}
 PANELS = ["spot", "contract", "ladder", "book", "equity", "log"]
 ROWS = [("spot", "contract", 0.36, 0.6), ("ladder", "book", 0.44, 0.52), ("equity", "log", 0.28, 0.4)]   # (.., height share, left width share)
 SUPER = "¹²³⁴⁵⁶⁷⁸⁹"
-LEFT_MIN = {"ladder": 56}    # the ladder's columns need this much before its bar has any room
+LEFT_MIN = {"ladder": 56}
+SCROLLS = ["ladder", "book", "log"]   # the boxes ←→ focus and ↑↓ scroll    # the ladder's columns need this much before its bar has any room
 
 # key hints drawn on each box's top border (btop style); a hidden box's hints move to the bottom row
 PANEL_KEYS = {
@@ -360,6 +362,8 @@ class Screen:
         self.prefs_path = os.path.join(runtime, "dash.json")
         self.hidden: set[str] = set()          # boxes turned off with 1-6
         self.panel_key = ""                    # the number drawn in the title of the box being drawn
+        self.drawing = ""                      # the box being drawn, so box() can mark the focused one
+        self.focus = "ladder"                  # the box ↑↓ scroll; ←→ move it
         try:
             with open(self.prefs_path) as fh:
                 d = json.load(fh)
@@ -469,17 +473,25 @@ class Screen:
         a = P(color)
         key = key or self.panel_key
         saved, self.clip = self.clip, None
-        self.put(y, x, "╭" + "─" * (w - 2) + "╮", a)
+        focused = self.drawing == self.focus
+        if focused:
+            a |= curses.A_BOLD
+        tl, hz, tr, vt, bl, br = "╭─╮│╰╯"
+        self.put(y, x, tl + hz * (w - 2) + tr, a)
         for r in range(1, h - 1):
-            self.put(y + r, x, "│", a)
-            self.put(y + r, x + w - 1, "│", a)
-        self.put(y + h - 1, x, "╰" + "─" * (w - 2) + "╯", a)
+            self.put(y + r, x, vt, a)
+            self.put(y + r, x + w - 1, vt, a)
+        self.put(y + h - 1, x, bl + hz * (w - 2) + br, a)
         cx = x + 2
-        self.put(y, cx, "─", a); cx += 1
-        if key:
-            self.put(y, cx, key, P(P.c("key"), bold=True)); cx += len(key)
-        self.put(y, cx, title, P(WHITE, bold=True)); cx += len(title)
-        self.put(y, cx, "─", a)
+        self.put(y, cx, hz, a); cx += 1
+        if focused:   # title in the box's own color with a marker; the border is drawn bold
+            tab = f"{key}{title} ◂"
+            self.put(y, cx, tab, P(color, bold=True)); cx += len(tab)
+        else:
+            if key:
+                self.put(y, cx, key, P(P.c("key"), bold=True)); cx += len(key)
+            self.put(y, cx, title, P(WHITE, bold=True)); cx += len(title)
+        self.put(y, cx, hz, a)
         segs = [right] if isinstance(right, str) else list(right)
         segs = [s for s in segs if s]
         lens = [len(s) if isinstance(s, str) else sum(map(len, s)) for s in segs]
@@ -957,15 +969,32 @@ class Screen:
     def wheel(self, my: int, mx: int, d: int) -> None:
         """Mouse wheel over a panel: d is -1 (up) or +1 (down)."""
         name = next((n for n, (y, x, h, w) in self.rects.items() if y <= my < y + h and x <= mx < x + w), None)
+        self.scroll(name, d)
+
+    def scroll(self, name: str | None, d: int) -> None:
+        """Move one box d steps (negative is up). Boxes that don't scroll ignore it."""
         if name == "ladder":
             self.step_ladder(d)
         elif name == "book":
             self.pos_off = max(0, self.pos_off + d)    # book_panel clamps the far end
         elif name == "log":
             logs = self.st.get("logs") or []
-            rows = self.rects["log"][2] - 2
+            rows = self.rects["log"][2] - 2 if "log" in self.rects else 1
             end = max(min(rows, len(logs)), min(len(logs), self.log_end(logs, rows) + 3 * d))
             self.log_anchor = None if end >= len(logs) else logs[end - 1][0]
+
+    def focusable(self) -> list[str]:
+        """The scrolling boxes on screen, in reading order."""
+        H, W = self.s.getmaxyx()
+        return [n for n, *_ in self.layout(H, W) if n in SCROLLS]
+
+    def move_focus(self, d: int) -> None:
+        names = self.focusable()
+        if not names:
+            self.say("no scrolling box is shown · 3, 4, 6 bring back ladder, book, log"); return
+        i = names.index(self.focus) if self.focus in names else -1 if d > 0 else 0
+        self.focus = names[(i + d) % len(names)]
+        self.say(f"focus: {self.focus}")
 
     def step_ladder(self, d: int) -> None:
         tickers = [r["t"] for r in self.ladder()]
@@ -1102,9 +1131,11 @@ class Screen:
             self.rects[name] = (y, x, h, w)
             self.clip = x + w - 1
             self.panel_key = SUPER[PANELS.index(name)]
+            self.drawing = name
             getattr(self, name + "_panel")(y, x, h, w)
         self.clip = None
         self.panel_key = ""
+        self.drawing = ""
         if not boxes:
             msg = "every box is hidden · press 1-6 to show spot, contract, ladder, book, equity, log"
             self.put(H // 2, max(0, (W - len(msg)) // 2), msg, self.P(self.P.grey))
@@ -1161,13 +1192,19 @@ class Screen:
         if ch in (ord("q"), ord("Q")):
             return False
         if ch in (curses.KEY_UP, curses.KEY_DOWN, curses.KEY_PPAGE, curses.KEY_NPAGE, ord("k"), ord("j")):
-            self.step_ladder({curses.KEY_UP: -1, ord("k"): -1, curses.KEY_DOWN: 1, ord("j"): 1,
-                              curses.KEY_PPAGE: -10, curses.KEY_NPAGE: 10}[ch])
+            names = self.focusable()
+            if self.focus not in names and names:
+                self.focus = names[0]
+            self.scroll(self.focus, {curses.KEY_UP: -1, ord("k"): -1, curses.KEY_DOWN: 1, ord("j"): 1,
+                                     curses.KEY_PPAGE: -10, curses.KEY_NPAGE: 10}[ch])
+        elif ch in (curses.KEY_LEFT, curses.KEY_RIGHT):
+            self.move_focus(-1 if ch == curses.KEY_LEFT else 1)
         elif ord("1") <= ch <= ord(str(len(PANELS))):
             self.toggle(ch - ord("1"))
-        elif ch == 9:
+        elif ch in (9, curses.KEY_BTAB):
             order = list(cfgmod.SERIES)
-            self.series = order[(order.index(self.series) + 1) % len(order)] if self.series in order else order[0]
+            step = -1 if ch == curses.KEY_BTAB else 1
+            self.series = order[(order.index(self.series) + step) % len(order)] if self.series in order else order[0]
             self.sel = None; self.write_view(); self.save_prefs(); self.say(f"viewing {cfgmod.SERIES[self.series]}")
         elif ch == ord("r"):
             self.send(op="series", series=self.series)
