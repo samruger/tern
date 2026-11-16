@@ -270,11 +270,14 @@ risk, live.max_order_usd per order, live.max_daily_loss turns live off.
   mouse wheel   scrolls the panel under the pointer: ladder, log, book
   1-6           show / hide a box: spot, contract, ladder, book, equity, log
   r             rule trades this coin on/off
-  c             chart: 15m / 24h       v           book shown: paper / live
+  c             chart: 5m 15m 1h 24h   v           book shown: paper / live
   L             arm / disarm live      g           gate and checklist
   R             reset paper            s           start / stop the engine
   h ?           this help              q           close (the engine keeps running)
 """
+
+# spot chart spans: c cycles them in this order (the engine sends ~15 min of seconds and 24h of minutes)
+CHARTS = {"5m": 300, "15m": 900, "1h": 3600, "24h": 86400}
 
 # the boxes, in the order their number keys toggle them, as rows of (left, right)
 PANELS = ["spot", "contract", "ladder", "book", "equity", "log"]
@@ -284,7 +287,9 @@ LEFT_MIN = {"ladder": 56}    # the ladder's columns need this much before its ba
 
 # key hints drawn on each box's top border (btop style); a hidden box's hints move to the bottom row
 PANEL_KEYS = {
-    "spot": lambda s: [("tab", " coin"), ("r", "ule coin"), ("c", "hart " + s.chart)],
+    "spot": lambda s: [("tab", " next coin"), ("r", "ule on/off", "") if s.rule_on() is None
+                       else ("r", "ule ", "on", "/off") if s.rule_on() else ("r", "ule on/", "off"),   # red: the state now
+                       ("c", "hart " + s.chart)],
     "book": lambda s: [("v", "iew"), ("L", "ive"), ("R", "eset")],
     "log": lambda s: [("g", "ate"), ("s", "top" if s.alive else "tart"), ("h", "elp"), ("q", "uit")],
 }
@@ -321,7 +326,7 @@ class Screen:
             self.hidden = set(d.get("hidden", [])) & set(PANELS)
             if d.get("series") in cfgmod.SERIES:
                 self.series = d["series"]
-            if d.get("chart") in ("15m", "24h"):
+            if d.get("chart") in CHARTS:
                 self.chart = d["chart"]
         except (OSError, json.JSONDecodeError, AttributeError, TypeError):
             pass
@@ -436,7 +441,7 @@ class Screen:
         self.put(y, cx, "├", a)
         segs = [right] if isinstance(right, str) else list(right)
         segs = [s for s in segs if s]
-        lens = [len(s) if isinstance(s, str) else len(s[0]) + len(s[1]) for s in segs]
+        lens = [len(s) if isinstance(s, str) else sum(map(len, s)) for s in segs]
         while segs and cx + 2 + sum(n + 3 for n in lens) > x + w - 3:   # each segment: ┤..├ and a ─ before it
             segs.pop(0); lens.pop(0)
         rx = x + w - 3 - sum(n + 3 for n in lens) + 1        # keep the corner free for a scroll ▲
@@ -450,11 +455,15 @@ class Screen:
         self.put(y, x, "┤", border); x += 1
         if isinstance(seg, str):
             self.put(y, x, seg, P(P.grey)); x += len(seg)
-        else:
-            k, rest = seg
-            self.put(y, x, k, P(RED, bold=True)); x += len(k)
-            self.put(y, x, rest, P(WHITE)); x += len(rest)
+        else:                                    # pieces alternate red (a key, or what it switches to) and white
+            for i, piece in enumerate(seg):
+                self.put(y, x, piece, P(RED, bold=True) if i % 2 == 0 else P(WHITE)); x += len(piece)
         self.put(y, x, "├", border)
+
+    def rule_on(self) -> bool | None:
+        """Whether the rule trades the coin on screen; None until the engine has said."""
+        S = self.st.get("strategy")
+        return None if not S else self.series in (S.get("series") or [])
 
     def graph(self, y: int, x: int, h: int, w: int, vals: list[float], lo: float, hi: float, grad: list[int],
               marks: list[float] | None = None, mark_color: int = YELLOW, filled: bool = True) -> None:
@@ -543,7 +552,7 @@ class Screen:
         sp = (st.get("spot") or {}).get(prod) or {}
         now = time.time()
         sec, mins = sp.get("sec") or [], sp.get("min") or []
-        span = 900 if self.chart == "15m" else 86400
+        span = CHARTS[self.chart]
         first_sec = sec[0][0] if sec else now
         pts = [[t + 60, p] for t, p in mins if t + 60 < first_sec] + sec   # minute closes, then live seconds
         gw = w - 2 - 11
@@ -569,7 +578,7 @@ class Screen:
         if strike and lo <= strike <= hi:
             ry = y + 1 + int(round((hi - strike) / (hi - lo) * (gh - 1)))
             self.put(ry, lx, px(strike)[:10], P(YELLOW, bold=True))
-        span = "-15m" if self.chart == "15m" else "-24h"
+        span = "-" + self.chart
         self.put(y + h - 2, x + 2, span, P(self.P.grey))
         self.put(y + h - 2, x + 1 + gw - 3, "now", P(self.P.grey))
         if strike and vals:
@@ -910,12 +919,12 @@ class Screen:
         orphans = [k for name, fn in PANEL_KEYS.items() if name not in self.rects for k in fn(self)]
         if orphans:
             border = P(P.grey)
-            need = sum(len(k) + len(r) + 3 for k, r in orphans) - 1
+            need = sum(sum(map(len, seg)) + 3 for seg in orphans) - 1
             rx = W - 3 - need if self.rects else max(1, (W - need) // 2)
-            for k, r in orphans:
+            for seg in orphans:
                 if rx >= 1:
-                    self.hint(H - 2, rx, (k, r), border)
-                rx += len(k) + len(r) + 3
+                    self.hint(H - 2, rx, seg, border)
+                rx += sum(map(len, seg)) + 3
         if self.flash and time.time() - self.flash_at < 8:
             msg = f" {self.flash} "[:max(0, W - 4)]
             self.put(H - 2, 2, msg, P(YELLOW, bold=True) | curses.A_REVERSE)
@@ -1030,7 +1039,8 @@ class Screen:
         elif ch == ord("r"):
             self.send(op="series", series=self.series)
         elif ch == ord("c"):
-            self.chart = "24h" if self.chart == "15m" else "15m"
+            order = list(CHARTS)
+            self.chart = order[(order.index(self.chart) + 1) % len(order)] if self.chart in order else "15m"
             self.save_prefs()
         elif ch == ord("v"):
             cur = self.book_view or ("live" if self.st.get("mode") == "live" else "paper")
