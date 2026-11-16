@@ -535,7 +535,7 @@ class Desk:
 
     def _auto(self, gate: dict | None = None) -> None:
         S = self.cfg.strategy
-        lo, hi, cap = shadowmod.params(self.variant(), S)
+        lo, hi, cap, mins, spread = shadowmod.params(self.variant(), S)
         gate = gate or self.gate()
         books = [self.paper]
         if self._live_rule_on(gate):
@@ -553,8 +553,10 @@ class Desk:
                 if slot is None:
                     continue
                 done.add(slot)
+                if slot not in mins:
+                    continue                         # the variant skips this slot
                 held = self.taken.setdefault(key, {})
-                sig = [s for s in signals(e["markets"], lo, hi, S.max_spread) if cap is None or held.get(s["ticker"], 0) < cap]
+                sig = [s for s in signals(e["markets"], lo, hi, spread) if cap is None or held.get(s["ticker"], 0) < cap]
                 if book is self.live and sig:
                     self._save_state()               # the slot is on disk before any order: a restart never repeats it
                 placed = 0
@@ -811,8 +813,9 @@ class Desk:
         shadow = self.shadow.summary()
         variants = [{**r, "desc": shadowmod.DESC.get(r["name"], ""), "active": r["name"] == self.variant(),
                      "gate": self.gate(r["name"], r)} for r in shadow]
-        lo, hi, cap = shadowmod.params(self.variant(), self.cfg.strategy)
-        strategy = {**self.cfg.strategy.__dict__, "variant": self.variant(), "band_lo": lo, "band_hi": hi, "cap": cap}
+        lo, hi, cap, mins, spread = shadowmod.params(self.variant(), self.cfg.strategy)
+        strategy = {**self.cfg.strategy.__dict__, "variant": self.variant(), "band_lo": lo, "band_hi": hi, "cap": cap,
+                    "minutes": mins, "max_spread": spread}
         st = {"heartbeat": now, "stopped": stopped, "pid": os.getpid(), "mode": self.mode, "live_enabled": self.cfg.live.enabled,
               "live_error": self.live_error, "keys": self._has_keys(now), "balance": self.balance,
               "spot": sp, "events": evs, "hist": hist, "view": self.view,

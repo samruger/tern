@@ -9,6 +9,11 @@ the engine trades whichever variant strategy.variant names, and that variant's r
   cap1     the rule, but at most one entry per strike per hour: later slots skip a strike already held
            (added 2026-11-14 after two hours lost on strikes bought at every slot; its hours start 2026-11-15)
 
+Added 2026-11-16, written down before any of them traded; their hours start when the engine restarts with them:
+  band80   only favorites at 80-90c, the band where the 67-day study found the bias (favorites ~2 points under)
+  late     only the 15 and 10 minute slots: less time left for the price to cross the strike
+  tight1   only strikes with a 1c spread: pays less to get in
+
 Retired 2026-11-16 (their settled rows stay in shadow-settled.jsonl; `tern report` still lists them):
   stop20   sell once the favorite's bid is 20c under entry: 165 hours, -$191, t -3.0. The stop loses.
   arb      YES low strike + NO high strike under $1 after fees: 0 entries in 165 hours.
@@ -23,16 +28,22 @@ import os
 from .book import taker_fee
 from .strategy import due_slot, signals
 
-VARIANTS = {            # name -> (band_lo, band_hi, entries per strike per hour); None takes the configured value / no cap
-    "base": (None, None, None),
-    "band90": (0.90, None, None),
-    "cap1": (None, None, 1),
+VARIANTS = {   # name -> (band_lo, band_hi, entries per strike per hour, slots, max spread); None takes the configured value / no cap
+    "base": (None, None, None, None, None),
+    "band90": (0.90, None, None, None, None),
+    "cap1": (None, None, 1, None, None),
+    "band80": (0.80, 0.90, None, None, None),
+    "late": (None, None, None, (15, 10), None),
+    "tight1": (None, None, None, None, 0.01),
 }
 ORDER = list(VARIANTS)
 DESC = {
     "base": "the rule: favorites at 75-95¢, every slot",
     "band90": "only favorites at 90-95¢",
     "cap1": "one entry per strike per hour (from 2026-11-15)",
+    "band80": "only favorites at 80-90¢ (from 2026-11-16)",
+    "late": "only the 15m and 10m slots (from 2026-11-16)",
+    "tight1": "only strikes with a 1¢ spread (from 2026-11-16)",
 }
 RETIRED = {
     "stop20": "sold at 20¢ under entry; retired 2026-11-16, the stop lost money",
@@ -41,9 +52,11 @@ RETIRED = {
 
 
 def params(name: str, S) -> tuple:
-    """(band_lo, band_hi, cap) for a variant on strategy S. An unknown name is the rule as configured."""
-    lo, hi, cap = VARIANTS.get(name, (None, None, None))
-    return lo or S.band_lo, hi or S.band_hi, cap
+    """(band_lo, band_hi, cap, slots, max_spread) for a variant on strategy S. An unknown name is the rule
+    as configured. A variant's slots are a subset of S.minutes; a slot it skips still counts as taken."""
+    lo, hi, cap, slots, spread = VARIANTS.get(name, (None,) * 5)
+    mins = [m for m in S.minutes if slots is None or m in slots]
+    return lo or S.band_lo, hi or S.band_hi, cap, mins, spread or S.max_spread
 
 
 def hour_of(event: str) -> str:
@@ -128,13 +141,15 @@ class Shadow:
             return []
         done.append(slot); self.dirty = True
         for name in VARIANTS:
-            lo, hi, cap = params(name, S)
+            lo, hi, cap, mins, spread = params(name, S)
+            if slot not in mins:
+                continue
             mine = [r for r in self.rows if r["v"] == name and r["event"] == event]
             spent = sum(r["n"] * r["cost"] + r["fee"] for r in mine)
             held = {}
             for r in mine:
                 held[r["ticker"]] = held.get(r["ticker"], 0) + 1
-            for s in signals(markets, lo, hi, S.max_spread):
+            for s in signals(markets, lo, hi, spread):
                 if cap is not None and held.get(s["ticker"], 0) >= cap:
                     continue
                 unit = s["price"] if s["delta_sign"] > 0 else 1 - s["price"]
