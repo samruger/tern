@@ -205,14 +205,44 @@ def engine_alive(runtime: str) -> bool:
     return False
 
 
+def service_runs(runtime: str) -> bool:
+    """True when the tern systemd user service is installed for this runtime: then systemd owns the
+    engine, and starting or stopping it goes through systemctl (a plain kill would be restarted)."""
+    try:
+        env = subprocess.run(["systemctl", "--user", "show", "tern.service", "-p", "Environment", "-p", "LoadState"],
+                             capture_output=True, text=True, timeout=5).stdout
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return "LoadState=loaded" in env and f"TERN_RUNTIME={os.path.realpath(runtime)}" in env
+
+
 def start_engine(runtime: str) -> str:
     if engine_alive(runtime):
         return "engine already running"
+    if service_runs(runtime):
+        r = subprocess.run(["systemctl", "--user", "start", "--no-block", "tern.service"], capture_output=True, text=True)
+        return "starting the engine (tern.service)" if r.returncode == 0 else f"systemctl start failed: {r.stderr.strip()}"
     os.makedirs(runtime, exist_ok=True)
     out = open(os.path.join(runtime, "engine.out"), "a")
     subprocess.Popen([sys.executable, "-m", "tern", "run"], cwd=cfgmod.ROOT, stdout=out, stderr=out,
                      start_new_session=True, env={**os.environ, "TERN_RUNTIME": runtime})
     return "engine started in the background"
+
+
+def stop_engine(runtime: str, pid: int | None) -> str:
+    if not engine_alive(runtime):
+        return "engine is not running"
+    if service_runs(runtime):
+        r = subprocess.run(["systemctl", "--user", "stop", "--no-block", "tern.service"], capture_output=True, text=True)
+        return "stopping the engine (tern.service): it saves first" if r.returncode == 0 else f"systemctl stop failed: {r.stderr.strip()}"
+    try:                                   # started by hand or by the dash: SIGTERM, which saves and exits
+        with open(f"/proc/{pid}/cmdline", "rb") as fh:
+            if b"tern" not in fh.read():
+                raise OSError
+        os.kill(pid, 15)
+        return "stopping the engine: it saves first"
+    except (OSError, TypeError):
+        return "could not find the engine's process"
 
 
 HELP = """\
@@ -237,8 +267,8 @@ risk, live.max_order_usd per order, live.max_daily_loss turns live off.
   r             rule trades this coin on/off
   c             chart: 15m / 24h       v           book shown: paper / live
   L             arm / disarm live      g           gate and checklist
-  R             reset paper            s           start the engine
-  ?             this help              q           close (the engine keeps running)
+  R             reset paper            s           start / stop the engine
+  h ?           this help              q           close (the engine keeps running)
 """
 
 # the boxes, in the order their number keys toggle them, as rows of (left, right)
@@ -250,8 +280,8 @@ LEFT_MIN = {"ladder": 56}    # the ladder's columns need this much before its ba
 # key hints drawn on each box's top border (btop style); a hidden box's hints move to the bottom row
 PANEL_KEYS = {
     "spot": lambda s: [("tab", " coin"), ("r", "ule coin"), ("c", "hart " + s.chart)],
-    "book": lambda s: [("v", "iew"), ("L", "ive")],
-    "log": lambda s: [("g", "ate"), ("?", "help"), ("q", "uit")],
+    "book": lambda s: [("v", "iew"), ("L", "ive"), ("R", "eset")],
+    "log": lambda s: [("g", "ate"), ("s", "top" if s.alive else "tart"), ("h", "elp"), ("q", "uit")],
 }
 
 
@@ -293,6 +323,8 @@ class Screen:
 
     # ------------------------------------------------------------ io
     def read(self) -> None:
+        if time.time() - self.alive_at > 1:
+            self.alive, self.alive_at = engine_alive(self.runtime), time.time()
         try:
             with open(os.path.join(self.fast, "status.json")) as fh:
                 self.st = json.load(fh)
@@ -963,6 +995,12 @@ class Screen:
                 m["lines"][-1] = "> " + m["buf"]
                 self.modal = m
                 return True
+            if m.get("type") == "stop":
+                if ch in (ord("y"), ord("Y")):
+                    self.say(stop_engine(self.runtime, self.st.get("pid"))); self.alive_at = 0
+                else:
+                    self.say("engine kept running")
+                return True
             if m.get("type") == "reset":
                 if ch in (ord("y"), ord("Y")):
                     self.send(op="reset_paper")
@@ -994,7 +1032,13 @@ class Screen:
         elif ch == ord("?") or ch == ord("h"):
             self.overlay = HELP_LINES
         elif ch == ord("s"):
-            self.say(start_engine(self.runtime))
+            if engine_alive(self.runtime):
+                self.modal = {"type": "stop", "title": "stop engine", "lines": [
+                    "Stop the engine? Nothing trades, paper or live, until it starts again",
+                    "(s here, or reopening the dash). It saves its state before it exits.", "",
+                    "y stops · any other key keeps it running"]}
+            else:
+                self.say(start_engine(self.runtime)); self.alive_at = 0
         elif ch == ord("R"):
             self.modal = {"type": "reset", "title": "reset paper", "lines": ["Wipe the paper book and the rule's paper record?",
                                                                                "This also restarts the gate's clock.", "", "y resets · any other key keeps it"]}
