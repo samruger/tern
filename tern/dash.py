@@ -817,7 +817,7 @@ class Screen:
 
     def log_panel(self, y, x, h, w) -> None:
         P = self.P
-        self.box(y, x, h, w, "log", self.P.grey, "", PANEL_KEYS["log"](self))
+        self.box(y, x, h, w, "log", 205 if self.P.many else MAGENTA, "", PANEL_KEYS["log"](self))
         logs = self.st.get("logs") or []
         rows = h - 2
         end = self.log_end(logs, rows)
