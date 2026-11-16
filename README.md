@@ -1,7 +1,8 @@
 # tern
 
 A desk for Kalshi's hourly BTC and ETH above-or-below markets, with a btop-style
-screen: braille charts, a strike ladder, paper and live books, and manual orders.
+screen: braille charts, a strike ladder, and paper and live books.
+Every trade comes from the rule; there are no manual orders.
 It paper trades from the start and sends no real order until you arm live.
 
 Python 3.11+, standard library only. Kalshi request signing (Ed25519 and RSA-PSS)
@@ -55,8 +56,6 @@ while live is on, so its record keeps growing.
 config. The engine then authenticates with your key, and the header turns red
 once it has. Press `L` again to return to paper. Once live:
 
-- **Manual orders go live at once**, each after an Enter confirmation that
-  shows the cost and fee.
 - **The rule goes live only after its paper record passes the gate** (`g`):
   14 days, 300 settled entries, and P&L ≥ $0 after fees. Days are counted as
   hours the rule actually traded ÷ 24, so time with the engine off does not
@@ -120,22 +119,16 @@ python3 -m tern live-check
 | ⁵ equity | that book's equity by the minute |
 | log | what the engine did |
 
-Keys: `↑↓` / `PgUp PgDn` move in the ladder · `b` buy YES · `n` buy NO ·
-`x` close the position at the touch · `+ -` or `1`–`8` size (1, 2, 5, 10, 25,
-50, 100, 250) · `tab` BTC/ETH · `a` rule on/off · `r` rule trades this coin ·
+Keys: `↑↓` / `PgUp PgDn` move in the ladder · `1`–`6` show/hide a box · `tab` BTC/ETH · `r` rule trades this coin ·
 `c` chart range · `v` book · `L` arm/disarm live · `g` gate · `R` reset paper ·
 `s` start the engine · `?` help · `q` close (the engine keeps running).
-
-Manual orders and the rule share one position per strike. If you close a strike
-by hand, the rule's paper record still counts its entry as held to settlement,
-so the gate judges the rule and not your exits.
 
 ## Files
 
 `runtime/` (gitignored) holds `config.json`, `state.json` (books, the rule's
 record, slots taken; written only when it changes, with an hourly
 `state.json.bak` that is loaded if the main file is damaged), `tern.log` and
-`cmd/` (orders from the screen). The live
+`cmd/` (settings commands from the screen). The live
 status file and the screen's selection live in tmpfs (`$XDG_RUNTIME_DIR/tern-*`),
 because they are rewritten every second.
 

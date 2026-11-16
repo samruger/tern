@@ -1,5 +1,5 @@
-"""The desk: polls spot and the current hourly event, runs the favorite rule, executes manual
-orders from the screen, settles positions, reconciles live, and writes the status the screen reads."""
+"""The desk: polls spot and the current hourly event, runs the favorite rule, takes settings
+commands from the screen, settles positions, reconciles live, and writes the status the screen reads."""
 
 from __future__ import annotations
 
@@ -25,8 +25,6 @@ from .strategy import due_slot, signals
 
 
 CMD_MAX_AGE = 30.0     # seconds a command from the screen stays valid
-QUOTE_MAX_AGE = 10.0   # manual orders need a ladder at least this fresh, as the rule does
-PAPER_SLIP = 0.01      # a paper order may fill this much worse than the price on the screen; live may not
 
 
 LOST_REPLY_WAITS = (1.0, 2.0, 4.0)   # seconds between looks for an order whose reply never came
@@ -449,8 +447,6 @@ class Desk:
     # ------------------------------------------------------------ the rule
     def _auto(self) -> None:
         S = self.cfg.strategy
-        if not S.auto:
-            return
         gate = self.gate()
         books = [self.paper]
         if self.mode == "live" and (gate["passed"] or not self.cfg.live.auto_needs_gate):
@@ -604,73 +600,8 @@ class Desk:
         while len(self.results) > 50:
             self.results.pop(next(iter(self.results)))
 
-    def _stale(self, ticker: str) -> str | None:
-        """Why `ticker` cannot be traded by hand right now, or None when its quote is current."""
-        now = time.time()
-        for e in self.events.values():
-            if any(m["ticker"] == ticker for m in e["markets"]):
-                if e["close"] <= now:
-                    return f"{ticker} has closed"
-                if now - e["fetched"] > QUOTE_MAX_AGE:
-                    return f"the quote for {ticker} is {now - e['fetched']:.0f}s old"
-                return None
-        return f"no quote for {ticker}"
-
     def _command(self, c: dict) -> str:
         op = c.get("op")
-        if op == "order":
-            t = c["ticker"]; n = float(c["n"]); act = c["action"]
-            if act not in ("buy_yes", "buy_no", "close") or not (0 <= n < float("inf")) or (n == 0 and act != "close"):
-                return f"bad order: {act} {c['n']}"
-            book = self.live if self.mode == "live" else self.paper
-            want = c.get("book", "paper")            # the book the screen showed when the key was pressed
-            if want != book.name:
-                return f"not sent: the order was for the {want} book and the desk is now in {book.name}. Send it again."
-            stale = self._stale(t)
-            if stale:
-                return f"not sent: {stale}"
-            q = self._quotes().get(t)
-            if not q:
-                return f"no quote for {t}"
-            bid, ask, bs, az = q
-            if act == "close":
-                have = book.pos.get(t, {}).get("q", 0.0)
-                if not have:
-                    return f"{book.name}: no position in {t}"
-                n = min(n, abs(have)) if n else abs(have)
-                delta = -n if have > 0 else n
-            else:
-                delta = n if act == "buy_yes" else -n
-            price, avail = (ask, az) if delta > 0 else (bid, bs)
-            if price is None:
-                return f"{t}: no {'ask' if delta > 0 else 'bid'} to trade against"
-            seen = c.get("px")                       # the YES price on the screen; live never trades at a worse one
-            if seen is None and book is self.live:
-                return "not sent: a live order must carry the price it was confirmed at"
-            if seen is not None:
-                slip = (price - float(seen)) * (1 if delta > 0 else -1)
-                if not slip <= (0.0 if book is self.live else PAPER_SLIP) + 1e-9:
-                    was, cur = (float(seen), price) if delta > 0 else (1 - float(seen), 1 - price)
-                    if act == "close":
-                        was, cur = 1 - was, 1 - cur
-                    return f"not sent: {t} moved from {was*100:.1f}¢ to {cur*100:.1f}¢ since you pressed the key"
-            rec = self._exec(book, t, delta, price, avail, "manual")
-            if not rec:
-                return f"{book.name}: {act} {t} did not fill"
-            n_done = abs(rec["delta"])
-            if act == "close":
-                held_yes = rec["delta"] < 0          # selling YES closes YES; buying YES closes NO
-                side = "YES" if held_yes else "NO"
-                shown = rec["price"] if held_yes else 1 - rec["price"]
-                verb = "sold"
-            else:
-                side = "YES" if rec["delta"] > 0 else "NO"
-                shown = rec["price"] if rec["delta"] > 0 else 1 - rec["price"]
-                verb = "bought"
-            return f"{book.name}: {verb} {n_done:g} {side} {t} @ {shown*100:.1f}¢ (fee ${rec['fee']:.2f})"
-        if op == "auto":
-            self.cfg.strategy.auto = bool(c["on"]); cfgmod.save(self.cfg, self.runtime)
-            return f"rule {'on' if self.cfg.strategy.auto else 'off'}"
         if op == "live":
             self.cfg.live.enabled = bool(c["on"]); cfgmod.save(self.cfg, self.runtime)
             if not c["on"]:
@@ -739,7 +670,7 @@ class Desk:
               "paper": book_view(self.paper), "live": book_view(self.live),
               "gate": gate, "shadow": self.shadow.summary(), "strategy": self.cfg.strategy.__dict__, "live_cfg": self.cfg.live.__dict__,
               "logs": [list(x) for x in list(self.logs)[-200:]], "results": self.results,
-              "auto_live": self.mode == "live" and self.cfg.strategy.auto and (gate["passed"] or not self.cfg.live.auto_needs_gate)}
+              "auto_live": self.mode == "live" and (gate["passed"] or not self.cfg.live.auto_needs_gate)}
         _atomic_json(os.path.join(self.fast, "status.json"), st)
 
     # ------------------------------------------------------------ loop

@@ -20,7 +20,6 @@ SERIES = {  # Kalshi hourly above/below series -> Coinbase spot product
 class Strategy:
     """The hourly favorite rule. Defaults are the variant picked on the first half of 67 days of
     BTC history and checked on the untouched second half (+0.61c/contract, t=1.1: positive, unproven)."""
-    auto: bool = True                          # place the rule's trades by itself (paper always; live only past the gate)
     series: list = field(default_factory=lambda: ["KXBTCD"])   # ETH was not tested on 67 days
     band_lo: float = 0.75                      # favorite's mid must be in [band_lo, band_hi)
     band_hi: float = 0.95
@@ -34,7 +33,7 @@ class Strategy:
 class Live:
     enabled: bool = False          # set from the screen (L, then type "live") or here. The desk never sets it itself.
     capital_usd: float = 100.0     # most the live book may have at risk (cost of open positions) at once
-    max_order_usd: float = 25.0    # largest single live order, manual or auto
+    max_order_usd: float = 25.0    # largest single live order the rule may send
     max_daily_loss: float = 30.0   # live loss since local midnight that cancels everything and returns to paper
     auto_needs_gate: bool = True   # the rule trades live only after its paper record passes the gate
 

@@ -14,7 +14,6 @@ import time
 import uuid
 
 from . import config as cfgmod
-from .book import taker_fee
 from .engine import live_dir
 
 # ---------------------------------------------------------------- colors
@@ -208,26 +207,21 @@ and holds it to settlement. Over 67 days of BTC history this variant made
 +0.6c a contract on data it was not chosen on (t=1.1): positive, small,
 unproven. Paper always runs it. Live runs it only after the gate (g).
 
-MANUAL    Move to a strike with the arrows. b buys YES, n buys NO at the
-touch (immediate-or-cancel), x closes your position there at the touch.
-+/- change the size. In live every order asks first.
+There are no manual orders: every trade comes from the rule.
 
 LIVE      L arms live: it asks you to type "live". Needs KALSHI_KEY_ID and
 KALSHI_KEY_FILE (in ~/.config/tern/kalshi.env). Caps: live.capital_usd at
 risk, live.max_order_usd per order, live.max_daily_loss turns live off.
 
-  ↑↓ PgUp PgDn  move in the ladder     b / n / x   buy YES / buy NO / close
+  ↑↓ PgUp PgDn  move in the ladder     tab         BTC <-> ETH
   mouse wheel   scrolls the panel under the pointer: ladder, log, open positions
-  + -           order size             tab         BTC <-> ETH
   1-6           show / hide a box: spot, contract, ladder, book, equity, log
-  a             rule on/off            r           rule trades this coin on/off
+  r             rule trades this coin on/off
   c             chart: 15m / 24h       v           book shown: paper / live
   L             arm / disarm live      g           gate and checklist
   R             reset paper            s           start the engine
   ?             this help              q           close (the engine keeps running)
 """
-
-SIZES = [1, 2, 5, 10, 25, 50, 100, 250]
 
 # the boxes, in the order their number keys toggle them, as rows of (left, right)
 PANELS = ["spot", "contract", "ladder", "book", "equity", "log"]
@@ -246,7 +240,6 @@ class Screen:
         self.st: dict = {}
         self.series = "KXBTCD"
         self.sel: str | None = None
-        self.size_i = 2
         self.chart = "15m"
         self.book_view = None
         self.overlay: list[str] | None = None
@@ -425,7 +418,7 @@ class Screen:
             self.put(0, x, seg, P(YELLOW if tau < 600 else WHITE)); x += len(seg)
         S = st.get("strategy") or {}
         if S:
-            on = S.get("auto") and self.series in (S.get("series") or [])
+            on = self.series in (S.get("series") or [])
             nxt = ""
             if ev and on:
                 tau = ev["close"] - now
@@ -536,8 +529,7 @@ class Screen:
     def ladder_panel(self, y, x, h, w) -> None:
         P, st = self.P, self.st
         lad = self.ladder()
-        size = SIZES[self.size_i]
-        self.box(y, x, h, w, "ladder", YELLOW, "", f"size {size} · ↑↓ b n x")
+        self.box(y, x, h, w, "ladder", YELLOW, "", "↑↓")
         if not lad:
             self.put(y + 2, x + 3, "waiting for the hourly event…", P(self.P.grey)); return
         prod = cfgmod.SERIES[self.series]
@@ -768,7 +760,7 @@ class Screen:
         P = self.P
         if self.flash and time.time() - self.flash_at < 8:
             self.put(H - 1, 0, (" " + self.flash).ljust(W), P(YELLOW, bold=True) | curses.A_REVERSE); return
-        keys = [("b", "uy yes"), ("n", "o"), ("x", " close"), ("+-", " size"), ("1-6", " boxes"), ("tab", " coin"), ("a", "uto"),
+        keys = [("1-6", " boxes"), ("tab", " coin"),
                 ("r", "ule coin"), ("c", "hart"), ("v", "iew"), ("L", "ive"), ("g", "ate"), ("?", "help"), ("q", "uit")]
         x = 1
         for k, rest in keys:
@@ -832,37 +824,6 @@ class Screen:
         self.s.refresh()
 
     # ------------------------------------------------------------ input
-    def order(self, action: str) -> None:
-        r = self.row(self.sel)
-        if not r:
-            self.say("no strike selected"); return
-        n = SIZES[self.size_i]
-        live = self.st.get("mode") == "live"
-        book = self.st.get("live" if live else "paper") or {}
-        if action == "close":
-            held = {p["t"]: p for p in book.get("pos", [])}.get(r["t"])
-            if not held:
-                self.say(f"no {'live' if live else 'paper'} position at {strike_label(r['k'])}"); return
-            n = abs(held["q"])
-            px = r["b"] if held["q"] > 0 else r["a"]
-            desc = f"close {n:g} {'YES' if held['q'] > 0 else 'NO'} @ {cents(px if held['q'] > 0 else (1 - px if px is not None else None))}¢"
-            unit = px if held["q"] > 0 else (1 - px if px is not None else None)
-        elif action == "buy_yes":
-            px = r["a"]; unit = px; desc = f"buy {n} YES @ {cents(px)}¢"
-        else:
-            px = r["b"]; unit = None if px is None else 1 - px; desc = f"buy {n} NO @ {cents(unit)}¢"
-        if px is None:
-            self.say("nothing on that side of the book"); return
-        fee = taker_fee(n, px)
-        cmd = {"op": "order", "ticker": r["t"], "action": action, "n": n if action != "close" else 0,
-               "book": "live" if live else "paper", "px": px}      # the desk refuses another book or a worse price
-        if live:
-            self.modal = {"title": "LIVE ORDER", "color": RED, "cmd": cmd,
-                          "lines": [f"{desc} on {r['t']}", f"strike {strike_label(r['k'])}  ·  ${n*unit:,.2f} + fee ≈ ${fee:.2f}",
-                                    "immediate-or-cancel at the touch, real money", "", "enter sends · any other key cancels"]}
-        else:
-            self.send(**cmd); self.say(f"paper: {desc} sent")
-
     def key(self, ch: int) -> bool:
         if ch == curses.KEY_MOUSE:
             try:
@@ -895,10 +856,6 @@ class Screen:
                 if ch in (ord("y"), ord("Y")):
                     self.send(op="reset_paper")
                 return True
-            if ch in (10, 13, curses.KEY_ENTER) and m.get("cmd"):
-                self.send(**m["cmd"]); self.say("live order sent")
-            else:
-                self.say("cancelled")
             return True
         if self.overlay:
             self.overlay = None; return True
@@ -907,24 +864,11 @@ class Screen:
         if ch in (curses.KEY_UP, curses.KEY_DOWN, curses.KEY_PPAGE, curses.KEY_NPAGE, ord("k"), ord("j")):
             self.step_ladder({curses.KEY_UP: -1, ord("k"): -1, curses.KEY_DOWN: 1, ord("j"): 1,
                               curses.KEY_PPAGE: -10, curses.KEY_NPAGE: 10}[ch])
-        elif ch == ord("b"):
-            self.order("buy_yes")
-        elif ch == ord("n"):
-            self.order("buy_no")
-        elif ch == ord("x"):
-            self.order("close")
-        elif ch in (ord("+"), ord("=")):
-            self.size_i = min(len(SIZES) - 1, self.size_i + 1)
-        elif ch in (ord("-"), ord("_")):
-            self.size_i = max(0, self.size_i - 1)
         elif ord("1") <= ch <= ord(str(len(PANELS))):
             self.toggle(ch - ord("1"))
         elif ch == 9:
             self.series = "KXETHD" if self.series == "KXBTCD" else "KXBTCD"
             self.sel = None; self.write_view(); self.say(f"viewing {cfgmod.SERIES[self.series]}")
-        elif ch == ord("a"):
-            on = not (self.st.get("strategy") or {}).get("auto")
-            self.send(op="auto", on=on)
         elif ch == ord("r"):
             self.send(op="series", series=self.series)
         elif ch == ord("c"):
@@ -950,7 +894,7 @@ class Screen:
                               "lines": ["Live trading uses real money on Kalshi.",
                                         f"Caps: ${L.get('capital_usd', 0):,.0f} at risk, ${L.get('max_order_usd', 0):,.0f} per order,",
                                         f"live turns itself off after -${L.get('max_daily_loss', 0):,.0f} in a day.",
-                                        "Manual orders go live at once; the rule goes live only past the gate (g).",
+                                        "The rule trades live only past the gate (g).",
                                         *([] if self.st.get("keys") else ["", f"No key found yet: live stays off until {cfgmod.KEYFILE_ENV} exists."]),
                                         "", "type live and press enter (esc cancels):", "> "]}
         return True

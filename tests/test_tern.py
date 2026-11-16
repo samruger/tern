@@ -207,67 +207,28 @@ class Commands(unittest.TestCase):
         k.meta[self.T] = {"event": "KXBTCD-E1", "strike": 100.0, "close": now + close, "series": "KXBTCD"}
         return k
 
-    def order(self, **kw):
-        return {"op": "order", "ticker": self.T, "action": "buy_yes", "n": 5, "book": "paper", "px": 0.60, **kw}
+    def series(self, **kw):
+        return {"op": "series", "series": "KXETHD", **kw}
 
-    def test_paper_order_fills_at_the_price_shown(self):
+    def test_manual_orders_are_gone(self):
         with tempfile.TemporaryDirectory() as d:
             k = self.desk(d)
-            self.assertIn("bought 5 YES", k._command(self.order()))
-            self.assertAlmostEqual(k.paper.pos[self.T]["q"], 5)
-
-    def test_order_for_another_book_is_refused(self):
-        with tempfile.TemporaryDirectory() as d:
-            k = self.desk(d)
-            k.mode = "live"; k.api = object()                 # live came up after the key was pressed
-            self.assertIn("order was for the paper book", k._command(self.order()))
-            self.assertIn("order was for the paper book", k._command({k_: v for k_, v in self.order().items() if k_ != "book"}))
-            k.mode = "paper"
-            self.assertIn("order was for the live book", k._command(self.order(book="live")))
+            self.assertIn("unknown command", k._command({"op": "order", "ticker": self.T, "action": "buy_yes", "n": 5}))
             self.assertFalse(k.paper.pos or k.live.pos)
-
-    def test_live_order_never_goes_out_at_a_worse_price(self):
-        with tempfile.TemporaryDirectory() as d:
-            k = self.desk(d, bid="0.93", ask="0.95")
-            sent = []
-            class Api:
-                def order(self, *a, **kw):
-                    sent.append(a); return {"fill_count": 0}
-            k.mode = "live"; k.api = Api()
-            self.assertIn("moved from 60.0¢ to 95.0¢", k._command(self.order(book="live")))
-            self.assertIn("must carry the price", k._command({k_: v for k_, v in self.order(book="live").items() if k_ != "px"}))
-            self.assertIn("moved from 5.0¢ to 7.0¢", k._command(self.order(book="live", action="buy_no", px=0.95)))
-            self.assertEqual(sent, [])
-            k._command(self.order(book="live", px=0.95))      # the confirmed price: sent
-            self.assertEqual(len(sent), 1)
-
-    def test_paper_slip_is_small(self):
-        with tempfile.TemporaryDirectory() as d:
-            self.assertIn("bought", self.desk(d, ask="0.61")._command(self.order()))
-            self.assertIn("moved", self.desk(d, ask="0.63")._command(self.order()))
-            self.assertIn("bought", self.desk(d, ask="0.50")._command(self.order()))    # better is fine
-
-    def test_stale_or_closed_quote_is_refused(self):
-        with tempfile.TemporaryDirectory() as d:
-            self.assertIn("is 60s old", self.desk(d, age=60)._command(self.order()))
-            self.assertIn("has closed", self.desk(d, close=-5)._command(self.order()))
-            self.assertIn("bad order", self.desk(d)._command(self.order(n=float("nan"))))
-            self.assertIn("bad order", self.desk(d)._command(self.order(n=-5)))
 
     def test_old_command_files_are_ignored(self):
         import json, time
         with tempfile.TemporaryDirectory() as d:
             k = self.desk(d)
-            for name, c in ((f"{time.time() - 3600:.6f}-old.json", {k_: v for k_, v in self.order(id="old").items()}),
-                            ("x-stamped.json", self.order(id="stamped", ts=time.time() - 3600)),
-                            (f"{time.time():.6f}-new.json", self.order(id="new", ts=time.time()))):
+            for name, c in ((f"{time.time() - 3600:.6f}-old.json", self.series(id="old")),
+                            ("x-stamped.json", self.series(id="stamped", ts=time.time() - 3600)),
+                            (f"{time.time():.6f}-new.json", self.series(id="new", ts=time.time()))):
                 with open(os.path.join(k.cmd_dir, name), "w") as fh:
                     json.dump(c, fh)
             k._commands()
             self.assertIn("too old", k.results["old"])
             self.assertIn("too old", k.results["stamped"])
-            self.assertIn("bought", k.results["new"])
-            self.assertAlmostEqual(k.paper.pos[self.T]["q"], 5)
+            self.assertIn("rule trades: KXBTCD, KXETHD", k.results["new"])
             self.assertEqual(os.listdir(k.cmd_dir), [])
 
     def test_unknown_series_is_ignored_not_fatal(self):
@@ -329,7 +290,7 @@ class Live(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             k = self.desk(d, self.api(reply={"order_id": "o1", "fill_count": "5.00", "remaining_count": "0.00",
                                              "average_fill_price": "0.8100", "average_fee_paid": "0.0120"}))
-            r = k._exec(k.live, self.T, 5, 0.82, 50, "manual")
+            r = k._exec(k.live, self.T, 5, 0.82, 50, "auto")
             self.assertAlmostEqual(r["price"], 0.81); self.assertAlmostEqual(r["fee"], 0.06)
             self.assertAlmostEqual(k.live.pos[self.T]["q"], 5)
 
@@ -339,13 +300,13 @@ class Live(unittest.TestCase):
                                              "taker_fees_dollars": "0.0600"},
                                       fills=[{"count_fp": "2.00", "yes_price_dollars": "0.8000", "fee_cost": "0.0300"},
                                              {"count_fp": "3.00", "yes_price_dollars": "0.8200", "fee_cost": "0.0400"}]))
-            r = k._exec(k.live, self.T, 5, 0.82, 50, "manual")
+            r = k._exec(k.live, self.T, 5, 0.82, 50, "auto")
             self.assertAlmostEqual(r["price"], 0.812); self.assertAlmostEqual(r["fee"], 0.07)
 
     def test_lost_reply_not_on_kalshi_is_unfilled(self):
         with tempfile.TemporaryDirectory() as d:
             k = self.desk(d, self.api(found=None))
-            self.assertIsNone(k._exec(k.live, self.T, 5, 0.82, 50, "manual"))
+            self.assertIsNone(k._exec(k.live, self.T, 5, 0.82, 50, "auto"))
             self.assertFalse(k.live.pos)
 
     def test_unconfirmed_order_spends_the_budget_and_stops_the_slot(self):
@@ -354,7 +315,7 @@ class Live(unittest.TestCase):
             api = self.api()
             k = self.desk(d, api)
             with self.assertRaises(engine.Unconfirmed):
-                k._exec(k.live, self.T, 5, 0.82, 50, "manual")
+                k._exec(k.live, self.T, 5, 0.82, 50, "auto")
             k.cfg.live.auto_needs_gate = False
             k.cfg.strategy.minutes = [20]
             k.slots["paper|KXBTCD-E1"] = {20}
