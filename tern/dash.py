@@ -364,6 +364,8 @@ HELP_KEYS = [
                ("4 5 6", "show / hide book, equity, log"),
                ("c", "spot chart span: 5m 15m 1h 24h"),
                ("v", "book and equity: paper / live"),
+               ("w", "watch the highlighted variant: book,"),
+               ("", "equity and band as if it traded (view only)"),
                ("t T", "next / previous of {themes} color themes")])],
     [("trade", [("enter", "use the highlighted variant"),
                 ("r", "the rule trades this coin on / off"),
@@ -439,6 +441,7 @@ class Screen:
         self.focus = "ladder"                  # the box ↑↓ scroll; ←→ move it
         self.slot3 = "ladder"                  # what sits in the ladder's place: ladder or variants
         self.var_sel: str | None = None        # the variant the cursor is on in the variants box
+        self.watch: str | None = None          # w: a variant shown as if it traded (view only; trading is unchanged)
         try:
             with open(self.prefs_path) as fh:
                 d = json.load(fh)
@@ -447,6 +450,8 @@ class Screen:
                 self.series = d["series"]
             if d.get("chart") in CHARTS:
                 self.chart = d["chart"]
+            if isinstance(d.get("watch"), str):
+                self.watch = d["watch"]
             if d.get("slot3") in SLOT3:
                 self.slot3 = d["slot3"]
                 if self.slot3 == "variants":
@@ -481,7 +486,7 @@ class Screen:
         try:
             with open(self.prefs_path + ".tmp", "w") as fh:
                 json.dump({"hidden": sorted(self.hidden), "series": self.series, "chart": self.chart, "theme": self.P.name,
-                           "slot3": self.slot3}, fh)
+                           "slot3": self.slot3, "watch": self.watch}, fh)
             os.replace(self.prefs_path + ".tmp", self.prefs_path)
         except OSError:
             pass
@@ -607,9 +612,24 @@ class Screen:
                 self.put(y, x, piece, P(P.c("key"), bold=True) if i % 2 == 0 else P(WHITE)); x += len(piece)
         self.put(y, x, "─", border)
 
+    def wview(self) -> dict | None:
+        """The watched variant's book-shaped view, or None when not watching (or the engine lacks it)."""
+        if not self.watch:
+            return None
+        v = (self.st.get("views") or {}).get(self.watch)
+        return None if v is None or self.watch == self.active() else v
+
+    def active(self) -> str | None:
+        return (self.st.get("strategy") or {}).get("variant")
+
+    def strat(self) -> dict | None:
+        """The rule's settings the screen marks the ladder and band with: the watched variant's, else the active one's."""
+        w = self.wview()
+        return w["strategy"] if w else self.st.get("strategy")
+
     def rule_on(self) -> bool | None:
-        """Whether the rule trades the coin on screen; None until the engine has said."""
-        S = self.st.get("strategy")
+        """Whether the rule (or the watched variant) trades the coin on screen; None until the engine has said."""
+        S = self.strat()
         return None if not S else self.series in (S.get("series") or [])
 
     def graph(self, y: int, x: int, h: int, w: int, vals: list[float], lo: float, hi: float, grad: list[int],
@@ -677,7 +697,7 @@ class Screen:
             tau = ev["close"] - now
             span([(ev['event'], P(P.c("event"), bold=True)), (" closes ", P(P.c("word_a"))),
                   (clock(tau), P(YELLOW if tau < 600 else WHITE, bold=True))])
-        S = st.get("strategy") or {}
+        S = self.strat() or {}
         if S:
             on = self.series in (S.get("series") or [])
             seg = [("r", P(P.c("key"), bold=True)), ("ule ", P(P.c("word_b"))), ("ON" if on else "off", P(GREEN if on else RED, bold=True))]
@@ -687,9 +707,14 @@ class Screen:
                 if ahead:
                     seg += [(" next ", P(P.c("word_c"))), (f"{max(ahead)}m", P(P.c("key"), bold=True)),
                             (" slot in ", P(P.c("word_c"))), (clock(tau - max(ahead) * 60), P(WHITE))]
-            if st.get('auto_live') and on:
+            if st.get('auto_live') and on and not self.wview():
                 seg.append((" +live", P(RED, bold=True)))
+            if self.wview():
+                seg[1:2] = [(f"ule ({self.watch}) ", P(P.c("word_b")))]
             span(seg)
+        if self.wview():
+            span([("watching ", P(YELLOW)), (self.watch, P(YELLOW, bold=True)),
+                  (" · trading ", P(self.P.grey)), (self.active() or "?", P(GREEN, bold=True)), (" (w)", P(self.P.grey))])
         # the engine can be up while its feeds are not (Wi-Fi drops): say how old the data is
         stale = []
         sec = sp.get("sec") or []
@@ -783,20 +808,20 @@ class Screen:
         gh, gw = h - 4, w - 2 - 6
         if mids and gh > 0:
             lo, hi = max(0.0, min(mids) - 0.05), min(1.0, max(mids) + 0.05)
-            S = st.get("strategy") or {}
+            S = self.strat() or {}
             marks = [m for m in (S.get("band_lo"), 1 - (S.get("band_lo") or 0)) if m is not None]
             self.graph(y + 2, x + 1, gh, gw, mids, lo, hi, P.grad("yes"), marks, self.P.grey)
             self.put(y + 2, x + 1 + gw + 1, f"{hi*100:3.0f}¢", P(self.P.grey))
             self.put(y + 2 + gh - 1, x + 1 + gw + 1, f"{lo*100:3.0f}¢", P(self.P.grey))
         else:
             self.put(y + 3, x + 3, "history builds while the screen watches this strike", P(self.P.grey))
-        S = st.get("strategy") or {}
+        S = self.strat() or {}
         if mid is not None and S:
             fav = mid if mid >= 0.5 else 1 - mid
             spread = (ask - bid) if bid is not None and ask is not None else 1
             inb = S["band_lo"] <= fav < S["band_hi"] and spread <= S["max_spread"] + 1e-9
-            msg = (f"★ in the rule's band: favorite {'YES' if mid >= 0.5 else 'NO'} at {fav*100:.0f}¢" if inb
-                   else f"outside the rule's band ({S['band_lo']*100:.0f}-{S['band_hi']*100:.0f}¢, spread ≤{S['max_spread']*100:.0f}¢)")
+            msg = (f"★ in {'the rule' if not self.wview() else self.watch}'s band: favorite {'YES' if mid >= 0.5 else 'NO'} at {fav*100:.0f}¢" if inb
+                   else f"outside {'the rule' if not self.wview() else self.watch}'s band ({S['band_lo']*100:.0f}-{S['band_hi']*100:.0f}¢, spread ≤{S['max_spread']*100:.0f}¢)")
             self.put(y + h - 2, x + 2, msg[:w - 4], P(YELLOW if inb else self.P.grey))
 
     def ladder_panel(self, y, x, h, w) -> None:
@@ -819,7 +844,7 @@ class Screen:
         top = max(0, min(len(lad) - rows, i - rows // 2))
         book = self.cur_book()
         held = {p["t"]: p for p in (book or {}).get("pos", [])}
-        S = st.get("strategy") or {}
+        S = self.strat() or {}
         hdr = f"{'strike':>9} {'bid':>5} {'ask':>5}  {'prob':<{max(6, w - 47)}} {'sprd':>4} {'vol':>7} {'pos':>6}"
         self.put(y + 1, x + 2, hdr[:w - 4], P(self.P.c("head"), bold=True))
         barw = max(6, w - 47)
@@ -863,7 +888,7 @@ class Screen:
         P, st = self.P, self.st
         vs = st.get("variants") or []
         G = st.get("gate_cfg") or {}
-        self.box(y, x, h, w, "variants", self.P.border("ladder"), "", [("⏎", " use"), "↑↓"])
+        self.box(y, x, h, w, "variants", self.P.border("ladder"), "", [("⏎", " use"), ("w", "atch"), "↑↓"])
         if not vs:
             self.put(y + 2, x + 3, "waiting for the engine…", P(self.P.grey)); return
         names = [v["name"] for v in vs]
@@ -881,7 +906,9 @@ class Screen:
             base = curses.A_REVERSE if sel else 0
             self.put(yy, x + 1, " " * (w - 2), base)
             row = P(P.pick("rows", j / max(1, len(vs) - 1))) | base
-            self.put(yy, x + 2, "●" if v.get("active") else " ", P(GREEN, bold=True) | base)
+            watched = v["name"] == self.watch and not v.get("active")
+            self.put(yy, x + 2, "●" if v.get("active") else "◉" if watched else " ",
+                     P(GREEN if v.get("active") else YELLOW, bold=True) | base)
             self.put(yy, x + 4, f"{v['name']:<8}", P(P.c("variant"), bold=True) | base)
             pc = f"{v['per_contract']*100:+.2f}" if v.get("per_contract") is not None else "-"
             win = f"{v['win']:.0%}" if v.get("win") is not None else "-"
@@ -924,15 +951,30 @@ class Screen:
             self.put(gy, x + 1 + gw + 1, money(hi, True)[:10], P(self.P.grey))
             self.put(gy + gh - 1, x + 1 + gw + 1, money(lo, True)[:10], P(self.P.grey))
             self.put(gy + gh, x + 2, f"P&L over its last {len(curve)} hours", P(self.P.grey))
-        elif gh >= 1:
+        elif gh >= 1 and len(curve) < 2:
             self.put(gy + 1, x + 3, "the curve starts after a couple of settled hours", P(self.P.grey))
         if cur["name"] == active:
             tip, c = (f"● {active} is in use: paper now, live " + ("too" if (cur.get("gate") or {}).get("passed")
                       else "once it passes the gate")), GREEN
+        elif cur["name"] == self.watch:
+            tip, c = f"◉ watching {cur['name']} (view only) · w stops · enter trades it", YELLOW
         else:
             live = st.get("mode") == "live" or st.get("live_enabled")
-            tip, c = f"enter: paper{' and live' if live else ''} trade {cur['name']} instead of {active}", self.P.c("key")
+            tip, c = f"w: watch {cur['name']} · enter: paper{' and live' if live else ''} trade it instead of {active}", self.P.c("key")
         self.put(y + h - 2, x + 2, tip[:w - 4], P(c, bold=True))
+
+    def toggle_watch(self) -> None:
+        """w: show the highlighted variant as if it traded (book, equity, band), or stop. View only."""
+        if self.wview():
+            name, self.watch = self.watch, None
+            self.save_prefs(); self.say(f"stopped watching {name}: back to the {self.active()} paper book"); return
+        if self.slot3 != "variants" or "ladder" in self.hidden:
+            self.say("w watches a variant: press 3 for the variants box, highlight one, then w"); return
+        name = self.var_sel
+        if not name or name == self.active():
+            self.say(f"{name} is what trades: the paper book already shows it"); return
+        self.watch = name; self.pos_off = 0; self.save_prefs()
+        self.say(f"watching {name} (view only) · {self.active()} still trades · w or v goes back")
 
     def use_variant(self) -> None:
         """Enter in the variants box: trade the picked variant. Paper switches at once; while live is
@@ -960,17 +1002,22 @@ class Screen:
         self.send(op="variant", name=cur["name"])
 
     def cur_book(self):
+        if self.wview():
+            return self.wview()
         v = self.book_view or ("live" if self.st.get("mode") == "live" else "paper")
         return self.st.get(v)
 
     def book_panel(self, y, x, h, w) -> None:
         P, st = self.P, self.st
-        v = self.book_view or ("live" if st.get("mode") == "live" else "paper")
-        b = st.get(v) or {}
+        wv = self.wview()
+        v = "watch" if wv else self.book_view or ("live" if st.get("mode") == "live" else "paper")
+        b = wv if wv else st.get(v) or {}
         self.box(y, x, h, w, "book", self.P.border("book"), "", PANEL_KEYS["book"](self))
         tabs: list[tuple[str, int]] = []
         for name in ("paper", "live"):
             tabs += [(f" {name} ", P(WHITE, bold=True) | curses.A_REVERSE if name == v else P(self.P.grey)), (" ", 0)]
+        if wv:
+            tabs += [(f" watching {self.watch} ", P(YELLOW, bold=True) | curses.A_REVERSE), (" view only", P(self.P.grey))]
         body = [tabs]                                    # the whole book is one list of lines and scrolls as one
         if b:
             eq, start = b.get("equity"), b.get("start") or 0
@@ -984,6 +1031,11 @@ class Screen:
                 L = st.get("live_cfg") or {}
                 lines.append(("caps", f"risk {money(L.get('capital_usd'))} · order {money(L.get('max_order_usd'))} · day -{money(L.get('max_daily_loss'))}", self.P.grey))
             g = st.get("gate") or {}
+            if wv:                                       # the watched variant's own record, not the paper book's
+                vr = next((x for x in st.get("variants") or [] if x["name"] == self.watch), {})
+                g = {"entries": vr.get("entries", 0), "open": vr.get("open", 0), "pnl": vr.get("pnl", 0.0),
+                     "win": vr.get("win"), "per_contract": vr.get("per_contract") or 0.0} if vr else {}
+                lines[0] = ("equity", money(eq) + "  on a paper start", val)
             if g:
                 wr = f"{g['win']:.0%}" if g.get("win") is not None else "-"
                 lines.append(("rule", f"{g['entries']} settled · {g['open']} open · {money(g['pnl'], True)} · win {wr} · "
@@ -1060,12 +1112,17 @@ class Screen:
 
     def equity_panel(self, y, x, h, w) -> None:
         P, st = self.P, self.st
+        wv = self.wview()
         v = self.book_view or ("live" if st.get("mode") == "live" else "paper")
-        b = st.get(v) or {}
+        b = wv if wv else st.get(v) or {}
         curve = [e for _, e in (b.get("curve") or [])]
-        self.box(y, x, h, w, f"equity · {v}", self.P.border("equity"), "", f"{len(curve)} min")
+        if wv:
+            curve = [b["start"]] + curve
+        self.box(y, x, h, w, f"equity · {'watching ' + self.watch if wv else v}", self.P.border("equity"), "",
+                 f"{len(curve) - 1} h" if wv else f"{len(curve)} min")
         if len(curve) < 2:
-            self.put(y + h // 2, x + 3, "the curve starts after a couple of minutes", P(self.P.grey)); return
+            self.put(y + h // 2, x + 3, "the curve starts after a settled hour" if wv else
+                     "the curve starts after a couple of minutes", P(self.P.grey)); return
         lo, hi = min(curve), max(curve)
         pad = (hi - lo) * 0.1 or 1.0
         start = b.get("start") or curve[0]
@@ -1486,8 +1543,13 @@ class Screen:
             self.chart = order[(order.index(self.chart) + 1) % len(order)] if self.chart in order else "15m"
             self.save_prefs()
         elif ch == ord("v"):
-            cur = self.book_view or ("live" if self.st.get("mode") == "live" else "paper")
-            self.book_view = "live" if cur == "paper" else "paper"
+            if self.wview():                             # v leaves the watch view for the real book
+                self.watch = None; self.save_prefs(); self.say("back to the paper/live book")
+            else:
+                cur = self.book_view or ("live" if self.st.get("mode") == "live" else "paper")
+                self.book_view = "live" if cur == "paper" else "paper"
+        elif ch == ord("w"):
+            self.toggle_watch()
         elif ch == ord("g"):
             self.overlay, self.ov_off = "gate", 0
         elif ch == ord("?") or ch == ord("h"):

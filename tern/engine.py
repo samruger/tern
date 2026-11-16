@@ -815,15 +815,22 @@ class Desk:
         shadow = self.shadow.summary()
         variants = [{**r, "desc": shadowmod.DESC.get(r["name"], ""), "active": r["name"] == self.variant(),
                      "gate": self.gate(r["name"], r)} for r in shadow]
-        lo, hi, cap, mins, spread, coins = shadowmod.params(self.variant(), self.cfg.strategy)
-        strategy = {**self.cfg.strategy.__dict__, "variant": self.variant(), "band_lo": lo, "band_hi": hi, "cap": cap,
+
+        def strat(name: str) -> dict:
+            lo, hi, cap, mins, spread, coins = shadowmod.params(name, self.cfg.strategy)
+            return {**self.cfg.strategy.__dict__, "variant": name, "band_lo": lo, "band_hi": hi, "cap": cap,
                     "minutes": mins, "max_spread": spread, "series": coins}
+        strategy = strat(self.variant())
+        # every variant as if it traded, for the screen's watch view (w): its shadow record shaped like a book
+        strikes = {t: m.get("strike") for t, m in self.meta.items()}
+        views = {r["name"]: {**self.shadow.view(r["name"], r, mids, strikes, self.cfg.paper_capital),
+                             "strategy": strat(r["name"])} for r in shadow}
         st = {"heartbeat": now, "stopped": stopped, "pid": os.getpid(), "mode": self.mode, "live_enabled": self.cfg.live.enabled,
               "live_error": self.live_error, "keys": self._has_keys(now), "balance": self.balance,
               "spot": sp, "events": evs, "hist": hist, "view": self.view,
               "paper": book_view(self.paper), "live": book_view(self.live),
               "gate": gate, "shadow": shadow, "variants": variants, "gate_cfg": self.cfg.gate.__dict__,
-              "strategy": strategy, "live_cfg": self.cfg.live.__dict__,
+              "strategy": strategy, "views": views, "live_cfg": self.cfg.live.__dict__,
               "logs": [list(x) for x in list(self.logs)[-200:]], "results": self.results,
               "auto_live": self._live_rule_on(gate)}
         _atomic_json(os.path.join(self.fast, "status.json"), st)

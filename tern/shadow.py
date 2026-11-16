@@ -29,6 +29,7 @@ from __future__ import annotations
 import json
 import math
 import os
+from collections import deque
 
 from .book import taker_fee
 from .config import SERIES
@@ -98,6 +99,8 @@ class Shadow:
         self.slots: dict[str, list] = {}           # event -> slots taken
         self.agg: dict[str, dict[str, list]] = {}  # variant -> event -> [pnl, contracts, entries, wins, stops]
         self.closes: dict[str, float] = {}         # event -> close time, to order the hours
+        self.recent: dict[str, deque] = {}         # variant -> its last settled rows, for the screen's watch view
+        self.fees: dict[str, float] = {}           # variant -> entry fees paid on settled rows
         self.dirty = False
         try:
             with open(self.open_path) as fh:
@@ -134,6 +137,8 @@ class Shadow:
         a[0] += r["pnl"]; a[1] += r["n"]; a[2] += 1; a[3] += r["pnl"] > 0; a[4] += r.get("exit") == "stop"
         if r.get("close"):
             self.closes[r["event"]] = r["close"]
+        self.recent.setdefault(r["v"], deque(maxlen=30)).append(r)
+        self.fees[r["v"]] = self.fees.get(r["v"], 0.0) + (r.get("fee") or 0.0)
 
     def _close(self, r: dict, pnl: float, **extra) -> None:
         r.update(pnl=round(pnl, 4), **extra)
@@ -246,6 +251,40 @@ class Shadow:
                         "win": wins / entries if entries else None, "stops": stops, "hours": len(hours), "t": t,
                         "curve": curve[-240:]})
         return out
+
+
+    def view(self, name: str, rec: dict, mids: dict, strikes: dict, start: float) -> dict:
+        """A variant's shadow record shaped like a book, so the screen can show it as if it traded:
+        open entries marked at the mid, the last settlements and fills, and equity on a paper start.
+        rec is the variant's summary() row. Watching it changes nothing about what trades."""
+        pos, open_cost, open_fee, mark = [], 0.0, 0.0, 0.0
+        for r in sorted((r for r in self.rows if r["v"] == name), key=lambda r: (r["close"], r["ts"])):
+            m = mids.get(r["ticker"])
+            val = None if m is None else (m if r["side"] == "yes" else 1 - m)
+            q = r["n"] if r["side"] == "yes" else -r["n"]
+            open_cost += r["n"] * r["cost"]; open_fee += r["fee"]
+            mark += r["n"] * (val if val is not None else r["cost"])
+            pos.append({"t": r["ticker"], "q": q, "avg": r["cost"], "mark": val, "k": strikes.get(r["ticker"]),
+                        "close": r["close"], "pnl": None if val is None else r["n"] * (val - r["cost"])})
+        cash = start + rec["pnl"] - open_cost - open_fee
+        trades = []
+        done = list(self.recent.get(name, ()))
+        for r in done + [r for r in self.rows if r["v"] == name]:
+            q = r["n"] if r["side"] == "yes" else -r["n"]
+            trades.append({"kind": "fill", "ticker": r["ticker"], "delta": q, "ts": r["ts"], "fee": r["fee"],
+                           "price": r["cost"] if q > 0 else 1 - r["cost"], "realized": -r["fee"]})
+        for r in done:
+            q = r["n"] if r["side"] == "yes" else -r["n"]
+            void = r.get("exit") == "void"
+            won = r["pnl"] + r["fee"] > 0
+            trades.append({"kind": "settle", "ticker": r["ticker"], "delta": -q, "ts": r.get("close") or r["ts"],
+                           "realized": r["pnl"] + r["fee"],  # the fee shows on the fill, as in the book
+                           "result": "void" if void else ("yes" if won == (q > 0) else "no")})
+        trades.sort(key=lambda t: (t["ts"], t["kind"] == "settle"))
+        curve = [round(start + c, 2) for c in rec.get("curve") or []]
+        return {"cash": cash, "equity": cash + mark, "start": start, "realized": rec["pnl"],
+                "fees": self.fees.get(name, 0.0) + open_fee, "at_risk": open_cost, "pos": pos,
+                "trades": trades[-30:], "curve": [[i, e] for i, e in enumerate(curve)], "hourly": True}
 
 
 def table(rows: list[dict]) -> list[str]:

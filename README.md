@@ -85,11 +85,22 @@ variants box with `↑↓` and `enter`. While live is on or armed, switching ask
 you to type `live`. Choosing whichever looks best after watching them flatters
 it; the gate is the check.
 
+To look at a variant without trading it, highlight it and press `w`. The book,
+equity, ladder and band then show that variant's shadow record as if it traded
+(on a $1,000 paper start), and the status line says `watching X · trading Y`.
+Nothing about what trades changes. `w` again or `v` goes back to the real book.
+
 | Variant | What it does |
 |---|---|
 | `base` | the rule as configured |
 | `band90` | only favorites at 90–95¢ |
 | `cap1` | the rule, but at most one entry per strike per hour (its hours start 2026-11-15) |
+| `band80` | only favorites at 80–90¢, where the 67-day study found the bias (from 2026-11-16) |
+| `late` | only the 15m and 10m slots (from 2026-11-16) |
+| `tight1` | only strikes with a 1¢ spread (from 2026-11-16) |
+| `band75` | only favorites at 75–80¢; with `band80` and `band90` it splits the band in three (from 2026-11-16) |
+| `early` | only the 25m and 20m slots, the other half of `late` (from 2026-11-16) |
+| `multi` | the rule on every coin at once, each coin's hour with its own budget. Its dollars are up to six times `base`'s, so compare it by ¢/contract and t (from 2026-11-16) |
 
 Retired 2026-11-16, records kept in `runtime/shadow-settled.jsonl` and listed by `report`:
 `stop20` (sell 20¢ under entry: −$191 over 165 hours, t −3.0) and `arb`
@@ -128,7 +139,7 @@ python3 -m tern live-check
 | ⁵ equity | that book's equity by the minute |
 | log | what the engine did |
 
-Keys: `↑↓` / `PgUp PgDn` move in the focused box · `←→` focus · `1`–`6` show/hide a box (`3` cycles ladder/variants/hidden) · `enter` use the highlighted variant · `tab` next coin · `r` rule trades this coin ·
+Keys: `↑↓` / `PgUp PgDn` move in the focused box · `←→` focus · `1`–`6` show/hide a box (`3` cycles ladder/variants/hidden) · `enter` use the highlighted variant · `w` watch it (view only) · `tab` next coin · `r` rule trades this coin ·
 `c` chart range · `v` book · `L` arm/disarm live · `g` gate · `R` reset paper ·
 `s` start the engine · `?` help · `q` close (the engine keeps running).
 

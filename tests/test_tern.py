@@ -738,6 +738,27 @@ class Shadows(unittest.TestCase):
             sh.settle({"KXBTCD-H1-T1": True, "KXSOLD-H1-T1": True})
             self.assertEqual(sh.summary(["multi"])[0]["hours"], 1)         # two coins in one hour are one hour
 
+    def test_a_variant_can_be_watched_as_if_it_traded(self):
+        from tern.config import Strategy
+        from tern.shadow import Shadow
+        with tempfile.TemporaryDirectory() as d:
+            sh, S = Shadow(d), Strategy(series=["E"])
+            sh.step("E-H1", 1000.0, [self.m("E-H1-T1", 0.92, 0.93, 1), self.m("E-H1-T2", 0.10, 0.11, 2)], S, 1000.0 - 25 * 60 + 1)
+            sh.settle({"E-H1-T1": True, "E-H1-T2": True})                   # T1's YES won, T2's NO lost
+            sh.step("E-H2", 5000.0, [self.m("E-H2-T1", 0.80, 0.81, 1)], S, 5000.0 - 25 * 60 + 1)
+            rec = sh.summary(["base"])[0]
+            v = sh.view("base", rec, {"E-H2-T1": 0.85}, {"E-H2-T1": 65000.0}, 1000.0)
+            self.assertEqual(len(v["pos"]), 1)
+            p = v["pos"][0]
+            self.assertEqual((p["q"], p["k"]), (5.0, 65000.0))
+            self.assertAlmostEqual(p["pnl"], 5 * (0.85 - 0.81))
+            self.assertAlmostEqual(v["realized"], rec["pnl"])
+            self.assertAlmostEqual(v["equity"], 1000.0 + rec["pnl"] - sh.rows[0]["fee"] + 5 * (0.85 - 0.81))
+            settled = [t for t in v["trades"] if t["kind"] == "settle"]
+            self.assertEqual(sorted(t["result"] for t in settled), ["yes", "yes"])   # the market's result, as the book keeps it
+            self.assertEqual(sum(t["kind"] == "fill" for t in v["trades"]), 3)
+            self.assertEqual(v["curve"][-1][1], round(1000.0 + rec["pnl"], 2))
+
     def test_retired_variants_keep_their_record_but_stop_trading(self):
         import json
         from tern.config import Strategy
