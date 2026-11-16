@@ -12,6 +12,24 @@ from tern.sign import load_key, signature
 from tern.strategy import due_slot, signals
 from tern.dash import braille, by_time
 
+# Every engine keeps its status and view files in $XDG_RUNTIME_DIR/tern-<hash of its runtime>. Each test has a
+# fresh temp runtime, so without this every run would leave dozens of folders there for good (until reboot).
+_RUN = {}
+
+
+def setUpModule():
+    _RUN["old"] = os.environ.get("XDG_RUNTIME_DIR")
+    _RUN["dir"] = tempfile.mkdtemp(prefix="tern-tests-")
+    os.environ["XDG_RUNTIME_DIR"] = _RUN["dir"]
+
+
+def tearDownModule():
+    if _RUN["old"] is None:
+        os.environ.pop("XDG_RUNTIME_DIR", None)
+    else:
+        os.environ["XDG_RUNTIME_DIR"] = _RUN["old"]
+    shutil.rmtree(_RUN["dir"], ignore_errors=True)
+
 
 class Fees(unittest.TestCase):
     def test_kalshi_examples(self):
