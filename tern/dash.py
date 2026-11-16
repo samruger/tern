@@ -14,19 +14,21 @@ import time
 import uuid
 
 from . import config as cfgmod
+from . import themes
 from .engine import live_dir
 
 # ---------------------------------------------------------------- colors
 
 BLACK, RED, GREEN, YELLOW, BLUE, MAGENTA, CYAN, WHITE = range(8)
-PINK = 205                                  # 256-color: box numbers and key hints on the borders
 
-GRAD256 = {
-    "spot": [24, 25, 26, 32, 38, 44, 50, 87],
-    "yes": [34, 70, 106, 142, 178, 214, 208, 203],
-    "eq_up": [22, 28, 34, 35, 41, 47, 48, 49],
-    "eq_dn": [52, 88, 124, 160, 196, 197, 198, 199],
-}
+ROW = -1                                    # placeholder attr: "tint me by my row", filled in when drawn
+
+# what each theme role draws as on an 8-color terminal (themes only apply with 256 colors)
+FEW = {"grey": WHITE, "key": MAGENTA, "head": WHITE, "sym": CYAN, "event": BLUE, "unit": WHITE,
+       "word_a": WHITE, "word_b": WHITE, "word_c": WHITE, "ticker": CYAN, "strike": YELLOW, "slot": YELLOW,
+       "verb": MAGENTA, "variant": CYAN, "phrase": YELLOW, "sep": MAGENTA, "value": WHITE,
+       "rows": WHITE, "fade_txt": WHITE, "fade_ts": BLUE}
+FEW_BORDER = {"spot": CYAN, "contract": MAGENTA, "ladder": BLUE, "book": YELLOW, "equity": GREEN, "log": BLUE}
 GRAD8 = {"spot": [BLUE, CYAN], "yes": [GREEN, YELLOW, RED], "eq_up": [GREEN], "eq_dn": [RED]}
 
 
@@ -39,10 +41,17 @@ class Pal:
         except curses.error:
             self.bg = BLACK
         self.many = curses.COLORS >= 256
-        self.grey = 8 if curses.COLORS >= 16 else WHITE
         self.cache: dict[int, int] = {}
+        self.set_theme(None)
+
+    def set_theme(self, name: str | None) -> None:
+        self.name = name if name in themes.THEMES else themes.DEFAULT
+        self.t = themes.get(self.name)
+        self.grey = self.t["grey"] if self.many else 8 if curses.COLORS >= 16 else WHITE
 
     def __call__(self, fg: int, bold: bool = False, dim: bool = False) -> int:
+        if self.many:
+            fg = self.t["base"].get(fg, fg)
         if fg not in self.cache:
             n = len(self.cache) + 1
             if n >= curses.COLOR_PAIRS:
@@ -56,11 +65,26 @@ class Pal:
             a |= curses.A_DIM
         return a
 
+    def c(self, role: str) -> int:
+        """The theme's color for a role (see themes.py)."""
+        return self.t[role] if self.many else FEW[role]
+
+    def border(self, name: str) -> int:
+        return self.t["border"][name] if self.many else FEW_BORDER[name]
+
+    def pick(self, role: str, frac: float, reverse: bool = False) -> int:
+        """A color from a theme scale (rows, fade_txt, fade_ts) at 0..1 along it."""
+        if not self.many:
+            return FEW[role]
+        scale = self.t[role][::-1] if reverse else self.t[role]
+        return scale[max(0, min(len(scale) - 1, int(frac * (len(scale) - 1) + 0.5)))]
+
     def grad(self, name: str) -> list[int]:
-        return (GRAD256 if self.many else GRAD8)[name]
+        return self.t["grads"][name] if self.many else GRAD8[name]
 
 
 # log colors: the line's level tints its plain text and its marker; tokens get their own colors
+
 LOG_BASE = {"error": RED, "warn": YELLOW, "live": RED, "cmd": CYAN}
 LOG_MARK = {"error": "✖", "warn": "▲", "live": "●", "cmd": "›"}
 LOG_BOOK = {"paper": CYAN, "live": RED, "shadow": MAGENTA, "kill": RED}
@@ -71,8 +95,11 @@ LOG_TOKENS = re.compile(
     r"|(?P<signed>(?<![\w.])[+-]\$?[0-9][0-9,]*(?:\.[0-9]+)?[¢%]?)"
     r"|(?P<money>\$[0-9][0-9,]*(?:\.[0-9]+)?)"
     r"|(?P<slot>\b[0-9]+m slot\b)"
+    r"|(?P<verb>\b(?:settled|started|stopped|opened|closed|placed|filled|cancell?ed)\b)"
+    r"|(?P<variant>\b[a-z]+[0-9]*(?= [+-][0-9]))"
     r"|(?P<good>\b(?:bought|authenticated|state saved)\b)"
     r"|(?P<bad>\b(?:KILL|rejected|failed|unreadable|error|stopped for this slot)\b)"
+    r"|(?P<phrase>\b(?:favorites in band|in band|mode)\b)"
     r"|(?P<num>\b[0-9]+(?:\.[0-9]+)?\b)"
     r"|(?P<sep>[·→]|->)")
 
@@ -271,6 +298,7 @@ risk, live.max_order_usd per order, live.max_daily_loss turns live off.
   mouse wheel   scrolls the panel under the pointer: ladder, log, book
   1-6           show / hide a box: spot, contract, ladder, book, equity, log
   r             rule trades this coin on/off
+  t             color theme (13 of them, see themes.py)
   c             chart: 5m 15m 1h 24h   v           book shown: paper / live
   L             arm / disarm live      g           gate and checklist
   R             reset paper            s           start / stop the engine
@@ -292,6 +320,7 @@ PANEL_KEYS = {
                        else ("r", "ule ", "on", "/off") if s.rule_on() else ("r", "ule on/", "off"),   # pink: the state now
                        ("c", "hart " + s.chart)],
     "book": lambda s: [("v", "iew"), ("L", "ive"), ("R", "eset")],
+    "contract": lambda s: [("t", "heme ", s.P.name)],
     "log": lambda s: [("g", "ate"), ("s", "top" if s.alive else "tart"), ("h", "elp"), ("q", "uit")],
 }
 
@@ -329,6 +358,7 @@ class Screen:
                 self.series = d["series"]
             if d.get("chart") in CHARTS:
                 self.chart = d["chart"]
+            self.P.set_theme(d.get("theme"))
         except (OSError, json.JSONDecodeError, AttributeError, TypeError):
             pass
 
@@ -357,7 +387,7 @@ class Screen:
     def save_prefs(self) -> None:
         try:
             with open(self.prefs_path + ".tmp", "w") as fh:
-                json.dump({"hidden": sorted(self.hidden), "series": self.series, "chart": self.chart}, fh)
+                json.dump({"hidden": sorted(self.hidden), "series": self.series, "chart": self.chart, "theme": self.P.name}, fh)
             os.replace(self.prefs_path + ".tmp", self.prefs_path)
         except OSError:
             pass
@@ -424,7 +454,7 @@ class Screen:
     def box(self, y: int, x: int, h: int, w: int, title: str, color: int, key: str = "", right=()) -> None:
         """A rounded box with its number and title on the top border, btop style. `right` holds the
         segments drawn at the top border's right end: a plain string (grey info) or a (key, rest)
-        hint whose key shows pink (PINK). Segments that don't fit drop from the left."""
+        hint whose key shows in the theme's key color. Segments that don't fit drop from the left."""
         P = self.P
         a = P(color)
         key = key or self.panel_key
@@ -437,7 +467,7 @@ class Screen:
         cx = x + 2
         self.put(y, cx, "─", a); cx += 1
         if key:
-            self.put(y, cx, key, P(PINK if P.many else MAGENTA, bold=True)); cx += len(key)
+            self.put(y, cx, key, P(P.c("key"), bold=True)); cx += len(key)
         self.put(y, cx, title, P(WHITE, bold=True)); cx += len(title)
         self.put(y, cx, "─", a)
         segs = [right] if isinstance(right, str) else list(right)
@@ -458,7 +488,7 @@ class Screen:
             self.put(y, x, seg, P(P.grey)); x += len(seg)
         else:                                    # pieces alternate pink (a key, or the rule's state) and white
             for i, piece in enumerate(seg):
-                self.put(y, x, piece, P(PINK if P.many else MAGENTA, bold=True) if i % 2 == 0 else P(WHITE)); x += len(piece)
+                self.put(y, x, piece, P(P.c("key"), bold=True) if i % 2 == 0 else P(WHITE)); x += len(piece)
         self.put(y, x, "─", border)
 
     def rule_on(self) -> bool | None:
@@ -521,26 +551,26 @@ class Screen:
                 self.put(hy, x, text, attr); x += len(text)
             x += 2
         x += 1
-        price = [(prod.split('-')[0] + " ", P(CYAN, bold=True)), (money(p), P(WHITE, bold=True))]
+        price = [(prod.split('-')[0] + " ", P(P.c("sym"), bold=True)), (money(p), P(WHITE, bold=True))]
         if chg is not None:
             price.append((f" {'▲' if chg >= 0 else '▼'}{chg:+.2%}", P(GREEN if chg >= 0 else RED, bold=True)))
-            price.append((" 1h", P(grey)))
+            price.append((" 1h", P(P.c("unit"))))
         span(price)
         ev = (st.get("events") or {}).get(self.series)
         if ev:
             tau = ev["close"] - now
-            span([(ev['event'], P(75 if many else BLUE, bold=True)), (" closes ", P(grey)),
+            span([(ev['event'], P(P.c("event"), bold=True)), (" closes ", P(P.c("word_a"))),
                   (clock(tau), P(YELLOW if tau < 600 else WHITE, bold=True))])
         S = st.get("strategy") or {}
         if S:
             on = self.series in (S.get("series") or [])
-            seg = [("rule ", P(grey)), ("ON" if on else "off", P(GREEN, bold=True) if on else P(grey))]
+            seg = [("r", P(P.c("key"), bold=True)), ("ule ", P(P.c("word_b"))), ("ON" if on else "off", P(GREEN if on else RED, bold=True))]
             if ev and on:
                 tau = ev["close"] - now
                 ahead = [m for m in S.get("minutes", []) if m * 60 < tau]
                 if ahead:
-                    seg += [(" next ", P(grey)), (f"{max(ahead)}m", P(PINK if many else MAGENTA, bold=True)),
-                            (" slot in ", P(grey)), (clock(tau - max(ahead) * 60), P(WHITE))]
+                    seg += [(" next ", P(P.c("word_c"))), (f"{max(ahead)}m", P(P.c("key"), bold=True)),
+                            (" slot in ", P(P.c("word_c"))), (clock(tau - max(ahead) * 60), P(WHITE))]
             if st.get('auto_live') and on:
                 seg.append((" +live", P(RED, bold=True)))
             span(seg)
@@ -572,7 +602,7 @@ class Screen:
         row = self.row(self.sel)
         if row:
             strike = strike_of(row["k"])
-        self.box(y, x, h, w, prod.lower(), CYAN, "", PANEL_KEYS["spot"](self))
+        self.box(y, x, h, w, prod.lower(), self.P.border("spot"), "", PANEL_KEYS["spot"](self))
         gh = h - 3
         if not vals:
             self.put(y + h // 2, x + 3, "waiting for spot…", P(self.P.grey)); return
@@ -613,7 +643,7 @@ class Screen:
         P, st = self.P, self.st
         r = self.row(self.sel)
         title = f"yes {strike_label(r['k'])}" if r else "contract"
-        self.box(y, x, h, w, title, MAGENTA, "", "")
+        self.box(y, x, h, w, title, self.P.border("contract"), "", PANEL_KEYS["contract"](self))
         if not r:
             self.put(y + 2, x + 3, "pick a strike in the ladder", P(self.P.grey)); return
         hist = (st.get("hist") or {}).get(self.sel) or []
@@ -656,7 +686,7 @@ class Screen:
     def ladder_panel(self, y, x, h, w) -> None:
         P, st = self.P, self.st
         lad = self.ladder()
-        self.box(y, x, h, w, "ladder", 208 if self.P.many else YELLOW, "", "↑↓")
+        self.box(y, x, h, w, "ladder", self.P.border("ladder"), "", "↑↓")
         if not lad:
             self.put(y + 2, x + 3, "waiting for the hourly event…", P(self.P.grey)); return
         prod = cfgmod.SERIES[self.series]
@@ -675,7 +705,7 @@ class Screen:
         held = {p["t"]: p for p in (book or {}).get("pos", [])}
         S = st.get("strategy") or {}
         hdr = f"{'strike':>9} {'bid':>5} {'ask':>5}  {'prob':<{max(6, w - 47)}} {'sprd':>4} {'vol':>7} {'pos':>6}"
-        self.put(y + 1, x + 2, hdr[:w - 4], P(self.P.grey, bold=True))
+        self.put(y + 1, x + 2, hdr[:w - 4], P(self.P.c("head"), bold=True))
         barw = max(6, w - 47)
         for j, r in enumerate(lad[top:top + rows]):
             yy = y + 2 + j
@@ -702,8 +732,9 @@ class Screen:
             col = g[min(len(g) - 1, int(frac * (len(g) - 1) + 0.5))]
             self.put(yy, x + 25, bar.ljust(barw), P(col) | base)
             self.put(yy, x + 25 + barw - 4, f"{(mid or 0)*100:3.0f}%", P(WHITE, bold=True) | base)
-            self.put(yy, x + 26 + barw, f"{(spread*100 if spread is not None else 0):>4.1f}", P(self.P.grey) | base)
-            self.put(yy, x + 31 + barw, f"{volume(r['v']):>7}", P(self.P.grey) | base)
+            tint = P(P.pick("rows", frac, reverse=True)) | base     # long shots blue, near-certain pink
+            self.put(yy, x + 26 + barw, f"{(spread*100 if spread is not None else 0):>4.1f}", tint)
+            self.put(yy, x + 31 + barw, f"{volume(r['v']):>7}", tint)
             hp = held.get(r["t"])
             if hp:
                 self.put(yy, x + 39 + barw, f"{hp['q']:+6g}"[:6], P(GREEN if hp["q"] > 0 else MAGENTA, bold=True) | base)
@@ -720,7 +751,7 @@ class Screen:
         P, st = self.P, self.st
         v = self.book_view or ("live" if st.get("mode") == "live" else "paper")
         b = st.get(v) or {}
-        self.box(y, x, h, w, "book", YELLOW, "", PANEL_KEYS["book"](self))
+        self.box(y, x, h, w, "book", self.P.border("book"), "", PANEL_KEYS["book"](self))
         tabs: list[tuple[str, int]] = []
         for name in ("paper", "live"):
             tabs += [(f" {name} ", P(WHITE, bold=True) | curses.A_REVERSE if name == v else P(self.P.grey)), (" ", 0)]
@@ -728,9 +759,10 @@ class Screen:
         if b:
             eq, start = b.get("equity"), b.get("start") or 0
             pnl = (eq - start) if eq is not None and start else None
-            lines = [("equity", money(eq), WHITE), ("P&L", money(pnl, True) + (f"  {pnl/start:+.2%}" if pnl is not None and start else ""),
+            val = P.c("value")               # book values in pink; labels take the row gradient
+            lines = [("equity", money(eq), val), ("P&L", money(pnl, True) + (f"  {pnl/start:+.2%}" if pnl is not None and start else ""),
                                                      GREEN if (pnl or 0) >= 0 else RED),
-                     ("cash", money(b.get("cash")), WHITE), ("at risk", money(b.get("at_risk")), YELLOW),
+                     ("cash", money(b.get("cash")), val), ("at risk", money(b.get("at_risk")), YELLOW),
                      ("fees", money(b.get("fees")), self.P.grey)]
             if v == "live":
                 L = st.get("live_cfg") or {}
@@ -740,7 +772,7 @@ class Screen:
                 wr = f"{g['win']:.0%}" if g.get("win") is not None else "-"
                 lines.append(("rule", f"{g['entries']} settled · {g['open']} open · {money(g['pnl'], True)} · win {wr} · "
                                       f"{g['per_contract']*100:+.2f}¢/ct", GREEN if g["pnl"] >= 0 else RED))
-            body += [[(f"{k:<8} ", P(self.P.grey)), (val, P(c, bold=k == "equity"))] for k, val, c in lines]
+            body += [[(f"{k:<8} ", ROW), (val, P(c, bold=k == "equity"))] for k, val, c in lines]
             body += [[("", 0)]] + self.book_lines(b)
         yy = y + 1
         room = max(0, h - 2)
@@ -749,17 +781,18 @@ class Screen:
             self.put(y, x + w - 2, "▲", P(YELLOW))
         if self.pos_off + room < len(body):
             self.put(y + h - 1, x + w - 2, "▼", P(YELLOW))
-        for line in body[self.pos_off:self.pos_off + room]:
+        for j, line in enumerate(body[self.pos_off:self.pos_off + room]):
             cx = x + 2
+            row = P(P.pick("rows", j / max(1, room - 1)))     # btop-style gradient down the list
             for text, attr in line:
-                self.put(yy, cx, text, attr); cx += len(text)
+                self.put(yy, cx, text, row if attr == ROW else attr); cx += len(text)
             yy += 1
 
     def book_lines(self, b: dict) -> list[list[tuple[str, int]]]:
         """The book's scrolling part (petrel style): open positions, then the last settlements, then
         the last fills, newest first. Each line is a list of (text, attr) pieces."""
         P, now = self.P, time.time()
-        grey, head, white = P(self.P.grey), P(self.P.grey, bold=True), P(WHITE)
+        grey, head, white = P(self.P.grey), P(self.P.c("head"), bold=True), ROW
 
         def side(q):
             return [(f"{'YES' if q > 0 else 'NO':<4}", P(GREEN if q > 0 else MAGENTA, bold=True))]
@@ -814,7 +847,7 @@ class Screen:
         v = self.book_view or ("live" if st.get("mode") == "live" else "paper")
         b = st.get(v) or {}
         curve = [e for _, e in (b.get("curve") or [])]
-        self.box(y, x, h, w, f"equity · {v}", GREEN, "", f"{len(curve)} min")
+        self.box(y, x, h, w, f"equity · {v}", self.P.border("equity"), "", f"{len(curve)} min")
         if len(curve) < 2:
             self.put(y + h // 2, x + 3, "the curve starts after a couple of minutes", P(self.P.grey)); return
         lo, hi = min(curve), max(curve)
@@ -828,17 +861,19 @@ class Screen:
 
     def log_panel(self, y, x, h, w) -> None:
         P = self.P
-        self.box(y, x, h, w, "log", BLUE, "", PANEL_KEYS["log"](self))
+        self.box(y, x, h, w, "log", self.P.border("log"), "", PANEL_KEYS["log"](self))
         logs = self.st.get("logs") or []
         rows = h - 2
         end = self.log_end(logs, rows)
         saved, self.clip = self.clip, x + w - 2
-        for j, (ts, lvl, msg) in enumerate(logs[max(0, end - rows):end]):
+        shown = logs[max(0, end - rows):end]
+        for j, (ts, lvl, msg) in enumerate(shown):
             yy = y + 1 + j
-            self.put(yy, x + 2, time.strftime("%H:%M:%S", time.localtime(ts)), P(self.P.grey))
+            age = (len(shown) - 1 - j) / max(1, rows - 1)          # 0 for the bottom (newest) line
+            self.put(yy, x + 2, time.strftime("%H:%M:%S", time.localtime(ts)), P(P.pick("fade_ts", age)))
             self.put(yy, x + 10, LOG_MARK.get(lvl, " "), P(LOG_BASE.get(lvl, WHITE), bold=True))
             cx = x + 11
-            for text, attr in self.log_spans(msg, lvl):
+            for text, attr in self.log_spans(msg, lvl, P.pick("fade_txt", age)):
                 self.put(yy, cx, text, attr); cx += len(text)
                 if cx >= x + w - 2:
                     break
@@ -850,11 +885,11 @@ class Screen:
             self.put(y + h - 1, x + w - 2 - len(note), note, P(YELLOW))
             self.put(y + h - 1, x + w - 2, "▼", P(YELLOW))
 
-    def log_spans(self, msg: str, lvl: str) -> list[tuple[str, int]]:
+    def log_spans(self, msg: str, lvl: str, fade: int = WHITE) -> list[tuple[str, int]]:
         """Split one log line into colored pieces: book names, tickers, YES/NO, signed money, slots, numbers."""
         P, many = self.P, self.P.many
         base = LOG_BASE.get(lvl)
-        plain = P(base) if base is not None else P(250 if many else WHITE)
+        plain = P(base) if base is not None else P(fade)
         out, i = [], 0
         for m in LOG_TOKENS.finditer(msg):
             if m.start() > i:
@@ -863,13 +898,13 @@ class Screen:
             if g == "book":
                 name = t[:-1]
                 out.append((name, P(LOG_BOOK.get(name.lower(), YELLOW), bold=True)))
-                out.append((":", P(self.P.grey)))
+                out.append((":", P(LOG_BOOK.get(name.lower(), YELLOW))))
             elif g == "ticker":
                 ev, _, k = t.rpartition("-") if m.group("strike") else (t, "", "")
-                out.append((ev, P(73 if many else CYAN)))
+                out.append((ev, P(P.c("ticker"))))
                 if k:
-                    out.append(("-", P(self.P.grey)))
-                    out.append((k, P(WHITE, bold=True)))
+                    out.append(("-", P(P.c("ticker"))))
+                    out.append((k, P(P.c("strike"), bold=True)))
             elif g == "yes":
                 out.append((t, P(GREEN, bold=True)))
             elif g == "no":
@@ -879,7 +914,13 @@ class Screen:
             elif g == "money":
                 out.append((t, P(YELLOW)))
             elif g == "slot":
-                out.append((t, P(214 if many else YELLOW, bold=True)))
+                out.append((t, P(P.c("slot"), bold=True)))
+            elif g == "verb":
+                out.append((t, P(P.c("verb"))))
+            elif g == "variant":
+                out.append((t, P(P.c("variant"), bold=True)))
+            elif g == "phrase":
+                out.append((t, P(P.c("phrase"))))
             elif g == "good":
                 out.append((t, P(GREEN)))
             elif g == "bad":
@@ -887,7 +928,7 @@ class Screen:
             elif g == "num":
                 out.append((t, P(WHITE, bold=True)))
             else:   # sep
-                out.append((t, P(self.P.grey)))
+                out.append((t, P(P.c("sep"))))
             i = m.end()
         if i < len(msg):
             out.append((msg[i:], plain))
@@ -1050,6 +1091,10 @@ class Screen:
             self.sel = None; self.write_view(); self.save_prefs(); self.say(f"viewing {cfgmod.SERIES[self.series]}")
         elif ch == ord("r"):
             self.send(op="series", series=self.series)
+        elif ch == ord("t"):
+            self.P.set_theme(themes.next_name(self.P.name))
+            self.save_prefs()
+            self.say(f"theme {self.P.name}" + ("" if self.P.many else " (needs a 256-color terminal)"))
         elif ch == ord("c"):
             order = list(CHARTS)
             self.chart = order[(order.index(self.chart) + 1) % len(order)] if self.chart in order else "15m"
