@@ -4,24 +4,8 @@ Each variant was written down before it saw any data, and each keeps its own rec
 so after a few weeks the comparison is out of sample. Nothing here touches the paper or live books;
 the engine trades whichever variant strategy.variant names, and that variant's record here is its gate.
 
-  base     the rule as configured (favorite mid 75-95c)
-  band90   only favorites at 90-95c
-  cap1     the rule, but at most one entry per strike per hour: later slots skip a strike already held
-           (added 2026-11-14 after two hours lost on strikes bought at every slot; its hours start 2026-11-15)
-
-Added 2026-11-16, written down before any of them traded; their hours start when the engine restarts with them:
-  band80   only favorites at 80-90c, the band where the 67-day study found the bias (favorites ~2 points under)
-  late     only the 15 and 10 minute slots: less time left for the price to cross the strike
-  tight1   only strikes with a 1c spread: pays less to get in
-  band75   only favorites at 75-80c, the cheapest slice (with band80 and band90 it splits the band in three)
-  early    only the 25 and 20 minute slots: the other half of late
-  multi    the rule on every coin at once (BTC ETH SOL XRP BNB HYPE), each coin's hour with its own budget.
-           Only BTC was tested on 67 days, so this is the first look at the others. Its dollars are up to six
-           times base's; compare it by cents a contract and t, not P&L.
-
-Retired 2026-11-16 (their settled rows stay in shadow-settled.jsonl; `tern report` still lists them):
-  stop20   sell once the favorite's bid is 20c under entry: 165 hours, -$191, t -3.0. The stop loses.
-  arb      YES low strike + NO high strike under $1 after fees: 0 entries in 165 hours.
+The variants are listed once, in TABLE below. The screen's variants box, its help, `tern report` and
+the gate all read that table; README.md repeats it for people, and a test fails if it falls behind.
 """
 
 from __future__ import annotations
@@ -36,33 +20,37 @@ from .book import taker_fee
 from .config import SERIES
 from .strategy import due_slot, signals
 
-VARIANTS = {   # name -> (band_lo, band_hi, entries per strike per hour, slots, max spread, coins);
-               # None takes the configured value (coins: strategy.series, the r key) / no cap
-    "base": (None, None, None, None, None, None),
-    "band90": (0.90, None, None, None, None, None),
-    "cap1": (None, None, 1, None, None, None),
-    "band80": (0.80, 0.90, None, None, None, None),
-    "late": (None, None, None, (15, 10), None, None),
-    "tight1": (None, None, None, None, 0.01, None),
-    "band75": (None, 0.80, None, None, None, None),
-    "early": (None, None, None, (25, 20), None, None),
-    "multi": (None, None, None, None, None, tuple(SERIES)),
-}
+# name, (band_lo, band_hi, entries per strike per hour, slots, max spread, coins), what it does.
+# None takes the configured value (coins: strategy.series, the r key) / no cap. The description is what
+# people see; the comment is why the variant exists. A new variant's hours start when the engine
+# restarts with it, so say that date in its description.
+TABLE = [
+    ("base", (None, None, None, None, None, None), "the rule: favorites at 75-95¢, every slot"),
+    ("band90", (0.90, None, None, None, None, None), "only favorites at 90-95¢"),
+    # added 2026-11-14 after two hours lost on strikes bought at every slot: later slots skip a strike already held
+    ("cap1", (None, None, 1, None, None, None), "one entry per strike per hour (from 2026-11-15)"),
+    # the band where the 67-day study found the bias (favorites ~2 points under)
+    ("band80", (0.80, 0.90, None, None, None, None), "only favorites at 80-90¢ (from 2026-11-16)"),
+    # less time left for the price to cross the strike
+    ("late", (None, None, None, (15, 10), None, None), "only the 15m and 10m slots (from 2026-11-16)"),
+    # pays less to get in
+    ("tight1", (None, None, None, None, 0.01, None), "only strikes with a 1¢ spread (from 2026-11-16)"),
+    # the cheapest slice: with band80 and band90 it splits the band in three
+    ("band75", (None, 0.80, None, None, None, None), "only favorites at 75-80¢ (from 2026-11-16)"),
+    # the other half of late
+    ("early", (None, None, None, (25, 20), None, None), "only the 25m and 20m slots (from 2026-11-16)"),
+    # Only BTC was tested on 67 days, so this is the first look at the others. Its dollars are up to
+    # six times base's: compare it by cents a contract and t, not P&L.
+    ("multi", (None, None, None, None, None, tuple(SERIES)),
+     "every coin at once, each its own budget; judge by ¢/ct (from 2026-11-16)"),
+]
+VARIANTS = {name: p for name, p, _ in TABLE}
 ORDER = list(VARIANTS)
-DESC = {
-    "base": "the rule: favorites at 75-95¢, every slot",
-    "band90": "only favorites at 90-95¢",
-    "cap1": "one entry per strike per hour (from 2026-11-15)",
-    "band80": "only favorites at 80-90¢ (from 2026-11-16)",
-    "late": "only the 15m and 10m slots (from 2026-11-16)",
-    "tight1": "only strikes with a 1¢ spread (from 2026-11-16)",
-    "band75": "only favorites at 75-80¢ (from 2026-11-16)",
-    "early": "only the 25m and 20m slots (from 2026-11-16)",
-    "multi": "every coin at once, each its own budget; judge by ¢/ct (from 2026-11-16)",
-}
+DESC = {name: desc for name, _, desc in TABLE}
+# Retired: they no longer trade, their settled rows stay in shadow-settled.jsonl, `tern report` lists them.
 RETIRED = {
-    "stop20": "sold at 20¢ under entry; retired 2026-11-16, the stop lost money",
-    "arb": "cross-strike pair under $1; retired 2026-11-16, never fired",
+    "stop20": "sold at 20¢ under entry; retired 2026-11-16: -$191 in 165 hours, t -3.0",
+    "arb": "cross-strike pair under $1; retired 2026-11-16: never fired in 165 hours",
 }
 
 

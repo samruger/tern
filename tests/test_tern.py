@@ -865,6 +865,29 @@ class Shadows(unittest.TestCase):
             self.assertNotIn("stop20", [r["name"] for r in sh.summary()])
             self.assertAlmostEqual(sh.summary(["stop20"])[0]["pnl"], -1.0)
 
+    def test_the_variant_table_is_the_only_list_and_the_readme_keeps_up(self):
+        import re
+        from tern import dash, shadow
+        self.assertEqual(list(shadow.DESC), shadow.ORDER)
+        self.assertFalse(set(shadow.VARIANTS) & set(shadow.RETIRED))
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        with open(os.path.join(root, "README.md")) as fh:
+            readme = fh.read()
+        rows = re.findall(r"^\| `(\w+)` \|", readme, re.M)                  # the README's variants table
+        self.assertEqual(rows, shadow.ORDER)
+        for name in shadow.RETIRED:
+            self.assertIn(f"`{name}`", readme)
+        # the help's lists are filled from the table, not typed in again
+        prose = " ".join(p for _, p in dash.HELP)
+        self.assertIn("{variants}", prose); self.assertIn("{retired}", prose)
+        for name in list(shadow.VARIANTS) + list(shadow.RETIRED):
+            self.assertNotIn(f"  {name} ", prose)
+        s = dash.Screen.__new__(dash.Screen)                               # help_lines needs only these two
+        s.st, s.P = {}, type("P", (), {"__call__": lambda *a, **k: 0, "c": lambda *a: 0, "grey": 0})()
+        text = "\n".join(l if isinstance(l, str) else "".join(t for t, _ in l) for l in s.help_lines(120))
+        for name, desc in list(shadow.DESC.items()) + list(shadow.RETIRED.items()):
+            self.assertIn(f"{name:<8} {desc}", text)
+
     def test_cap1_takes_each_strike_once_per_hour(self):
         from tern.config import Strategy
         from tern.shadow import Shadow

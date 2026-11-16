@@ -15,6 +15,7 @@ import time
 import uuid
 
 from . import config as cfgmod
+from . import shadow as shadowmod
 from . import themes
 from .engine import live_dir
 
@@ -279,7 +280,7 @@ def stop_engine(runtime: str, pid: int | None) -> str:
         return "could not find the engine's process"
 
 
-# The help's prose: (heading, paragraph) pairs, reflowed to the help's width after {braces} are filled
+# The help's prose (the variant lists in it come from shadow.TABLE and shadow.RETIRED, their only home): (heading, paragraph) pairs, reflowed to the help's width after {braces} are filled
 # from the config in use (help_lines), so numbers are never stale. A line starting with "|" is kept as is.
 HELP = [
     ("", "tern trades Kalshi's hourly crypto above-or-below markets by itself. Every trade comes from the "
@@ -292,20 +293,13 @@ HELP = [
                  "was not chosen on (t=1.1): positive, small, unproven."),
     ("VARIANTS", "Each variant runs on paper side by side with its own record and real fees, written down "
                  "before it saw any data:\n"
-                 "|  base     the rule: favorites at 75-95c, every slot\n"
-                 "|  band90   only favorites at 90-95c\n"
-                 "|  cap1     one entry per strike per hour (its hours start 2026-11-15)\n"
-                 "|  band80   only favorites at 80-90c (from 2026-11-16)\n"
-                 "|  late     only the 15m and 10m slots (from 2026-11-16)\n"
-                 "|  tight1   only strikes with a 1c spread (from 2026-11-16)\n"
-                 "|  band75   only favorites at 75-80c (from 2026-11-16)\n"
-                 "|  early    only the 25m and 20m slots (from 2026-11-16)\n"
-                 "|  multi    every coin at once, each its own budget: judge it by c/contract (from 2026-11-16)\n"
+                 "{variants}\n"
                  "The one marked ● in the variants box (3) is what the paper book trades, and live too once it "
                  "passes the gate. Highlight another with ↑↓ and press enter to switch; while live is on or armed "
                  "you type \"live\" to confirm. Open positions ride to settlement. Picking whichever looks best "
-                 "after watching flatters it: the gate is the real check. stop20 and arb were retired "
-                 "2026-11-16 (the stop lost money, arb never fired); (tern report) still lists their records."),
+                 "after watching flatters it: the gate is the real check.\n"
+                 "Retired, records kept and listed by (tern report):\n"
+                 "{retired}"),
     ("THE GATE", "(g) Live trades the variant in use only after its own paper record has {days:g} days of hours "
                  "traded, {entries} settled entries and P&L of ${pnl:g} or more after fees. Hours with the engine "
                  "off don't count, and switching variants never skips it: the new one needs its own record. "
@@ -1363,7 +1357,9 @@ class Screen:
             contracts=S["contracts"], hour_cost=S["max_hour_cost"],
             days=G["min_days"], entries=G["min_entries"], pnl=G["min_pnl"],
             risk=L["capital_usd"], order=L["max_order_usd"], day=L["max_daily_loss"],
-            coins=" ".join(v.split("-")[0] for v in cfgmod.SERIES.values()), paper=cfgmod.Config().paper_capital)
+            coins=" ".join(v.split("-")[0] for v in cfgmod.SERIES.values()), paper=cfgmod.Config().paper_capital,
+            variants="\n".join(f"|  {n:<8} {d}" for n, d in shadowmod.DESC.items()),
+            retired="\n".join(f"|  {n:<8} {d}" for n, d in shadowmod.RETIRED.items()))
         lines: list = []
         width = max(40, min(HELP_WIDTH, W - 8))
         for n, (heading, para) in enumerate(HELP):
@@ -1423,8 +1419,7 @@ class Screen:
         for c in g.get("checks", []):
             out.append(f"  [{'x' if c['ok'] else ' '}] {c['name']}  ({c['detail']})")
         if st.get("shadow"):
-            from .shadow import table
-            rows = table(st["shadow"])
+            rows = shadowmod.table(st["shadow"])
             out += ["", head("VARIANTS", "   side by side on paper; (3) shows them, enter picks one (tern report)")]
             out += [[("  " + rows[0], P(P.grey, bold=True))]] + ["  " + l for l in rows[1:]]
         out += ["", head("GO LIVE", "   all three are needed")]
