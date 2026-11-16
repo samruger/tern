@@ -130,7 +130,9 @@ class Desk:
         os.makedirs(self.cmd_dir, exist_ok=True)
         self.echo = echo
         self.cfg = cfgmod.load(runtime)
-        self.pub = Kalshi()
+        # Market data is asked for again within seconds, so a failed call is not retried: with six coins
+        # polled one after another, three slow tries each would hold the loop past an entry slot.
+        self.pub = Kalshi(tries=1, timeout=6.0)
         self.api: Kalshi | None = None
         self.spot = SpotFeed()
         self.logs: collections.deque = collections.deque(maxlen=400)
@@ -357,6 +359,7 @@ class Desk:
             if self.mode == "live":
                 self.log("live switched off; back to paper", "warn")
             self.mode = "paper"; self.api = None
+            self.live_error = ""                 # an old auth error says nothing once live is off
             return False
         if self.api is None:
             k = cfgmod.keys()
@@ -565,12 +568,12 @@ class Desk:
                     if book is self.live and self.lost_replies > lost0:
                         # Kalshi's order endpoint is failing: each lookup sleeps ~7s, and a run of them
                         # would stall settling, the loss check and the screen while prices go stale.
-                        self.log(f"live rule stopped for this slot: an order reply was lost, the rest are skipped", "warn")
+                        self.log("live rule stopped for this slot: an order reply was lost, the rest are skipped", "warn")
                         break
                     spent = self.hour_cost.get(key, 0.0)
                     unit = s["price"] if s["delta_sign"] > 0 else 1 - s["price"]
-                    n = min(S.contracts, max(0.0, (S.max_hour_cost - spent) / max(unit, 1e-6)))
-                    n = float(int(n))
+                    # whole contracts, no more than the quote shows: sized exactly as the shadow record sizes it
+                    n = float(int(min(S.contracts, s["size"], max(0.0, (S.max_hour_cost - spent) / max(unit, 1e-6)))))
                     if n < 1:
                         continue                     # a cheaper favorite further on may still fit (as in shadow)
                     try:
@@ -597,8 +600,16 @@ class Desk:
         """The gate for a variant (the one in use by default), judged on that variant's own shadow
         record, so switching variants never lets a short or losing record trade live. The paper
         book's record of the rule rides along for the book box."""
+        rows = [a for a in self.auto if a["pnl"] is not None]
+        pnl = sum(a["pnl"] for a in rows)
+        wins = sum(1 for a in rows if a["pnl"] > 0)
+        per = sum(a["pnl"] / a["n"] for a in rows) / len(rows) if rows else 0.0
+        return {**self.checks(name or self.variant(), rec), "entries": len(rows), "open": len(self.auto) - len(rows),
+                "pnl": pnl, "win": wins / len(rows) if rows else None, "per_contract": per}
+
+    def checks(self, name: str, rec: dict | None = None) -> dict:
+        """A variant's gate checks alone, on its shadow record (rec is its summary() row)."""
         G = self.cfg.gate
-        name = name or self.variant()
         r = rec or self.shadow.summary([name])[0]
         days = r["hours"] / 24              # hours it actually traded, not time elapsed
         checks = [
@@ -609,13 +620,7 @@ class Desk:
             {"name": f"{name} P&L ≥ ${G.min_pnl:g}", "ok": r["entries"] > 0 and r["pnl"] >= G.min_pnl, "detail": f"{'-' if r['pnl'] < 0 else '+'}${abs(r['pnl']):,.2f}",
              "key": "pnl", "have": r["pnl"], "need": G.min_pnl},
         ]
-        rows = [a for a in self.auto if a["pnl"] is not None]
-        pnl = sum(a["pnl"] for a in rows)
-        wins = sum(1 for a in rows if a["pnl"] > 0)
-        per = sum(a["pnl"] / a["n"] for a in rows) / len(rows) if rows else 0.0
-        return {"variant": name, "checks": checks, "passed": all(c["ok"] for c in checks), "entries": len(rows),
-                "open": len(self.auto) - len(rows), "pnl": pnl, "win": wins / len(rows) if rows else None,
-                "per_contract": per}
+        return {"variant": name, "checks": checks, "passed": all(c["ok"] for c in checks)}
 
     # ------------------------------------------------------------ shadow variants and the recorder
     def _shadow(self) -> None:
@@ -627,7 +632,8 @@ class Desk:
                 for note in self.shadow.step(e["event"], e["close"], e["markets"], self.cfg.strategy, now):
                     self.log(note)
         for ev, c in list(self.closed.items()):
-            if now < c["close"] + 45 or now - c.get("tried", 0) < 20:
+            late = now > c["close"] + 1800
+            if now < c["close"] + 45 or now - c.get("tried", 0) < (300 if late else 20):
                 continue
             c["tried"] = now
             try:
@@ -635,16 +641,18 @@ class Desk:
             except KalshiError:
                 continue
             res = {m["ticker"]: m["result"] == "yes" for m in ms if m.get("result") in ("yes", "no")}
-            late = now > c["close"] + 1800
             if not late and (not res or len(res) < len(ms) or not self.shadow.needs(ev) <= set(res)):
                 continue
             n = self.shadow.settle(res)
             # finalized without yes/no: voided. Those rows would otherwise stay open for good.
             n += self.shadow.void({m["ticker"] for m in ms if m.get("status") in ("finalized", "settled")
                                    and m.get("result") not in ("yes", "no", None, "")})
-            self.rec.results(c["series"], c["close"], [(m["floor_strike"], m["result"]) for m in ms
-                                                        if m["ticker"] in res and m.get("floor_strike") is not None])
-            del self.closed[ev]
+            if not c.get("recorded") and res:
+                c["recorded"] = True
+                self.rec.results(c["series"], c["close"], [(m["floor_strike"], m["result"]) for m in ms
+                                                            if m["ticker"] in res and m.get("floor_strike") is not None])
+            if not self.shadow.needs(ev):            # rows Kalshi has not decided yet are asked about again:
+                del self.closed[ev]                  # dropping the event would leave them open until a restart
             if n:
                 self.log("shadow: " + ev + " settled · " + " · ".join(
                     f"{r['name']} {r['pnl']:+.2f}" for r in self.shadow.summary() if r["entries"]))
@@ -707,7 +715,7 @@ class Desk:
                 continue
             try:
                 sent = float(c.get("ts") or name.split("-", 1)[0])
-            except ValueError:
+            except (TypeError, ValueError):
                 sent = 0.0
             age = time.time() - sent
             try:
@@ -750,7 +758,7 @@ class Desk:
                 return f"{name} is already in use"
             was = self.variant()
             self.cfg.strategy.variant = name; cfgmod.save(self.cfg, self.runtime)
-            g = self.gate(name)
+            g = self.checks(name)
             msg = f"variant {was} → {name}: paper trades it from the next slot (open positions ride to settlement)"
             if self.mode == "live" or self.cfg.live.enabled:
                 msg += " · live trades it now" if g["passed"] or not self.cfg.live.auto_needs_gate else \
@@ -814,7 +822,7 @@ class Desk:
         gate = gate or self.gate()
         shadow = self.shadow.summary()
         variants = [{**r, "desc": shadowmod.DESC.get(r["name"], ""), "active": r["name"] == self.variant(),
-                     "gate": self.gate(r["name"], r)} for r in shadow]
+                     "gate": self.checks(r["name"], r)} for r in shadow]
 
         def strat(name: str) -> dict:
             lo, hi, cap, mins, spread, coins = shadowmod.params(name, self.cfg.strategy)
@@ -856,7 +864,8 @@ class Desk:
         if unknown and now - self.last["badseries"] > 60:
             self.last["badseries"] = now
             self.log(f"config: ignoring unknown series {', '.join(unknown)} (known: {', '.join(cfgmod.SERIES)})", "warn")
-        for s in sorted(wanted & set(cfgmod.SERIES)):
+        mine = shadowmod.params(self.variant(), self.cfg.strategy)[5]
+        for s in sorted(wanted & set(cfgmod.SERIES), key=lambda s: (s not in mine, s)):   # the coins the books trade first
             self.spot.want(cfgmod.SERIES[s])
             try:
                 self._refresh_event(s)

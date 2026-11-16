@@ -396,9 +396,9 @@ CHARTS = {"5m": 300, "15m": 900, "1h": 3600, "24h": 86400}
 PANELS = ["spot", "contract", "ladder", "book", "equity", "log"]
 ROWS = [("spot", "contract", 0.36, 0.6), ("ladder", "book", 0.44, 0.52), ("equity", "log", 0.28, 0.4)]   # (.., height share, left width share)
 SUPER = "¹²³⁴⁵⁶⁷⁸⁹"
-LEFT_MIN = {"ladder": 56, "variants": 56}
+LEFT_MIN = {"ladder": 56, "variants": 56}   # the ladder's columns need this much before its bar has any room
 SLOT3 = ["ladder", "variants"]       # the boxes 3 cycles through in the ladder's place, then hidden
-SCROLLS = ["ladder", "variants", "book", "log"]   # the boxes ←→ focus and ↑↓ scroll    # the ladder's columns need this much before its bar has any room
+SCROLLS = ["ladder", "variants", "book", "log"]   # the boxes ←→ focus and ↑↓ scroll
 
 # key hints drawn on each box's top border (btop style); a hidden box's hints move to the bottom row
 PANEL_KEYS = {
@@ -419,6 +419,7 @@ class Screen:
         self.cmd_dir = os.path.join(runtime, "cmd")
         os.makedirs(self.cmd_dir, exist_ok=True)
         self.st: dict = {}
+        self.st_stamp: tuple | None = None     # (inode, mtime, size) of the status file last parsed
         self.series = "KXBTCD"
         self.sel: str | None = None
         self.chart = "15m"
@@ -464,9 +465,13 @@ class Screen:
     def read(self) -> None:
         if time.time() - self.alive_at > 1:
             self.alive, self.alive_at = engine_alive(self.runtime), time.time()
-        try:
+        try:                                   # the engine writes it once a second: parse it only when it is new
             with open(os.path.join(self.fast, "status.json")) as fh:
-                self.st = json.load(fh)
+                stamp = os.fstat(fh.fileno())
+                stamp = (stamp.st_ino, stamp.st_mtime_ns, stamp.st_size)
+                if stamp != self.st_stamp:
+                    self.st = json.load(fh)
+                    self.st_stamp = stamp
         except (OSError, json.JSONDecodeError):
             pass
         for cid in list(self.pending):
@@ -1604,8 +1609,6 @@ class Screen:
             if not self.key(ch):
                 return
             self.draw()
-
-
 
 
 def main(runtime: str = cfgmod.RUNTIME) -> None:

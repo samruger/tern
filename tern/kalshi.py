@@ -34,15 +34,19 @@ def _num(x, default=None):
 
 
 class Kalshi:
-    def __init__(self, key_id: str | None = None, pem: str | None = None, base: str = BASE):
+    def __init__(self, key_id: str | None = None, pem: str | None = None, base: str = BASE,
+                 tries: int = 3, timeout: float = 10.0):
         self.base = base
+        self.tries, self.timeout = tries, timeout    # defaults for every call; an order is always sent once
         self.key_id = key_id
         self.key = load_key(pem) if pem else None
         self._last_429 = 0.0
 
     # ------------------------------------------------------------ transport
     def _req(self, method: str, path: str, query: dict | None = None, body: dict | None = None,
-             signed: bool = False, timeout: float = 10.0, tries: int = 3):
+             signed: bool = False, timeout: float | None = None, tries: int | None = None):
+        timeout = self.timeout if timeout is None else timeout
+        tries = self.tries if tries is None else tries
         full = PREFIX + path
         url = self.base + full + ("?" + urllib.parse.urlencode(query) if query else "")
         data = json.dumps(body).encode() if body is not None else None
@@ -79,6 +83,7 @@ class Kalshi:
                 if attempt + 1 < tries and method == "GET":
                     time.sleep(0.5 * 2 ** attempt); continue
                 raise KalshiError(f"{method} {path}: {e}")
+        raise KalshiError(f"{method} {path}: not sent (tries={tries})")
 
     # ------------------------------------------------------------ public
     def open_events(self, series: str) -> list[dict]:

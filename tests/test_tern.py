@@ -144,7 +144,8 @@ class State(unittest.TestCase):
         from tern import config
         with tempfile.TemporaryDirectory() as d:
             cur = config.Config(); cur.strategy.contracts = 9
-            open(os.path.join(d, "config.json"), "w").write("{bad")
+            with open(os.path.join(d, "config.json"), "w") as fh:
+                fh.write("{bad")
             self.assertEqual(config.load(d, cur).strategy.contracts, 9)
 
 
@@ -677,6 +678,43 @@ class Live(unittest.TestCase):
             k._settle(); k._settle()
             self.assertEqual(len(asked), 8); self.assertEqual(len(set(asked)), 8)
 
+    def test_shadow_rows_kalshi_has_not_decided_are_asked_about_again(self):
+        import time
+        from tern.engine import Desk
+        with tempfile.TemporaryDirectory() as d:
+            k = Desk(d)
+            now = time.time()
+            row = lambda t: {"v": "base", "ts": now - 4000, "event": "KXBTCD-E1", "close": now - 2000, "ticker": t,
+                             "side": "yes", "n": 5.0, "cost": 0.9, "fee": 0.04, "slot": 25, "pnl": None}
+            k.shadow.rows = [row("KXBTCD-E1-T1"), row("KXBTCD-E1-T2")]
+            k.closed["KXBTCD-E1"] = {"series": "KXBTCD", "close": now - 2000}     # over half an hour ago: "late"
+            ms = [{"ticker": "KXBTCD-E1-T1", "floor_strike": 1, "result": "yes", "status": "finalized"},
+                  {"ticker": "KXBTCD-E1-T2", "floor_strike": 2, "result": "", "status": "closed"}]
+            k.pub.event_markets = lambda e: ms
+            k._shadow()
+            self.assertEqual([r["ticker"] for r in k.shadow.rows], ["KXBTCD-E1-T2"])
+            self.assertIn("KXBTCD-E1", k.closed)                           # T2 is still owed: the event stays
+            ms[1].update(result="no", status="finalized")
+            k.closed["KXBTCD-E1"]["tried"] = 0
+            k._shadow()
+            self.assertEqual(k.shadow.rows, [])
+            self.assertNotIn("KXBTCD-E1", k.closed)
+            with open(os.path.join(d, "ticks", "results.csv")) as fh:
+                self.assertEqual(len(fh.read().splitlines()), 1)           # results are written once, not per look
+
+    def test_paper_buys_whole_contracts_no_more_than_quoted(self):
+        import time
+        from tern.engine import Desk
+        with tempfile.TemporaryDirectory() as d:
+            k = Desk(d)
+            now = time.time()
+            k.events["KXBTCD"] = {"event": "E1", "title": "", "close": now + 1200, "fetched": now, "markets": [
+                {"ticker": "E1-A", "floor_strike": 1, "yes_bid_dollars": "0.90", "yes_ask_dollars": "0.91",
+                 "yes_bid_size_fp": "50", "yes_ask_size_fp": "3.50"}]}
+            k.cfg.strategy.minutes = [20]
+            k._auto()
+            self.assertEqual([a["n"] for a in k.auto], [3.0])              # 3.5 on offer: 3, as the shadow record takes
+
     def test_gate_hours_are_not_doubled_by_a_second_series(self):
         with tempfile.TemporaryDirectory() as d:
             k = self.desk(d, self.api())
@@ -785,6 +823,22 @@ class Shadows(unittest.TestCase):
             by = lambda v: sorted(r["ticker"] for r in sh.rows if r["v"] == v)
             self.assertEqual(by("cap1"), ["E-T1", "E-T2", "E-T3"])
             self.assertEqual(len(by("base")), 8)                           # base buys every strike at every slot
+
+    def test_a_slot_that_found_nothing_is_not_run_twice(self):
+        from tern.config import Strategy
+        from tern.shadow import Shadow
+        with tempfile.TemporaryDirectory() as d:
+            sh, S = Shadow(d), Strategy(series=["KXBTCD"])
+            now = 1_000_000.0
+            for h in range(8):                                             # eight hours that are over
+                sh.slots[f"KXBTCD-OLD{h}"] = [25]; sh.closes[f"KXBTCD-OLD{h}"] = now - 3600 * (h + 1)
+            close = now + 25 * 60 - 5
+            sh.step("KXBTCD-NOW", close, [], S, now)                       # the 25m slot: nothing in band, no rows
+            self.assertEqual(sh.slots["KXBTCD-NOW"], [25])
+            sh.settle({"KXBTCD-OLD0-T1": True}, now + 10)                  # a late settlement of an old hour
+            self.assertEqual(sorted(sh.slots), ["KXBTCD-NOW", "KXBTCD-OLD0"])   # old hours go, the one trading stays
+            sh.step("KXBTCD-NOW", close, [self.m("KXBTCD-NOW-T1", 0.92, 0.93, 1)], S, now + 11)
+            self.assertEqual(sh.rows, [])                                  # still the same slot: no second look
 
     def test_void_closes_rows_and_a_settled_row_is_not_reopened(self):
         import json

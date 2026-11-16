@@ -130,10 +130,9 @@ def main(argv: list[str]) -> int:
     if cmd == "status":
         return _status(runtime)
     if cmd == "report":
-        from . import config as cfg
         from .shadow import DESC, RETIRED, Shadow, table
         sh = Shadow(runtime)
-        use = cfg.load(runtime).strategy.variant
+        use = cfgmod.load(runtime).strategy.variant
         print("\n".join(table(sh.summary())))
         print("\n" + "\n".join(f"{n}: {d}" + ("  ← in use" if n == use else "") for n, d in DESC.items()))
         old = [r for r in sh.summary(list(RETIRED)) if r["entries"]]

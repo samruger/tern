@@ -29,6 +29,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import time
 from collections import deque
 
 from .book import taker_fee
@@ -162,6 +163,7 @@ class Shadow:
     def step(self, event: str, close: float, markets: list[dict], S, now: float) -> list[str]:
         """Run every variant on one fresh snapshot of an hourly event. Returns lines for the log."""
         done = self.slots.setdefault(event, [])
+        self.closes[event] = close                 # settle() keeps an event's slots until it has closed
         slot = due_slot(close - now, S.minutes, set(done))
         if slot is None:
             return []
@@ -198,7 +200,8 @@ class Shadow:
     def needs(self, event: str) -> set[str]:
         return {r["ticker"] for r in self.rows if r["event"] == event}
 
-    def settle(self, results: dict[str, bool]) -> int:
+    def settle(self, results: dict[str, bool], now: float | None = None) -> int:
+        now = time.time() if now is None else now
         n = 0
         for r in list(self.rows):
             if r["ticker"] not in results:
@@ -207,9 +210,12 @@ class Shadow:
             self.rows.remove(r)
             self._close(r, r["n"] * (pay - r["cost"]) - r["fee"])
             n += 1
-        live_events = {r["event"] for r in self.rows}
-        for e in [e for e in self.slots if e not in live_events and e not in {event_of(t) for t in results}]:
-            if len(self.slots) > 6:
+        # Forget the slots of hours that are over. An hour still trading keeps its slots even with no
+        # open rows: dropping them would let a slot that found nothing run a second time. An event
+        # whose close is unknown (slots from before a restart) is kept until there are too many.
+        keep = {r["event"] for r in self.rows} | {event_of(t) for t in results}
+        for e in [e for e in self.slots if e not in keep]:
+            if self.closes.get(e, now) < now or len(self.slots) > 60:
                 del self.slots[e]
         return n
 
@@ -251,7 +257,6 @@ class Shadow:
                         "win": wins / entries if entries else None, "stops": stops, "hours": len(hours), "t": t,
                         "curve": curve[-240:]})
         return out
-
 
     def view(self, name: str, rec: dict, mids: dict, strikes: dict, start: float) -> dict:
         """A variant's shadow record shaped like a book, so the screen can show it as if it traded:
