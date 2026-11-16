@@ -9,6 +9,7 @@ import fcntl
 import hashlib
 import json
 import os
+import re
 import signal
 import threading
 import time
@@ -27,6 +28,9 @@ from .strategy import due_slot, signals
 CMD_MAX_AGE = 30.0     # seconds a command from the screen stays valid
 
 
+LOCK_TRIES = 6                           # 0.2s apart
+LOG_TIME = "%Y-%m-%d %H:%M:%S"           # how log() stamps a line in tern.log, and how it is read back
+LOG_LINE = re.compile(r"^(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d) (\w[\w ]{4}) (.*)$")   # level is padded to 5
 LOST_REPLY_WAITS = (1.0, 2.0, 4.0)   # seconds between looks for an order whose reply never came
 
 
@@ -82,9 +86,19 @@ class SpotFeed(threading.Thread):
         with self.lock:
             if product in self.products:
                 return
-            self.products.add(product)
+        past = history(product, 60)              # a network call: never while holding the lock
+        with self.lock:
+            if product in self.products:
+                return
             self.sec[product] = collections.deque(maxlen=3600)
-            self.minute[product] = collections.deque(history(product, 60), maxlen=1440 * 2)
+            self.minute[product] = collections.deque(past, maxlen=1440 * 2)
+            self.products.add(product)           # last: run() only sees a product whose queues exist
+
+    def fresh(self, product: str, max_age: float = 10.0) -> float | None:
+        """The price, or None when the last one is older than max_age (Coinbase unreachable)."""
+        with self.lock:
+            sec = self.sec.get(product)
+            return sec[-1][1] if sec and time.time() - sec[-1][0] <= max_age else None
 
     def run(self) -> None:
         while True:
@@ -119,6 +133,7 @@ class Desk:
         self.api: Kalshi | None = None
         self.spot = SpotFeed()
         self.logs: collections.deque = collections.deque(maxlen=400)
+        self._load_log_tail()                  # the screen's log box keeps its history across restarts
         self.results: dict[str, str] = {}
         self.events: dict[str, dict] = {}      # series -> {event, title, close, markets, fetched}
         self.hist: dict[str, collections.deque] = {}   # ticker -> (ts, bid, ask)
@@ -142,6 +157,7 @@ class Desk:
         st = {}
         self._saved = ""                             # the state text last written, to skip identical saves
         self._saved_sig: tuple | None = None         # cheap fingerprint of that state (see _fingerprint)
+        self._keys_ok = False
         self.lost_replies = 0                        # orders whose reply was lost or unreadable, ever
         for path in (p, p + ".bak"):                 # a damaged state file falls back to the hourly backup
             if not os.path.exists(path):
@@ -210,11 +226,43 @@ class Desk:
                 sum(len(v) for v in self.slots.values()), len(self.slots), round(sum(self.hour_cost.values()), 6),
                 len(self.hour_cost), json.dumps(self.day, sort_keys=True), len(self.meta), len(self.ev_close))
 
+    def _load_log_tail(self, nbytes: int = 96_000) -> None:
+        """Seed the in-memory log from the end of tern.log, newest lines first until the deque is
+        full. Lines that log() did not write (a traceback) are skipped."""
+        try:
+            with open(os.path.join(self.runtime, "tern.log"), "rb") as fh:
+                fh.seek(0, os.SEEK_END)
+                start = max(0, fh.tell() - nbytes)
+                fh.seek(start)
+                lines = fh.read().decode(errors="replace").splitlines()[1 if start else 0:]   # mid-file, the first is cut
+        except OSError:
+            return
+        got = []
+        for ln in reversed(lines):
+            m = LOG_LINE.match(ln)
+            if not m:
+                continue
+            try:
+                ts = time.mktime(time.strptime(m.group(1), LOG_TIME))
+            except (ValueError, OverflowError):
+                continue
+            got.append([ts, m.group(2).strip(), m.group(3)])
+            if len(got) >= self.logs.maxlen:
+                break
+        got.reverse()
+        # The file keeps whole seconds, and the screen's scrollback needs every line's time to be
+        # unique and rising: spread a burst within its second, and never step back (a DST hour).
+        for k in range(1, len(got)):
+            if got[k][0] <= got[k - 1][0]:
+                got[k][0] = got[k - 1][0] + 0.001
+        self.logs.extend(tuple(g) for g in got)
+
     def log(self, msg: str, level: str = "info") -> None:
-        line = (time.time(), level, msg)
+        msg = " ".join(str(msg).split("\n"))        # one line each: the file is read back line by line
+        line = (max(time.time(), self.logs[-1][0] + 0.001 if self.logs else 0), level, msg)
         self.logs.append(line)
         with open(os.path.join(self.runtime, "tern.log"), "a") as fh:
-            fh.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} {level:5s} {msg}\n")
+            fh.write(f"{time.strftime(LOG_TIME)} {level:5s} {msg}\n")
         if self.echo:
             print(f"{time.strftime('%H:%M:%S')} {msg}", flush=True)
 
@@ -242,7 +290,7 @@ class Desk:
             ms.sort(key=lambda m: m["floor_strike"])
             e["markets"], e["fetched"] = ms, now
             if e["close"] > now:
-                self.rec.snap(series, e["close"], self.spot.now.get(cfgmod.SERIES[series]), ms, now)
+                self.rec.snap(series, e["close"], self.spot.fresh(cfgmod.SERIES[series]), ms, now)   # a stale price is no price
             for m in ms:
                 self.meta.setdefault(m["ticker"], {"event": e["event"], "strike": m["floor_strike"],
                                                    "close": e["close"], "series": series})
@@ -570,6 +618,9 @@ class Desk:
             if not late and (not res or len(res) < len(ms) or not self.shadow.needs(ev) <= set(res)):
                 continue
             n = self.shadow.settle(res)
+            # finalized without yes/no: voided. Those rows would otherwise stay open for good.
+            n += self.shadow.void({m["ticker"] for m in ms if m.get("status") in ("finalized", "settled")
+                                   and m.get("result") not in ("yes", "no", None, "")})
             self.rec.results(c["series"], c["close"], [(m["floor_strike"], m["result"]) for m in ms
                                                         if m["ticker"] in res and m.get("floor_strike") is not None])
             del self.closed[ev]
@@ -676,7 +727,14 @@ class Desk:
         return f"unknown command {op!r}"
 
     # ------------------------------------------------------------ status
-    def _status(self, gate: dict | None = None) -> None:
+    def _has_keys(self, now: float) -> bool:
+        """Whether a Kalshi key is present, re-read from disk every 10s rather than every step."""
+        if now - self.last["keys"] >= 10:
+            self.last["keys"] = now
+            self._keys_ok = cfgmod.keys() is not None
+        return self._keys_ok
+
+    def _status(self, gate: dict | None = None, stopped: bool = False) -> None:
         now = time.time()
         mids = self._mids()
         sp = {}
@@ -698,7 +756,7 @@ class Desk:
             evs[series] = {"event": e["event"], "title": e["title"], "close": e["close"], "age": now - e["fetched"],
                            "ladder": ladder}
         sel = self.view.get("ticker")
-        if sel and sel not in self.seeded:
+        if sel and sel not in self.seeded and not stopped:   # no network on the way out
             self.seeded.add(sel); self._seed(sel)
         hist = {sel: [[round(t), b, a] for t, b, a in self.hist.get(sel, [])]} if sel in self.hist else {}
 
@@ -715,8 +773,8 @@ class Desk:
                     "at_risk": b.at_risk(), "pos": pos, "curve": b.curve[-1500:],
                     "trades": b.trades[-30:]}
         gate = gate or self.gate()
-        st = {"heartbeat": now, "pid": os.getpid(), "mode": self.mode, "live_enabled": self.cfg.live.enabled,
-              "live_error": self.live_error, "keys": cfgmod.keys() is not None, "balance": self.balance,
+        st = {"heartbeat": now, "stopped": stopped, "pid": os.getpid(), "mode": self.mode, "live_enabled": self.cfg.live.enabled,
+              "live_error": self.live_error, "keys": self._has_keys(now), "balance": self.balance,
               "spot": sp, "events": evs, "hist": hist, "view": self.view,
               "paper": book_view(self.paper), "live": book_view(self.live),
               "gate": gate, "shadow": self.shadow.summary(), "strategy": self.cfg.strategy.__dict__, "live_cfg": self.cfg.live.__dict__,
@@ -768,10 +826,16 @@ class Desk:
 
     def run(self, once: bool = False) -> None:
         lock = open(os.path.join(self.runtime, "engine.lock"), "a")
-        try:
-            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            print("tern engine already running"); return
+        # A screen checking whether the engine is up takes this lock for an instant, so one refusal
+        # is not proof of another engine: try for a second before believing it.
+        for attempt in range(LOCK_TRIES):
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if attempt + 1 == LOCK_TRIES:
+                    print("tern engine already running"); return
+                time.sleep(0.2)
         self.stopping = False
         def stop(signum, frame):
             self.stopping = True                     # only a flag: the step in progress finishes first
@@ -817,5 +881,9 @@ class Desk:
             try:
                 self.log("engine stopped, " + (f"could not save: {', '.join(failed)}" if failed else "state saved"),
                          "error" if failed else "info")
+            except Exception:                        # tern.log unwritable: the line is still in memory
+                pass
+            try:
+                self._status(stopped=True)           # the screen gets that line (status lives in tmpfs)
             except Exception:
                 pass

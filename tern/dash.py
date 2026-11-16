@@ -105,6 +105,11 @@ def ago(sec: float) -> str:
     return f"{s}s" if s < 90 else f"{s // 60}m" if s < 5400 else f"{s / 3600:.1f}h"
 
 
+def volume(v: float) -> str:
+    """Contracts traded, in at most 7 characters: 182,103 · 1.23M · 45.6M."""
+    return f"{v:,.0f}" if v < 999_999.5 else f"{v / 1e6:.2f}M" if v < 99.995e6 else f"{v / 1e6:.0f}M"
+
+
 def strike_of(k: float) -> float:
     """Kalshi's floor_strike sits one tick under the round number (66799.99, 74.4999, 0.8599): add that tick back."""
     s = repr(float(k))
@@ -478,7 +483,9 @@ class Screen:
         P, st = self.P, self.st
         now = time.time()
         hb = st.get("heartbeat") or 0
-        ok = now - hb < 5
+        ok = now - hb < 5 and not st.get("stopped")
+        # no process holding the lock is "down", however it ended; a live one that stopped polling is "stale"
+        down = not ok and not self.alive
         mode = st.get("mode", "?")
         x = 0
         self.put(hy, x, " tern ", P(CYAN, bold=True) | curses.A_REVERSE); x += 7
@@ -524,7 +531,7 @@ class Screen:
             stale.append(f"spot {ago(now - sec[-1][0])} old")
         if ok and ev and ev.get("age", 0) > 30:
             stale.append(f"ladder {ago(ev['age'])} old")
-        right = f" {'●' if ok else '○'} engine {'ok' if ok else ('stale' if hb else 'down — s starts it')}  {time.strftime('%H:%M:%S')} "
+        right = f" {'●' if ok else '○'} engine {'ok' if ok else ('down — s starts it' if down else 'starting' if st.get('stopped') or not hb else 'stale')}  {time.strftime('%H:%M:%S')} "
         if stale:
             seg = "│ " + " · ".join(stale) + " "
             self.put(hy, x, seg[:max(0, W - x - len(right))], P(YELLOW, bold=True))
@@ -676,7 +683,7 @@ class Screen:
             self.put(yy, x + 25, bar.ljust(barw), P(col) | base)
             self.put(yy, x + 25 + barw - 4, f"{(mid or 0)*100:3.0f}%", P(WHITE, bold=True) | base)
             self.put(yy, x + 26 + barw, f"{(spread*100 if spread is not None else 0):>4.1f}", P(self.P.grey) | base)
-            self.put(yy, x + 31 + barw, f"{r['v']:>7,.0f}"[:7], P(self.P.grey) | base)
+            self.put(yy, x + 31 + barw, f"{volume(r['v']):>7}", P(self.P.grey) | base)
             hp = held.get(r["t"])
             if hp:
                 self.put(yy, x + 39 + barw, f"{hp['q']:+6g}"[:6], P(GREEN if hp["q"] > 0 else MAGENTA, bold=True) | base)

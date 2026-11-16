@@ -60,8 +60,12 @@ class Book:
             self.pos[ticker] = p
         rec = {"ts": time.time(), "ticker": ticker, "delta": delta, "price": price, "fee": fee,
                "realized": realized - fee, "tag": tag, "kind": "fill"}
-        self.trades.append(rec)
+        self._record(rec)
         return rec
+
+    def _record(self, rec: dict, keep: int = 5000) -> None:
+        self.trades.append(rec)
+        del self.trades[:-keep]                   # what to_dict saves; the list does not grow without end
 
     def settle(self, ticker: str, result_yes: bool) -> dict | None:
         p = self.pos.pop(ticker, None)
@@ -74,7 +78,7 @@ class Book:
         self.realized += pnl
         rec = {"ts": time.time(), "ticker": ticker, "delta": -q, "price": 1.0 if result_yes else 0.0, "fee": 0.0,
                "realized": pnl, "tag": "settle", "kind": "settle", "result": "yes" if result_yes else "no"}
-        self.trades.append(rec)
+        self._record(rec)
         return rec
 
     def void(self, ticker: str) -> dict | None:
@@ -86,7 +90,7 @@ class Book:
         self.cash += abs(q) * avg
         rec = {"ts": time.time(), "ticker": ticker, "delta": -q, "price": avg if q > 0 else 1 - avg, "fee": 0.0,
                "realized": 0.0, "tag": "void", "kind": "settle", "result": "void"}
-        self.trades.append(rec)
+        self._record(rec)
         return rec
 
     # ------------------------------------------------------------ marks

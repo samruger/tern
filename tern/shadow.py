@@ -51,15 +51,27 @@ class Shadow:
             self.rows, self.slots = d.get("rows", []), d.get("slots", {})
         except (OSError, json.JSONDecodeError):
             pass
+        done = set()
         try:
             with open(self.done_path) as fh:
                 for line in fh:
                     try:
-                        self._count(json.loads(line))
-                    except (json.JSONDecodeError, KeyError):
+                        r = json.loads(line)
+                        self._count(r)
+                        done.add(self._key(r))
+                    except (json.JSONDecodeError, KeyError, TypeError):
                         continue
         except OSError:
             pass
+        # A row is written to the settled file before shadow.json is saved without it. If the engine
+        # died in between, the row is in both: the settled file wins, so it is not settled twice.
+        n = len(self.rows)
+        self.rows = [r for r in self.rows if self._key(r) not in done]
+        self.dirty = len(self.rows) != n
+
+    @staticmethod
+    def _key(r: dict) -> tuple:
+        return (r.get("v"), r.get("ticker"), r.get("ticker2"), r.get("ts"), r.get("slot"))
 
     # ------------------------------------------------------------ bookkeeping
     def _count(self, r: dict) -> None:
@@ -166,6 +178,15 @@ class Shadow:
         for e in [e for e in self.slots if e not in live_events and e not in {event_of(t) for t in results}]:
             if len(self.slots) > 6:
                 del self.slots[e]
+        return n
+
+    def void(self, tickers: set[str]) -> int:
+        """Close rows on voided strikes: the stake comes back, the entry fee stays paid."""
+        n = 0
+        for r in [r for r in self.rows if r["ticker"] in tickers or r.get("ticker2") in tickers]:
+            self.rows.remove(r)
+            self._close(r, -r["fee"], exit="void")
+            n += 1
         return n
 
     # ------------------------------------------------------------ report

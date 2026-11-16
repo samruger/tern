@@ -271,6 +271,101 @@ class Robust(unittest.TestCase):
                 k._read_view()
                 self.assertEqual(k.view, before)
 
+    def test_log_history_survives_a_restart_and_the_stop_reaches_the_screen(self):
+        import json
+        from tern.engine import Desk
+        with tempfile.TemporaryDirectory() as d:
+            k = Desk(d)
+            k.log("paper: something happened")
+            k._shutdown()
+            with open(os.path.join(k.fast, "status.json")) as fh:
+                st = json.load(fh)
+            self.assertTrue(st["stopped"])                             # the screen shows the engine down
+            self.assertIn("engine stopped", st["logs"][-1][2])
+            with open(os.path.join(d, "tern.log"), "a") as fh:
+                fh.write("Traceback (most recent call last):\n")
+            with open(os.path.join(d, "tern.log"), "a") as fh:       # a same-second burst, as settlements log
+                for i in range(6):
+                    fh.write(f"2026-11-16 10:00:00 info  burst {i}\n")
+                fh.write("2026-11-16 10:00:01 info  paper: something happened\n2026-11-16 10:00:01 info  engine stopped, state saved\n")
+            k2 = Desk(d)
+            ts = [t for t, _, _ in k2.logs]
+            self.assertEqual(ts, sorted(set(ts)))                    # unique and rising: scrollback anchors on them
+            k2.log("two\nlines")
+            self.assertEqual(k2.logs[-1][2], "two lines")
+            msgs = [m for _, _, m in Desk(d).logs][:-1]              # a new engine
+            self.assertEqual(msgs[-2:], ["paper: something happened", "engine stopped, state saved"])
+
+    def test_minor_fixes(self):
+        import fcntl, threading, time
+        from tern import dash, engine
+        from tern.book import Book
+        self.assertEqual([dash.volume(v) for v in (0, 182103, 999999, 1234567, 45_600_000, 123_000_000)],
+                         ["0", "182,103", "999,999", "1.23M", "45.60M", "123M"])
+        self.assertTrue(all(len(dash.volume(v)) <= 7 for v in (999999.4, 999999.6, 99_994_999, 99_995_000, 9e9)))
+        b = Book("paper", 1e9)
+        for i in range(5005):
+            b.trade("T", 1, 0.5, 0.0, {}, "x")
+        self.assertEqual(len(b.trades), 5000)
+        with tempfile.TemporaryDirectory() as d:
+            k = engine.Desk(d)
+            calls = []
+            real = engine.cfgmod.keys
+            engine.cfgmod.keys = lambda: calls.append(1)
+            try:
+                now = time.time()
+                for dt_ in (0, 1, 2, 11):
+                    k._has_keys(now + dt_)
+            finally:
+                engine.cfgmod.keys = real
+            self.assertEqual(len(calls), 2)                              # once, then again after 10s
+            # a screen probing the lock for a moment must not stop the engine from starting
+            probe = open(os.path.join(d, "engine.lock"), "a")
+            fcntl.flock(probe, fcntl.LOCK_EX)
+            threading.Timer(0.3, lambda: fcntl.flock(probe, fcntl.LOCK_UN)).start()
+            k.spot.start = lambda: None
+            k.step = lambda: None
+            k.run(once=True)
+            self.assertTrue(any("engine started" in m for _, _, m in k.logs))
+            probe.close()
+
+    def test_stale_spot_is_not_a_price(self):
+        import collections, time
+        from tern.engine import SpotFeed
+        f = SpotFeed()
+        f.products.add("BTC-USD")
+        f.sec["BTC-USD"] = collections.deque([(time.time() - 60, 100.0)])
+        self.assertIsNone(f.fresh("BTC-USD"))                        # Coinbase unreachable for a minute
+        f.sec["BTC-USD"].append((time.time(), 101.0))
+        self.assertEqual(f.fresh("BTC-USD"), 101.0)
+        self.assertIsNone(f.fresh("ETH-USD"))
+
+    def test_spot_history_is_fetched_outside_the_lock(self):
+        from tern import engine
+        f = engine.SpotFeed()
+        real = engine.history
+        engine.history = lambda prod, g: [[0.0, 1.0]] if not f.lock.locked() else self.fail("history called under the lock")
+        try:
+            f.want("BTC-USD")
+        finally:
+            engine.history = real
+        self.assertEqual(list(f.minute["BTC-USD"]), [[0.0, 1.0]])
+
+    def test_config_with_a_wrong_type_keeps_the_one_in_use(self):
+        import json
+        from tern import config
+        with tempfile.TemporaryDirectory() as d:
+            cur = config.load(d)
+            cur.strategy.contracts = 7.0
+            for bad in ({"strategy": {"minutes": "abc"}}, {"live": {"enabled": "yes"}}, {"gate": {"min_entries": "many"}}):
+                with open(os.path.join(d, "config.json"), "w") as fh:
+                    json.dump(bad, fh)
+                self.assertIs(config.load(d, cur), cur)
+            with open(os.path.join(d, "config.json"), "w") as fh:
+                json.dump({"strategy": {"contracts": 3, "minutes": [20, 10]}, "gate": {"min_entries": 50.0}}, fh)
+            c = config.load(d, cur)
+            self.assertEqual((c.strategy.contracts, c.strategy.minutes, c.gate.min_entries), (3.0, [20, 10], 50))
+
     def test_closed_event_is_relooked_every_5s_not_every_step(self):
         import time
         from tern.engine import Desk
@@ -577,6 +672,25 @@ class Shadows(unittest.TestCase):
             by = lambda v: sorted(r["ticker"] for r in sh.rows if r["v"] == v)
             self.assertEqual(by("cap1"), ["E-T1", "E-T2", "E-T3"])
             self.assertEqual(len(by("base")), 8)                           # base buys every strike at every slot
+
+    def test_void_closes_rows_and_a_settled_row_is_not_reopened(self):
+        import json
+        from tern.shadow import Shadow
+        with tempfile.TemporaryDirectory() as d:
+            sh = Shadow(d)
+            row = lambda t, ts: {"v": "base", "ts": ts, "event": "E", "close": 0, "ticker": t, "side": "yes", "n": 5.0,
+                                 "cost": 0.8, "fee": 0.06, "slot": 20, "stop": None, "pnl": None}
+            sh.rows = [row("E-A", 1.0), row("E-B", 2.0)]
+            self.assertEqual(sh.void({"E-A"}), 1)
+            self.assertEqual([r["ticker"] for r in sh.rows], ["E-B"])
+            self.assertAlmostEqual(sh.summary()[0]["pnl"], -0.06)
+            # the engine dies after E-B reached the settled file, before shadow.json was saved without it
+            with open(os.path.join(d, "shadow.json"), "w") as fh:
+                json.dump({"rows": [row("E-B", 2.0)], "slots": {}}, fh)
+            sh.settle({"E-B": True})
+            again = Shadow(d)
+            self.assertEqual(again.rows, [])
+            self.assertEqual(again.summary()[0]["entries"], 2)
 
     def test_arb_needs_more_than_the_fees(self):
         from tern.config import Strategy

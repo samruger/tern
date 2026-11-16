@@ -64,8 +64,30 @@ class Config:
     @classmethod
     def from_dict(cls, d: dict) -> "Config":
         def keep(kind, data):
-            names = {f.name for f in fields(kind)}
-            return {k: v for k, v in (data or {}).items() if k in names}
+            """Known keys only, each coerced to its default's type. A value that can't be (minutes
+            as text, a list where a number goes) raises TypeError, and load() keeps the config in use."""
+            base, out = kind(), {}
+            for k, v in (data or {}).items():
+                if k not in {f.name for f in fields(kind)}:
+                    continue
+                want = getattr(base, k)
+                if isinstance(want, bool):
+                    if not isinstance(v, bool):
+                        raise TypeError(f"{k} must be true or false")
+                elif isinstance(want, (int, float)):
+                    if isinstance(v, bool) or not isinstance(v, (int, float)) or v != v:
+                        raise TypeError(f"{k} must be a number")
+                    v = type(want)(v)
+                elif isinstance(want, list):
+                    if not isinstance(v, list):
+                        raise TypeError(f"{k} must be a list")
+                    if want and isinstance(want[0], (int, float)):
+                        if any(isinstance(x, bool) or not isinstance(x, (int, float)) for x in v):
+                            raise TypeError(f"{k} must be a list of numbers")
+                    elif any(not isinstance(x, str) for x in v):
+                        raise TypeError(f"{k} must be a list of names")
+                out[k] = v
+            return out
         top = keep(cls, d)
         top["live"] = Live(**keep(Live, d.get("live")))
         top["strategy"] = Strategy(**keep(Strategy, d.get("strategy")))
@@ -83,7 +105,7 @@ def load(runtime: str = RUNTIME, fallback: Config | None = None) -> Config:
         cfg = Config()
         save(cfg, runtime)
         return cfg
-    except (json.JSONDecodeError, TypeError, AttributeError):
+    except (OSError, ValueError, TypeError, AttributeError):   # unreadable, not JSON, or a value of the wrong type
         return fallback or Config()
 
 

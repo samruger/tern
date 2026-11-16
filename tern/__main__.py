@@ -27,7 +27,8 @@ def _status(runtime: str) -> int:
         print("No status yet. Start the engine with: python3 -m tern run")
         return 1
     age = time.time() - st["heartbeat"]
-    print(f"mode {st['mode']}{' (live armed)' if st.get('live_enabled') else ''}, last poll {age:.0f}s ago"
+    print(f"mode {st['mode']}{' (live armed)' if st.get('live_enabled') else ''}, "
+          + (f"engine stopped {age:.0f}s ago" if st.get("stopped") else f"last poll {age:.0f}s ago")
           + (f", live error: {st['live_error']}" if st.get("live_error") else ""))
     for s, e in (st.get("events") or {}).items():
         print(f"{s}: {e['event']} closes in {max(0, e['close'] - time.time()) / 60:.1f} min")
