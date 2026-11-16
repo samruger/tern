@@ -100,6 +100,11 @@ def cents(p) -> str:
     return f"{c:4.1f}" if c < 10 or c > 90 else f"{c:4.0f}"
 
 
+def ago(sec: float) -> str:
+    s = int(max(0, sec))
+    return f"{s}s" if s < 90 else f"{s // 60}m" if s < 5400 else f"{s / 3600:.1f}h"
+
+
 def strike_of(k: float) -> float:
     """Kalshi's floor_strike sits one tick under the round number (66799.99, 74.4999, 0.8599): add that tick back."""
     s = repr(float(k))
@@ -227,7 +232,7 @@ KALSHI_KEY_FILE (in ~/.config/tern/kalshi.env). Caps: live.capital_usd at
 risk, live.max_order_usd per order, live.max_daily_loss turns live off.
 
   ↑↓ PgUp PgDn  move in the ladder     tab         next coin: BTC ETH SOL XRP BNB HYPE
-  mouse wheel   scrolls the panel under the pointer: ladder, log, open positions
+  mouse wheel   scrolls the panel under the pointer: ladder, log, book
   1-6           show / hide a box: spot, contract, ladder, book, equity, log
   r             rule trades this coin on/off
   c             chart: 15m / 24h       v           book shown: paper / live
@@ -241,6 +246,13 @@ PANELS = ["spot", "contract", "ladder", "book", "equity", "log"]
 ROWS = [("spot", "contract", 0.36, 0.6), ("ladder", "book", 0.44, 0.52), ("equity", "log", 0.20, 0.4)]   # (.., height share, left width share)
 SUPER = "¹²³⁴⁵⁶⁷⁸⁹"
 LEFT_MIN = {"ladder": 56}    # the ladder's columns need this much before its bar has any room
+
+# key hints drawn on each box's top border (btop style); a hidden box's hints move to the bottom row
+PANEL_KEYS = {
+    "spot": lambda s: [("tab", " coin"), ("r", "ule coin"), ("c", "hart " + s.chart)],
+    "book": lambda s: [("v", "iew"), ("L", "ive")],
+    "log": lambda s: [("g", "ate"), ("?", "help"), ("q", "uit")],
+}
 
 
 class Screen:
@@ -264,13 +276,18 @@ class Screen:
         self.clip: int | None = None
         self.rects: dict[str, tuple[int, int, int, int]] = {}   # panel -> (y, x, h, w) as last drawn
         self.log_anchor: float | None = None   # ts of the bottom log line while scrolled back; None follows new lines
-        self.pos_off = 0                       # first open position shown in the book
+        self.pos_off = 0                       # first line shown under the book's totals
         self.prefs_path = os.path.join(runtime, "dash.json")
         self.hidden: set[str] = set()          # boxes turned off with 1-6
         self.panel_key = ""                    # the number drawn in the title of the box being drawn
         try:
             with open(self.prefs_path) as fh:
-                self.hidden = set(json.load(fh).get("hidden", [])) & set(PANELS)
+                d = json.load(fh)
+            self.hidden = set(d.get("hidden", [])) & set(PANELS)
+            if d.get("series") in cfgmod.SERIES:
+                self.series = d["series"]
+            if d.get("chart") in ("15m", "24h"):
+                self.chart = d["chart"]
         except (OSError, json.JSONDecodeError, AttributeError, TypeError):
             pass
 
@@ -297,7 +314,7 @@ class Screen:
     def save_prefs(self) -> None:
         try:
             with open(self.prefs_path + ".tmp", "w") as fh:
-                json.dump({"hidden": sorted(self.hidden)}, fh)
+                json.dump({"hidden": sorted(self.hidden), "series": self.series, "chart": self.chart}, fh)
             os.replace(self.prefs_path + ".tmp", self.prefs_path)
         except OSError:
             pass
@@ -312,7 +329,7 @@ class Screen:
     def layout(self, H: int, W: int) -> list[tuple[str, int, int, int, int]]:
         """(panel, y, x, h, w) for every box shown. A row's survivor takes the full width; rows share the height."""
         rows = [(l, r, share, lw) for l, r, share, lw in ROWS if l not in self.hidden or r not in self.hidden]
-        avail, total = H - 2, sum(r[2] for r in rows)
+        avail, total = H - 1, sum(r[2] for r in rows)   # the header takes row 0; the boxes run to the bottom row
         out, y = [], 1
         for i, (l, r, share, lws) in enumerate(rows):
             h = avail - (y - 1) if i == len(rows) - 1 else max(7, int(avail * share / total))
@@ -345,17 +362,26 @@ class Screen:
             return
         if x < 0:
             text = text[-x:]; x = 0
-        text = text[:W - x - (1 if y == H - 1 else 0)]
+        text = text[:W - x]
         if self.clip is not None:
             text = text[:max(0, self.clip - x)]
         if not text:
             return
         try:
-            self.s.addstr(y, x, text, attr)
+            if y == H - 1 and x + len(text) == W:
+                # addstr can't write the screen's last cell (the cursor has nowhere to go); insstr can
+                if len(text) > 1:
+                    self.s.addstr(y, x, text[:-1], attr)
+                self.s.insstr(y, W - 1, text[-1], attr)
+            else:
+                self.s.addstr(y, x, text, attr)
         except curses.error:
             pass
 
-    def box(self, y: int, x: int, h: int, w: int, title: str, color: int, key: str = "", right: str = "") -> None:
+    def box(self, y: int, x: int, h: int, w: int, title: str, color: int, key: str = "", right=()) -> None:
+        """A rounded box with its number and title on the top border, btop style. `right` holds the
+        segments drawn at the top border's right end: a plain string (grey info) or a (key, rest)
+        hint whose key shows red, like the box numbers. Segments that don't fit drop from the left."""
         P = self.P
         a = P(color)
         key = key or self.panel_key
@@ -371,10 +397,27 @@ class Screen:
             self.put(y, cx, key, P(RED, bold=True)); cx += len(key)
         self.put(y, cx, title, P(WHITE, bold=True)); cx += len(title)
         self.put(y, cx, "├", a)
-        if right:
-            rx = x + w - 3 - len(right) - 2
-            self.put(y, rx, "┤", a); self.put(y, rx + 1, right, P(self.P.grey)); self.put(y, rx + 1 + len(right), "├", a)
+        segs = [right] if isinstance(right, str) else list(right)
+        segs = [s for s in segs if s]
+        lens = [len(s) if isinstance(s, str) else len(s[0]) + len(s[1]) for s in segs]
+        while segs and cx + 2 + sum(n + 3 for n in lens) > x + w - 3:   # each segment: ┤..├ and a ─ before it
+            segs.pop(0); lens.pop(0)
+        rx = x + w - 3 - sum(n + 3 for n in lens) + 1        # keep the corner free for a scroll ▲
+        for seg, n in zip(segs, lens):
+            self.hint(y, rx, seg, a); rx += n + 3
         self.clip = saved
+
+    def hint(self, y: int, x: int, seg, border: int) -> None:
+        """One ┤segment├ on a border line."""
+        P = self.P
+        self.put(y, x, "┤", border); x += 1
+        if isinstance(seg, str):
+            self.put(y, x, seg, P(P.grey)); x += len(seg)
+        else:
+            k, rest = seg
+            self.put(y, x, k, P(RED, bold=True)); x += len(k)
+            self.put(y, x, rest, P(WHITE)); x += len(rest)
+        self.put(y, x, "├", border)
 
     def graph(self, y: int, x: int, h: int, w: int, vals: list[float], lo: float, hi: float, grad: list[int],
               marks: list[float] | None = None, mark_color: int = YELLOW, filled: bool = True) -> None:
@@ -440,7 +483,17 @@ class Screen:
                     nxt = f" next {max(ahead)}m slot in {clock(tau - max(ahead) * 60)}"
             seg = f"│ rule {'ON' if on else 'off'}{nxt}{' +live' if st.get('auto_live') and on else ''} "
             self.put(0, x, seg, P(GREEN if on else self.P.grey)); x += len(seg)
+        # the engine can be up while its feeds are not (Wi-Fi drops): say how old the data is
+        stale = []
+        sec = sp.get("sec") or []
+        if ok and sec and now - sec[-1][0] > 10:
+            stale.append(f"spot {ago(now - sec[-1][0])} old")
+        if ok and ev and ev.get("age", 0) > 30:
+            stale.append(f"ladder {ago(ev['age'])} old")
         right = f" {'●' if ok else '○'} engine {'ok' if ok else ('stale' if hb else 'down — s starts it')}  {time.strftime('%H:%M:%S')} "
+        if stale:
+            seg = "│ " + " · ".join(stale) + " "
+            self.put(0, x, seg[:max(0, W - x - len(right))], P(YELLOW, bold=True))
         self.put(0, W - len(right), right, P(GREEN if ok else RED))
 
     def spot_panel(self, y, x, h, w) -> None:
@@ -458,7 +511,7 @@ class Screen:
         row = self.row(self.sel)
         if row:
             strike = strike_of(row["k"])
-        self.box(y, x, h, w, prod.lower(), CYAN, "", f"{self.chart} · c")
+        self.box(y, x, h, w, prod.lower(), CYAN, "", PANEL_KEYS["spot"](self))
         gh = h - 3
         if not vals:
             self.put(y + h // 2, x + 3, "waiting for spot…", P(self.P.grey)); return
@@ -606,54 +659,93 @@ class Screen:
         P, st = self.P, self.st
         v = self.book_view or ("live" if st.get("mode") == "live" else "paper")
         b = st.get(v) or {}
-        self.box(y, x, h, w, "book", GREEN, "", "v paper/live")
-        tabs = x + 2
+        self.box(y, x, h, w, "book", GREEN, "", PANEL_KEYS["book"](self))
+        tabs: list[tuple[str, int]] = []
         for name in ("paper", "live"):
-            a = P(WHITE, bold=True) | curses.A_REVERSE if name == v else P(self.P.grey)
-            self.put(y + 1, tabs, f" {name} ", a); tabs += len(name) + 3
-        if not b:
-            return
-        eq, start = b.get("equity"), b.get("start") or 0
-        pnl = (eq - start) if eq is not None and start else None
-        lines = [("equity", money(eq), WHITE), ("P&L", money(pnl, True) + (f"  {pnl/start:+.2%}" if pnl is not None and start else ""),
-                                                 GREEN if (pnl or 0) >= 0 else RED),
-                 ("cash", money(b.get("cash")), WHITE), ("at risk", money(b.get("at_risk")), YELLOW),
-                 ("fees", money(b.get("fees")), self.P.grey)]
-        if v == "live":
-            L = st.get("live_cfg") or {}
-            lines.append(("caps", f"risk {money(L.get('capital_usd'))} · order {money(L.get('max_order_usd'))} · day -{money(L.get('max_daily_loss'))}", self.P.grey))
-        yy = y + 2
-        for k, val, c in lines:
-            self.put(yy, x + 2, f"{k:<8}", P(self.P.grey)); self.put(yy, x + 11, val[:w - 13], P(c, bold=k == "equity")); yy += 1
-        g = st.get("gate") or {}
-        if g:
-            wr = f"{g['win']:.0%}" if g.get("win") is not None else "-"
-            self.put(yy, x + 2, f"rule   ", P(self.P.grey))
-            self.put(yy, x + 11, f"{g['entries']} settled · {g['open']} open · {money(g['pnl'], True)} · win {wr} · "
-                                 f"{g['per_contract']*100:+.2f}¢/ct"[:w - 13], P(GREEN if g["pnl"] >= 0 else RED))
-            yy += 1
-        yy += 1
-        pos = b.get("pos") or []
-        self.put(yy, x + 2, f"{'strike':>9} {'side':<4} {'qty':>6} {'avg':>5} {'mark':>5} {'P&L':>8} {'closes':>7}"[:w - 4], P(self.P.grey, bold=True))
-        yy += 1
-        now = time.time()
-        room = max(0, y + h - 1 - yy)
-        self.pos_off = max(0, min(self.pos_off, len(pos) - room))
+            tabs += [(f" {name} ", P(WHITE, bold=True) | curses.A_REVERSE if name == v else P(self.P.grey)), (" ", 0)]
+        body = [tabs]                                    # the whole book is one list of lines and scrolls as one
+        if b:
+            eq, start = b.get("equity"), b.get("start") or 0
+            pnl = (eq - start) if eq is not None and start else None
+            lines = [("equity", money(eq), WHITE), ("P&L", money(pnl, True) + (f"  {pnl/start:+.2%}" if pnl is not None and start else ""),
+                                                     GREEN if (pnl or 0) >= 0 else RED),
+                     ("cash", money(b.get("cash")), WHITE), ("at risk", money(b.get("at_risk")), YELLOW),
+                     ("fees", money(b.get("fees")), self.P.grey)]
+            if v == "live":
+                L = st.get("live_cfg") or {}
+                lines.append(("caps", f"risk {money(L.get('capital_usd'))} · order {money(L.get('max_order_usd'))} · day -{money(L.get('max_daily_loss'))}", self.P.grey))
+            g = st.get("gate") or {}
+            if g:
+                wr = f"{g['win']:.0%}" if g.get("win") is not None else "-"
+                lines.append(("rule", f"{g['entries']} settled · {g['open']} open · {money(g['pnl'], True)} · win {wr} · "
+                                      f"{g['per_contract']*100:+.2f}¢/ct", GREEN if g["pnl"] >= 0 else RED))
+            body += [[(f"{k:<8} ", P(self.P.grey)), (val, P(c, bold=k == "equity"))] for k, val, c in lines]
+            body += [[("", 0)]] + self.book_lines(b)
+        yy = y + 1
+        room = max(0, h - 2)
+        self.pos_off = max(0, min(self.pos_off, len(body) - room))
         if self.pos_off > 0:
-            self.put(yy, x + w - 2, "▲", P(YELLOW))
-        if self.pos_off + room < len(pos):
+            self.put(y, x + w - 2, "▲", P(YELLOW))
+        if self.pos_off + room < len(body):
             self.put(y + h - 1, x + w - 2, "▼", P(YELLOW))
-        for p in pos[self.pos_off:self.pos_off + room]:
-            side = "YES" if p["q"] > 0 else "NO"
-            pl = p.get("pnl")
-            self.put(yy, x + 2, f"{strike_label(p.get('k')):>9} ", P(WHITE))
-            self.put(yy, x + 12, f"{side:<4}", P(GREEN if side == "YES" else MAGENTA, bold=True))
-            self.put(yy, x + 16, f" {abs(p['q']):>6g} {cents(p['avg']):>5} {cents(p.get('mark')):>5} ", P(WHITE))
-            self.put(yy, x + 37, f"{money(pl, True):>8}", P(GREEN if (pl or 0) >= 0 else RED))
-            self.put(yy, x + 46, f" {clock((p.get('close') or now) - now):>7}", P(self.P.grey))
+        for line in body[self.pos_off:self.pos_off + room]:
+            cx = x + 2
+            for text, attr in line:
+                self.put(yy, cx, text, attr); cx += len(text)
             yy += 1
+
+    def book_lines(self, b: dict) -> list[list[tuple[str, int]]]:
+        """The book's scrolling part (petrel style): open positions, then the last settlements, then
+        the last fills, newest first. Each line is a list of (text, attr) pieces."""
+        P, now = self.P, time.time()
+        grey, head, white = P(self.P.grey), P(self.P.grey, bold=True), P(WHITE)
+
+        def side(q):
+            return [(f"{'YES' if q > 0 else 'NO':<4}", P(GREEN if q > 0 else MAGENTA, bold=True))]
+
+        def strike(ticker):
+            m = re.search(r"-[TB]([0-9.]+)$", ticker or "")
+            return f"{strike_label(float(m.group(1))) if m else '?':>9} "
+
+        out: list[list[tuple[str, int]]] = []
+        pos = b.get("pos") or []
+        out.append([(f"{'open':<4} {'strike':>9} {'side':<4} {'qty':>6} {'avg':>5} {'mark':>5} {'P&L':>8} {'closes':>7}", head)])
+        for p in pos:
+            pl = p.get("pnl")
+            out.append([(f"{'':<5}{strike_label(p.get('k')):>9} ", white), *side(p["q"]),
+                        (f" {abs(p['q']):>6g} {cents(p['avg']):>5} {cents(p.get('mark')):>5} ", white),
+                        (f"{money(pl, True):>8}", P(GREEN if (pl or 0) >= 0 else RED)),
+                        (f" {clock((p.get('close') or now) - now):>7}", grey)])
         if not pos:
-            self.put(yy, x + 2, "no open positions", P(self.P.grey))
+            out.append([("     no open positions", grey)])
+
+        trades = list(reversed(b.get("trades") or []))
+        settled = [t for t in trades if t.get("kind") == "settle"]
+        out.append([("", 0)])
+        out.append([(f"{'settled':<8}{'strike':>6} {'side':<4} {'qty':>6} {'won':>11} {'P&L':>8} {'ago':>7}", head)])
+        for t in settled:
+            q = -t["delta"]
+            won = (t.get("result") == "yes") == (q > 0)
+            out.append([(f"{'':<5}{strike(t['ticker'])}", white), *side(q),
+                        (f" {abs(q):>6g} ", white), (f"{'won' if won else 'lost':>11} ", P(GREEN if won else RED)),
+                        (f"{money(t['realized'], True):>8}", P(GREEN if t["realized"] >= 0 else RED)),
+                        (f" {ago(now - t['ts']):>7}", grey)])
+        if not settled:
+            out.append([("     none yet", grey)])
+
+        fills = [t for t in trades if t.get("kind") == "fill"]
+        out.append([("", 0)])
+        out.append([(f"{'fills':<8}{'strike':>6} {'side':<4} {'qty':>6} {'at':>5} {'fee':>5} {'P&L':>8} {'ago':>7}", head)])
+        for t in fills:
+            q = t["delta"]                                   # + bought YES, - bought NO at 1 - price
+            at = t["price"] if q > 0 else 1 - t["price"]
+            out.append([(f"{'':<5}{strike(t['ticker'])}", white), *side(q),
+                        (f" {abs(q):>6g} {cents(at):>5} {money(t['fee']):>5} ", white),
+                        (f"{money(t['realized'], True):>8}", P(GREEN if t["realized"] >= 0 else RED)),
+                        (f" {ago(now - t['ts']):>7}", grey)])
+        if not fills:
+            out.append([("     none yet", grey)])
+        return out
 
     def equity_panel(self, y, x, h, w) -> None:
         P, st = self.P, self.st
@@ -674,7 +766,7 @@ class Screen:
 
     def log_panel(self, y, x, h, w) -> None:
         P = self.P
-        self.box(y, x, h, w, "log", self.P.grey, "", "")
+        self.box(y, x, h, w, "log", self.P.grey, "", PANEL_KEYS["log"](self))
         logs = self.st.get("logs") or []
         rows = h - 2
         end = self.log_end(logs, rows)
@@ -770,17 +862,21 @@ class Screen:
         self.write_view()
 
     def footer(self, H: int, W: int) -> None:
+        """The bottom row is the bottom border of the lowest boxes. It carries the hints of any hidden
+        box (so tab, ?, q... never go missing) at its right end, and a flash message at its left."""
         P = self.P
+        orphans = [k for name, fn in PANEL_KEYS.items() if name not in self.rects for k in fn(self)]
+        if orphans:
+            border = P(P.grey)
+            need = sum(len(k) + len(r) + 3 for k, r in orphans) - 1
+            rx = W - 3 - need if self.rects else max(1, (W - need) // 2)
+            for k, r in orphans:
+                if rx >= 1:
+                    self.hint(H - 1, rx, (k, r), border)
+                rx += len(k) + len(r) + 3
         if self.flash and time.time() - self.flash_at < 8:
-            self.put(H - 1, 0, (" " + self.flash).ljust(W), P(YELLOW, bold=True) | curses.A_REVERSE); return
-        keys = [("1-6", " boxes"), ("tab", " coin"),
-                ("r", "ule coin"), ("c", "hart"), ("v", "iew"), ("L", "ive"), ("g", "ate"), ("?", "help"), ("q", "uit")]
-        x = 1
-        for k, rest in keys:
-            if x + len(k) + len(rest) + 2 > W:
-                break
-            self.put(H - 1, x, k, P(RED, bold=True)); x += len(k)
-            self.put(H - 1, x, rest + "  ", P(WHITE)); x += len(rest) + 2
+            msg = f" {self.flash} "[:max(0, W - 4)]
+            self.put(H - 1, 2, msg, P(YELLOW, bold=True) | curses.A_REVERSE)
 
     def draw_overlay(self, lines: list[str], title: str, color: int = CYAN) -> None:
         H, W = self.s.getmaxyx()
@@ -882,11 +978,12 @@ class Screen:
         elif ch == 9:
             order = list(cfgmod.SERIES)
             self.series = order[(order.index(self.series) + 1) % len(order)] if self.series in order else order[0]
-            self.sel = None; self.write_view(); self.say(f"viewing {cfgmod.SERIES[self.series]}")
+            self.sel = None; self.write_view(); self.save_prefs(); self.say(f"viewing {cfgmod.SERIES[self.series]}")
         elif ch == ord("r"):
             self.send(op="series", series=self.series)
         elif ch == ord("c"):
             self.chart = "24h" if self.chart == "15m" else "15m"
+            self.save_prefs()
         elif ch == ord("v"):
             cur = self.book_view or ("live" if self.st.get("mode") == "live" else "paper")
             self.book_view = "live" if cur == "paper" else "paper"
