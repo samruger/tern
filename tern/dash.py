@@ -243,7 +243,7 @@ risk, live.max_order_usd per order, live.max_daily_loss turns live off.
 
 # the boxes, in the order their number keys toggle them, as rows of (left, right)
 PANELS = ["spot", "contract", "ladder", "book", "equity", "log"]
-ROWS = [("spot", "contract", 0.36, 0.6), ("ladder", "book", 0.44, 0.52), ("equity", "log", 0.20, 0.4)]   # (.., height share, left width share)
+ROWS = [("spot", "contract", 0.36, 0.6), ("ladder", "book", 0.44, 0.52), ("equity", "log", 0.28, 0.4)]   # (.., height share, left width share)
 SUPER = "¹²³⁴⁵⁶⁷⁸⁹"
 LEFT_MIN = {"ladder": 56}    # the ladder's columns need this much before its bar has any room
 
@@ -329,10 +329,10 @@ class Screen:
     def layout(self, H: int, W: int) -> list[tuple[str, int, int, int, int]]:
         """(panel, y, x, h, w) for every box shown. A row's survivor takes the full width; rows share the height."""
         rows = [(l, r, share, lw) for l, r, share, lw in ROWS if l not in self.hidden or r not in self.hidden]
-        avail, total = H - 1, sum(r[2] for r in rows)   # the header takes row 0; the boxes run to the bottom row
-        out, y = [], 1
+        avail, total = H - 1, sum(r[2] for r in rows)   # the status line takes the last row; the boxes start at the top
+        out, y = [], 0
         for i, (l, r, share, lws) in enumerate(rows):
-            h = avail - (y - 1) if i == len(rows) - 1 else max(7, int(avail * share / total))
+            h = avail - y if i == len(rows) - 1 else max(7, int(avail * share / total))
             shown = [n for n in (l, r) if n not in self.hidden]
             if len(shown) == 2:
                 lw = max(int(W * lws), LEFT_MIN.get(l, 0))
@@ -440,21 +440,23 @@ class Screen:
                 self.put(y + r, run_x, run, run_attr)
 
     # ------------------------------------------------------------ panels
-    def header(self, W: int) -> None:
+    def header(self, H: int, W: int) -> None:
+        """The status line, on the screen's last row (btop keeps its boxes up top)."""
+        hy = H - 1
         P, st = self.P, self.st
         now = time.time()
         hb = st.get("heartbeat") or 0
         ok = now - hb < 5
         mode = st.get("mode", "?")
         x = 0
-        self.put(0, x, " tern ", P(CYAN, bold=True) | curses.A_REVERSE); x += 7
+        self.put(hy, x, " tern ", P(CYAN, bold=True) | curses.A_REVERSE); x += 7
         if mode == "live":
-            self.put(0, x, " ● LIVE ", P(RED, bold=True) | curses.A_REVERSE); x += 9
+            self.put(hy, x, " ● LIVE ", P(RED, bold=True) | curses.A_REVERSE); x += 9
         else:
             armed = " (live armed: " + (st.get("live_error") or "authenticating") + ")" if st.get("live_enabled") else ""
-            self.put(0, x, " ● PAPER ", P(GREEN, bold=True) | curses.A_REVERSE); x += 10
+            self.put(hy, x, " ● PAPER ", P(GREEN, bold=True) | curses.A_REVERSE); x += 10
             if armed:
-                self.put(0, x, armed[:60], P(YELLOW)); x += min(60, len(armed)) + 1
+                self.put(hy, x, armed[:60], P(YELLOW)); x += min(60, len(armed)) + 1
         prod = cfgmod.SERIES[self.series]
         sp = (st.get("spot") or {}).get(prod) or {}
         p = sp.get("now")
@@ -463,15 +465,15 @@ class Screen:
         if p and len(mins) > 60:
             chg = p / mins[-61][1] - 1
         seg = f" {prod.split('-')[0]} {money(p)} "
-        self.put(0, x, seg, P(WHITE, bold=True)); x += len(seg)
+        self.put(hy, x, seg, P(WHITE, bold=True)); x += len(seg)
         if chg is not None:
             seg = f"{'▲' if chg >= 0 else '▼'}{chg:+.2%} 1h "
-            self.put(0, x, seg, P(GREEN if chg >= 0 else RED)); x += len(seg)
+            self.put(hy, x, seg, P(GREEN if chg >= 0 else RED)); x += len(seg)
         ev = (st.get("events") or {}).get(self.series)
         if ev:
             tau = ev["close"] - now
             seg = f"│ {ev['event']} closes {clock(tau)} "
-            self.put(0, x, seg, P(YELLOW if tau < 600 else WHITE)); x += len(seg)
+            self.put(hy, x, seg, P(YELLOW if tau < 600 else WHITE)); x += len(seg)
         S = st.get("strategy") or {}
         if S:
             on = self.series in (S.get("series") or [])
@@ -482,7 +484,7 @@ class Screen:
                 if ahead:
                     nxt = f" next {max(ahead)}m slot in {clock(tau - max(ahead) * 60)}"
             seg = f"│ rule {'ON' if on else 'off'}{nxt}{' +live' if st.get('auto_live') and on else ''} "
-            self.put(0, x, seg, P(GREEN if on else self.P.grey)); x += len(seg)
+            self.put(hy, x, seg, P(GREEN if on else self.P.grey)); x += len(seg)
         # the engine can be up while its feeds are not (Wi-Fi drops): say how old the data is
         stale = []
         sec = sp.get("sec") or []
@@ -493,8 +495,8 @@ class Screen:
         right = f" {'●' if ok else '○'} engine {'ok' if ok else ('stale' if hb else 'down — s starts it')}  {time.strftime('%H:%M:%S')} "
         if stale:
             seg = "│ " + " · ".join(stale) + " "
-            self.put(0, x, seg[:max(0, W - x - len(right))], P(YELLOW, bold=True))
-        self.put(0, W - len(right), right, P(GREEN if ok else RED))
+            self.put(hy, x, seg[:max(0, W - x - len(right))], P(YELLOW, bold=True))
+        self.put(hy, W - len(right), right, P(GREEN if ok else RED))
 
     def spot_panel(self, y, x, h, w) -> None:
         P, st = self.P, self.st
@@ -862,7 +864,7 @@ class Screen:
         self.write_view()
 
     def footer(self, H: int, W: int) -> None:
-        """The bottom row is the bottom border of the lowest boxes. It carries the hints of any hidden
+        """Row H-2 is the bottom border of the lowest boxes. It carries the hints of any hidden
         box (so tab, ?, q... never go missing) at its right end, and a flash message at its left."""
         P = self.P
         orphans = [k for name, fn in PANEL_KEYS.items() if name not in self.rects for k in fn(self)]
@@ -872,11 +874,11 @@ class Screen:
             rx = W - 3 - need if self.rects else max(1, (W - need) // 2)
             for k, r in orphans:
                 if rx >= 1:
-                    self.hint(H - 1, rx, (k, r), border)
+                    self.hint(H - 2, rx, (k, r), border)
                 rx += len(k) + len(r) + 3
         if self.flash and time.time() - self.flash_at < 8:
             msg = f" {self.flash} "[:max(0, W - 4)]
-            self.put(H - 1, 2, msg, P(YELLOW, bold=True) | curses.A_REVERSE)
+            self.put(H - 2, 2, msg, P(YELLOW, bold=True) | curses.A_REVERSE)
 
     def draw_overlay(self, lines: list[str], title: str, color: int = CYAN) -> None:
         H, W = self.s.getmaxyx()
@@ -912,7 +914,7 @@ class Screen:
         H, W = self.s.getmaxyx()
         if W < 100 or H < 30:
             self.put(0, 0, f"tern needs at least 100x30 (now {W}x{H})", self.P(RED, bold=True)); self.s.refresh(); return
-        self.header(W)
+        self.header(H, W)
         self.rects = {}
         boxes = self.layout(H, W)
         for name, y, x, h, w in boxes:
