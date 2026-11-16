@@ -145,10 +145,12 @@ Keys: `↑↓` / `PgUp PgDn` move in the focused box · `←→` focus · `1`–
 
 ## Files
 
-`runtime/` (gitignored) holds `config.json`, `state.json` (books, the rule's
-record, slots taken; written only when it changes, with an hourly
-`state.json.bak` that is loaded if the main file is damaged), `tern.log` and
-`cmd/` (settings commands from the screen). The live
+`runtime/` (gitignored) holds `config.json`, `state.json` (the books as they
+stand, open entries, slots taken: a few KB, written only when it changes, with
+an hourly `state.json.bak` that is loaded if the main file is damaged), the
+history files that are only ever appended to (`paper-trades.jsonl`,
+`paper-curve.jsonl`, `live-trades.jsonl`, `live-curve.jsonl`,
+`rule-entries.jsonl`), `tern.log` and `cmd/` (settings commands from the screen). The live
 status file and the screen's selection live in tmpfs (`$XDG_RUNTIME_DIR/tern-*`),
 because they are rewritten every second.
 

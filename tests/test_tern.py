@@ -123,6 +123,61 @@ class State(unittest.TestCase):
             k._save_state()                                   # unchanged: not rewritten
             self.assertFalse(os.path.exists(p))
 
+    def test_history_is_appended_to_its_own_files_not_rewritten_with_the_state(self):
+        import json, time
+        with tempfile.TemporaryDirectory() as d:
+            k = self.desk(d)
+            now = time.time()
+            k.meta = {"A-T1": {"close": now - 60}, "A-T2": {"close": now + 600}}   # T2 is still open
+            k.pub.market = lambda t: {"result": "yes", "status": "finalized"}
+            k.paper.trade("A-T1", 2, 0.5, 0.01, k.meta["A-T1"], "auto")
+            k.paper.trade("A-T2", 2, 0.5, 0.01, k.meta["A-T2"], "auto")
+            k.auto = [{"ts": now, "ticker": t, "side": "yes", "n": 2, "cost": 0.5, "fee": 0.01, "slot": 10, "pnl": None}
+                      for t in ("A-T1", "A-T2")]
+            k.paper.mark_curve(1000.0, now)
+            k._settle(); k._save_state()
+            st = json.load(open(os.path.join(d, "state.json")))
+            self.assertNotIn("trades", st["paper"]); self.assertNotIn("curve", st["paper"])
+            self.assertEqual([a["ticker"] for a in st["auto"]], ["A-T2"])      # only the open entry
+            self.assertEqual(set(st["meta"]), {"A-T2"})                        # and only meta still owed
+            lines = lambda n: open(os.path.join(d, n)).read().splitlines()
+            self.assertEqual(len(lines("paper-trades.jsonl")), 3)              # two fills and a settlement
+            self.assertEqual(len(lines("paper-curve.jsonl")), 1)
+            self.assertEqual(len(lines("rule-entries.jsonl")), 1)
+            k._save_state()
+            self.assertEqual(len(lines("paper-trades.jsonl")), 3)              # nothing new: nothing appended
+            k2 = self.desk(d)                                                  # a restart reads it all back
+            self.assertEqual([t["kind"] for t in k2.paper.trades], ["fill", "fill", "settle"])
+            self.assertEqual(k2.paper.curve, k.paper.curve)
+            self.assertEqual([(a["ticker"], a["pnl"] is None) for a in k2.auto], [("A-T1", False), ("A-T2", True)])
+            self.assertAlmostEqual(k2.gate()["pnl"], k.gate()["pnl"])
+            self.assertEqual(k2.paper.new_trades, [])                          # read back, not queued again
+            # the engine died after writing the entry's file and before saving state: it is not counted twice
+            st["auto"].append(dict(k2.auto[0], pnl=None))
+            json.dump(st, open(os.path.join(d, "state.json"), "w"))
+            self.assertEqual(self.desk(d).gate()["entries"], 1)
+            k2._command({"op": "reset_paper"}); k2._save_state()
+            self.assertFalse(os.path.exists(os.path.join(d, "paper-trades.jsonl")))
+            self.assertEqual(self.desk(d).auto, [])
+
+    def test_a_state_file_from_before_the_split_seeds_the_history_files(self):
+        import json
+        with tempfile.TemporaryDirectory() as d:
+            trade = {"ts": 5.0, "ticker": "A-T1", "delta": 1, "price": 0.5, "fee": 0.0, "realized": 0.0, "tag": "auto", "kind": "fill"}
+            row = {"ts": 5.0, "ticker": "A-T1", "side": "yes", "n": 1, "cost": 0.5, "fee": 0.0, "slot": 10}
+            old = {"paper": {"name": "paper", "cash": 990.0, "start": 1000.0, "pos": {}, "realized": -10.0, "fees": 0.0,
+                             "trades": [trade], "curve": [[60, 1000.0], [120, 990.0]]},
+                   "auto": [dict(row, pnl=0.5), dict(row, ts=6.0, pnl=None)]}
+            json.dump(old, open(os.path.join(d, "state.json"), "w"))
+            k = self.desk(d)
+            self.assertEqual(k.paper.trades, [trade]); self.assertEqual(len(k.paper.curve), 2)
+            self.assertEqual([a["pnl"] for a in k.auto], [0.5, None])
+            k._save_state()
+            self.assertLess(os.path.getsize(os.path.join(d, "state.json")), 600)
+            k2 = self.desk(d)                                                  # and nothing is seeded twice
+            self.assertEqual(k2.paper.trades, [trade]); self.assertEqual([a["pnl"] for a in k2.auto], [0.5, None])
+            self.assertAlmostEqual(k2.paper.cash, 990.0)
+
     def test_damaged_state_falls_back_to_backup_and_is_kept(self):
         with tempfile.TemporaryDirectory() as d:
             k = self.desk(d)

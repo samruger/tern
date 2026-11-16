@@ -32,6 +32,8 @@ CMD_MAX_AGE = 30.0     # seconds a command from the screen stays valid
 LOCK_TRIES = 6                           # 0.2s apart
 LOG_TIME = "%Y-%m-%d %H:%M:%S"           # how log() stamps a line in tern.log, and how it is read back
 LOG_LINE = re.compile(r"^(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d) (\w[\w ]{4}) (.*)$")   # level is padded to 5
+TRADES_KEPT, CURVE_KEPT, ENTRIES_KEPT = 5000, 20_000, 20_000   # history lines read back into memory on start
+RULE_LOG = "rule-entries.jsonl"          # the paper book's settled entries of the rule, one a line
 LOST_REPLY_WAITS = (1.0, 2.0, 4.0)   # seconds between looks for an order whose reply never came
 
 
@@ -180,13 +182,51 @@ class Desk:
                 self.log(f"{os.path.basename(path)} unreadable ({ex}); kept as {os.path.basename(keep)}", "error")
         self.paper = Book.from_dict(st["paper"]) if st.get("paper") else Book("paper", self.cfg.paper_capital)
         self.live = Book.from_dict(st["live"]) if st.get("live") else Book("live", 0.0)
-        self.auto = st.get("auto", [])              # paper record of the rule: one row per entry
+        # History is kept in append-only files beside state.json, so a save writes what is new and not
+        # the whole record. A state.json from before that still holds the lists: they seed the files once.
+        for b in (self.paper, self.live):
+            old = st.get(b.name) or {}
+            b.trades = self._history(f"{b.name}-trades.jsonl", old.get("trades"), TRADES_KEPT)
+            b.curve = self._history(f"{b.name}-curve.jsonl", old.get("curve"), CURVE_KEPT)
+        rows = st.get("auto", [])
+        done = self._history(RULE_LOG, [a for a in rows if a["pnl"] is not None], ENTRIES_KEPT)
+        # An entry is written to the file before state.json is saved without it. If the engine died in
+        # between it is in both: the file wins, so it is not settled twice.
+        key = lambda a: (a.get("ts"), a.get("ticker"), a.get("slot"))
+        seen = {key(a) for a in done}
+        self.auto = done + [a for a in rows if a["pnl"] is None and key(a) not in seen]   # paper record of the rule: one row per entry
+        self.auto_done: list[dict] = []              # entries settled since the last save, not in RULE_LOG yet
         self.slots = {k: set(v) for k, v in st.get("slots", {}).items()}     # "book|event" -> minutes done
         self.hour_cost = st.get("hour_cost", {})     # "book|event" -> dollars
         self.taken = st.get("taken", {})             # "book|event" -> {ticker: entries}, for a variant's per-strike cap
         self.day = st.get("day", {})                 # live daily-loss anchor {date, equity}
         self.meta = st.get("meta", {})               # ticker -> {event, strike, close, series}
         self.ev_close = st.get("ev_close", {})       # event -> close time, for pruning
+
+    def _history(self, name: str, seed: list | None, keep: int) -> list:
+        """The last `keep` lines of a history file. A missing file is first written from `seed`."""
+        path = os.path.join(self.runtime, name)
+        if seed and not os.path.exists(path):
+            _atomic_write(path, "".join(json.dumps(r, separators=(",", ":")) + "\n" for r in seed), sync=True)
+        rows: collections.deque = collections.deque(maxlen=keep)
+        try:
+            with open(path) as fh:
+                for line in fh:
+                    try:
+                        rows.append(json.loads(line))
+                    except ValueError:               # a line cut short by a crash
+                        continue
+        except OSError:
+            pass
+        return list(rows)
+
+    def _append_history(self, name: str, rows: list) -> None:
+        """Add rows to a history file and empty the list. A write that raises leaves them for the next save."""
+        if not rows:
+            return
+        with open(os.path.join(self.runtime, name), "a") as fh:
+            fh.write("".join(json.dumps(r, separators=(",", ":")) + "\n" for r in rows))
+        del rows[:]
 
     def _save_state(self) -> None:
         now = time.time()
@@ -208,9 +248,17 @@ class Desk:
         sig = self._fingerprint()
         if sig == self._saved_sig and now - self.last["fullsave"] < 60:
             return
-        st = {"paper": self.paper.to_dict(), "live": self.live.to_dict(), "auto": self.auto[-20000:],
+        for b in (self.paper, self.live):            # history first: state.json never runs ahead of it
+            self._append_history(f"{b.name}-trades.jsonl", b.new_trades)
+            self._append_history(f"{b.name}-curve.jsonl", b.new_curve)
+        self._append_history(RULE_LOG, self.auto_done)
+        # Only what cannot be asked for again is saved: open entries, and meta for strikes still owed a
+        # settlement (the rest of meta comes back with the first market fetch).
+        owed = [a for a in self.auto if a["pnl"] is None]
+        keep = set(self.paper.pos) | set(self.live.pos) | {a["ticker"] for a in owed}
+        st = {"paper": self.paper.to_dict(), "live": self.live.to_dict(), "auto": owed,
               "slots": {k: sorted(v) for k, v in self.slots.items()}, "hour_cost": self.hour_cost, "taken": self.taken,
-              "day": self.day, "meta": self.meta, "ev_close": self.ev_close}
+              "day": self.day, "meta": {t: m for t, m in self.meta.items() if t in keep}, "ev_close": self.ev_close}
         text = json.dumps(st, separators=(",", ":"))
         if text != self._saved:                      # identical text: spare the disk
             _atomic_write(os.path.join(self.runtime, "state.json"), text, sync=True)
@@ -686,6 +734,7 @@ class Desk:
                 if a["ticker"] == t and a["pnl"] is None:
                     won = y if a["side"] == "yes" else not y
                     a["pnl"] = round(a["n"] * ((1.0 if won else 0.0) - a["cost"]) - a["fee"], 4)
+                    self.auto_done.append(a)
 
     def _void(self, t: str, res) -> None:
         for b in (self.paper, self.live):
@@ -694,6 +743,7 @@ class Desk:
         for a in self.auto:
             if a["ticker"] == t and a["pnl"] is None:
                 a["pnl"] = round(-a["fee"], 4)
+                self.auto_done.append(a)
 
     # ------------------------------------------------------------ commands from the screen
     def _commands(self) -> None:
@@ -766,7 +816,12 @@ class Desk:
             self.log(msg, "warn" if self.mode == "live" else "info")
             return msg
         if op == "reset_paper":
-            self.paper = Book("paper", self.cfg.paper_capital); self.auto = []
+            self.paper = Book("paper", self.cfg.paper_capital); self.auto = []; self.auto_done = []
+            for name in ("paper-trades.jsonl", "paper-curve.jsonl", RULE_LOG):   # its history goes with it
+                try:
+                    os.remove(os.path.join(self.runtime, name))
+                except FileNotFoundError:
+                    pass
             self.slots = {k: v for k, v in self.slots.items() if not k.startswith("paper|")}
             self.hour_cost = {k: v for k, v in self.hour_cost.items() if not k.startswith("paper|")}
             self.taken = {k: v for k, v in self.taken.items() if not k.startswith("paper|")}

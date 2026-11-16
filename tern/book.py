@@ -24,8 +24,12 @@ class Book:
         self.pos: dict[str, dict] = {}    # ticker -> {q, avg, event, strike, close, series}
         self.realized = 0.0
         self.fees = 0.0
-        self.trades: list[dict] = []      # every fill and settlement, newest last
+        self.trades: list[dict] = []      # the last fills and settlements, newest last
         self.curve: list[list[float]] = []  # [ts, equity] per minute
+        # The whole history lives in append-only files, not in the saved state. These hold what is
+        # not in those files yet; the engine appends them and empties the lists (engine._save_state).
+        self.new_trades: list[dict] = []
+        self.new_curve: list[list[float]] = []
 
     # ------------------------------------------------------------ trading
     def trade(self, ticker: str, delta: float, price: float, fee: float, meta: dict, tag: str) -> dict:
@@ -64,8 +68,8 @@ class Book:
         return rec
 
     def _record(self, rec: dict, keep: int = 5000) -> None:
-        self.trades.append(rec)
-        del self.trades[:-keep]                   # what to_dict saves; the list does not grow without end
+        self.trades.append(rec); self.new_trades.append(rec)
+        del self.trades[:-keep]                   # the list in memory does not grow without end
 
     def settle(self, ticker: str, result_yes: bool) -> dict | None:
         p = self.pos.pop(ticker, None)
@@ -117,17 +121,18 @@ class Book:
 
     def mark_curve(self, eq: float, now: float, keep: int = 20_000) -> None:
         if not self.curve or now - self.curve[-1][0] >= 60:
-            self.curve.append([round(now), round(eq, 2)])
+            self.curve.append([round(now), round(eq, 2)]); self.new_curve.append(self.curve[-1])
             del self.curve[:-keep]
 
     # ------------------------------------------------------------ persistence
     def to_dict(self) -> dict:
+        """What the book is now. Its history (trades, curve) is not part of it: see new_trades."""
         return {"name": self.name, "cash": self.cash, "start": self.start, "pos": self.pos,
-                "realized": self.realized, "fees": self.fees, "trades": self.trades[-5000:], "curve": self.curve}
+                "realized": self.realized, "fees": self.fees}
 
     @classmethod
     def from_dict(cls, d: dict) -> "Book":
         b = cls(d["name"], d["cash"])
         b.start = d.get("start", d["cash"]); b.pos = d.get("pos", {}); b.realized = d.get("realized", 0.0)
-        b.fees = d.get("fees", 0.0); b.trades = d.get("trades", []); b.curve = d.get("curve", [])
+        b.fees = d.get("fees", 0.0)
         return b
