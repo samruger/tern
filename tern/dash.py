@@ -290,20 +290,30 @@ unproven. Paper always runs it. Live runs it only after the gate (g).
 
 There are no manual orders: every trade comes from the rule.
 
-LIVE      L arms live: it asks you to type "live". Needs KALSHI_KEY_ID and
+LIVE      (L) arms live: it asks you to type "live". Needs KALSHI_KEY_ID and
 KALSHI_KEY_FILE (in ~/.config/tern/kalshi.env). Caps: live.capital_usd at
-risk, live.max_order_usd per order, live.max_daily_loss turns live off.
+risk, live.max_order_usd per order, live.max_daily_loss turns live off."""
 
-  ↑↓ PgUp PgDn  move in the ladder     tab         next coin: BTC ETH SOL XRP BNB HYPE
-  mouse wheel   scrolls the panel under the pointer: ladder, log, book
-  1-6           show / hide a box: spot, contract, ladder, book, equity, log
-  r             rule trades this coin on/off
-  t             color theme (13 of them, see themes.py)
-  c             chart: 5m 15m 1h 24h   v           book shown: paper / live
-  L             arm / disarm live      g           gate and checklist
-  R             reset paper            s           start / stop the engine
-  h ?           this help              q           close (the engine keeps running)
-"""
+# overlay text worth a color: checks, key references like (g), words to type, warnings, paths and names
+OVERLAY_TOKENS = re.compile(
+    r"(?P<ok>\[x\])|(?P<todo>\[ \])"
+    r"|(?P<ref>\((?:[a-zA-Z?]|tern report)\))"
+    r"|(?P<quote>\"[^\"]+\"|\blive and press enter\b)"
+    r"|(?P<warn>\b(?:real money|unproven|turns live off|turns itself off|Nothing trades|No key found yet|Wipe)\b)"
+    r"|(?P<keyhint>^(?:y|any key|any other key)\b|\besc\b|·\s(?:any (?:other )?key)\b)"
+    r"|(?P<path>~/\S+|\bKALSHI_KEY_(?:ID|FILE)\b|\blive\.\w+)")
+RULE_LINE = "\0rule"                              # placeholder text: draw_overlay turns it into a divider
+
+# the help's key legend: two columns of (section, [(keys, what they do)])
+HELP_KEYS = [
+    [("move", [("↑↓ PgUp PgDn", "move in the ladder"), ("mouse wheel", "scroll the panel under the pointer"),
+               ("tab", "next coin: BTC ETH SOL XRP BNB HYPE")]),
+     ("look", [("1-6", "show / hide a box"), ("c", "chart span: 5m 15m 1h 24h"), ("v", "book shown: paper / live"),
+               ("t T", "next / previous color theme")])],
+    [("trade", [("r", "the rule trades this coin on / off"), ("g", "gate and checklist"),
+                ("L", "arm / disarm live"), ("R", "reset paper")]),
+     ("engine", [("s", "start / stop the engine"), ("h ?", "this help"), ("q", "close (the engine keeps running)")])],
+]
 
 # spot chart spans: c cycles them in this order (the engine sends ~15 min of seconds and 24h of minutes)
 CHARTS = {"5m": 300, "15m": 900, "1h": 3600, "24h": 86400}
@@ -337,7 +347,7 @@ class Screen:
         self.sel: str | None = None
         self.chart = "15m"
         self.book_view = None
-        self.overlay: list[str] | None = None
+        self.overlay: str | None = None        # "help" or "gate" while one is open
         self.modal: dict | None = None
         self.flash, self.flash_at = "", 0.0
         self.pending: dict[str, float] = {}
@@ -982,32 +992,101 @@ class Screen:
             msg = f" {self.flash} "[:max(0, W - 4)]
             self.put(H - 2, 2, msg, P(YELLOW, bold=True) | curses.A_REVERSE)
 
-    def draw_overlay(self, lines: list[str], title: str, color: int = CYAN) -> None:
+    def draw_overlay(self, lines: list, title: str, color: int = CYAN) -> None:
+        """A centered box of lines. A line is a plain string (colored by `rich`) or a list of (text, attr)."""
         H, W = self.s.getmaxyx()
-        w = min(W - 4, max(len(l) for l in lines) + 4)
+        lines = [self.rich(l) if isinstance(l, str) else l for l in lines]
+        w = min(W - 4, max(sum(len(t) for t, _ in l) for l in lines) + 4)
         h = min(H - 2, len(lines) + 2)
         y, x = (H - h) // 2, (W - w) // 2
         for r in range(h):
             self.put(y + r, x, " " * w)
         self.box(y, x, h, w, title, color)
+        saved, self.clip = self.clip, x + w - 2
         for j, l in enumerate(lines[:h - 2]):
-            self.put(y + 1 + j, x + 2, l[:w - 4], self.P(WHITE))
+            cx = x + 2
+            for text, attr in l:
+                if text == RULE_LINE:                      # a divider across the box
+                    text = "─" * (w - 4)
+                self.put(y + 1 + j, cx, text, attr); cx += len(text)
+        self.clip = saved
 
-    def gate_lines(self) -> list[str]:
-        st = self.st
+    def rich(self, line: str) -> list[tuple[str, int]]:
+        """Color a line of help, gate or prompt text: a leading CAPS heading, [x] / [ ] checks, (k) key
+        references, "quoted" words to type, warnings, and numbers, money and tickers as in the log."""
+        P = self.P
+        out: list[tuple[str, int]] = []
+        m = re.match(r"^([A-Z][A-Z ]*[A-Z])(\s{2,})(.*)$", line)
+        if m:
+            out += [(m.group(1), P(P.c("key"), bold=True)), (m.group(2), 0)]
+            line = m.group(3)
+        i = 0
+        for m in OVERLAY_TOKENS.finditer(line):
+            if m.start() > i:
+                out += self.log_spans(line[i:m.start()], "", WHITE)
+            g, t = m.lastgroup, m.group()
+            if g == "ok":
+                out.append((t, P(GREEN, bold=True)))
+            elif g == "todo":
+                out.append((t, P(RED, bold=True)))
+            elif g == "ref":
+                out += [("(", P(P.grey)), (t[1:-1], P(P.c("key"), bold=True)), (")", P(P.grey))]
+            elif g == "quote":
+                out.append((t, P(P.c("key"), bold=True)))
+            elif g == "warn":
+                out.append((t, P(YELLOW, bold=True)))
+            elif g == "keyhint":
+                out.append((t, P(P.c("key"), bold=True)))
+            elif g == "path":
+                out.append((t, P(P.c("ticker"))))
+            i = m.end()
+        if i < len(line):
+            out += self.log_spans(line[i:], "", WHITE)
+        return out or [("", 0)]
+
+    def help_lines(self) -> list:
+        """The help: its prose, a divider, then the key legend in two columns of sections."""
+        P = self.P
+        lines: list = HELP.splitlines() + ["", [(RULE_LINE, P(P.grey))]]
+        cols = []
+        for col in HELP_KEYS:
+            kw = max(len(k) for _, keys in col for k, _ in keys) + 2      # this column's key width
+            blocks = []
+            for section, keys in col:
+                blocks.append([[(section.upper(), P(P.c("head"), bold=True))]] +
+                              [[("  " + f"{k:<{kw}}", P(P.c("key"), bold=True)), (what, P(WHITE))] for k, what in keys])
+            cols.append(blocks)
+        width = max(sum(len(t) for t, _ in r) for b in cols[0] for r in b) + 4
+        for n, (lb, rb) in enumerate(zip(*cols)):                # sections side by side, aligned in pairs
+            if n:
+                lines.append([("", 0)])
+            for j in range(max(len(lb), len(rb))):
+                left = lb[j] if j < len(lb) else []
+                right = rb[j] if j < len(rb) else []
+                lines.append(left + [(" " * (width - sum(len(t) for t, _ in left)), 0)] + right)
+        return lines
+
+    def gate_lines(self) -> list:
+        st, P = self.st, self.P
         g = st.get("gate") or {}
         L = st.get("live_cfg") or {}
-        out = ["The rule trades live only when every paper check passes", "(unless live.auto_needs_gate is false).", ""]
+
+        def head(text, note=""):
+            return [(text, P(P.c("head"), bold=True))] + ([(note, P(P.grey))] if note else [])
+        out: list = [head("PAPER CHECKS", "   the rule trades live only when every one passes"),
+                     "  (unless live.auto_needs_gate is false)"]
         for c in g.get("checks", []):
             out.append(f"  [{'x' if c['ok'] else ' '}] {c['name']}  ({c['detail']})")
         if st.get("shadow"):
             from .shadow import table
-            out += ["", "Variants running side by side on paper (tern report):"] + ["  " + l for l in table(st["shadow"])]
-        out += ["", "To go live at all:"]
+            rows = table(st["shadow"])
+            out += ["", head("VARIANTS", "   side by side on paper (tern report)")]
+            out += [[("  " + rows[0], P(P.grey, bold=True))]] + ["  " + l for l in rows[1:]]
+        out += ["", head("GO LIVE", "   all three are needed")]
         out.append(f"  [{'x' if st.get('keys') else ' '}] Kalshi key present ({cfgmod.KEYFILE_ENV})")
         out.append(f"  [{'x' if st.get('live_enabled') else ' '}] armed with L")
         out.append(f"  [{'x' if st.get('mode') == 'live' else ' '}] authenticated" + (f": {st.get('live_error')}" if st.get("live_error") else ""))
-        out += ["", f"Caps: ${L.get('capital_usd', 0):,.0f} at risk · ${L.get('max_order_usd', 0):,.0f} per order · "
+        out += ["", head("CAPS"), f"  ${L.get('capital_usd', 0):,.0f} at risk · ${L.get('max_order_usd', 0):,.0f} per order · "
                     f"-${L.get('max_daily_loss', 0):,.0f} a day turns live off", "", "any key closes"]
         return out
 
@@ -1031,7 +1110,8 @@ class Screen:
             self.put(H // 2, max(0, (W - len(msg)) // 2), msg, self.P(self.P.grey))
         self.footer(H, W)
         if self.overlay:
-            self.draw_overlay(self.overlay, "help" if self.overlay is HELP_LINES else "gate", CYAN)
+            lines = self.help_lines() if self.overlay == "help" else self.gate_lines()
+            self.draw_overlay(lines, self.overlay, self.P.border("contract"))
         if self.modal:
             self.draw_overlay(self.modal["lines"], self.modal["title"], self.modal.get("color", YELLOW))
         self.s.refresh()
@@ -1091,8 +1171,8 @@ class Screen:
             self.sel = None; self.write_view(); self.save_prefs(); self.say(f"viewing {cfgmod.SERIES[self.series]}")
         elif ch == ord("r"):
             self.send(op="series", series=self.series)
-        elif ch == ord("t"):
-            self.P.set_theme(themes.next_name(self.P.name))
+        elif ch in (ord("t"), ord("T")):
+            self.P.set_theme(themes.next_name(self.P.name, -1 if ch == ord("T") else 1))
             self.save_prefs()
             self.say(f"theme {self.P.name}" + ("" if self.P.many else " (needs a 256-color terminal)"))
         elif ch == ord("c"):
@@ -1103,9 +1183,9 @@ class Screen:
             cur = self.book_view or ("live" if self.st.get("mode") == "live" else "paper")
             self.book_view = "live" if cur == "paper" else "paper"
         elif ch == ord("g"):
-            self.overlay = self.gate_lines()
+            self.overlay = "gate"
         elif ch == ord("?") or ch == ord("h"):
-            self.overlay = HELP_LINES
+            self.overlay = "help"
         elif ch == ord("s"):
             if engine_alive(self.runtime):
                 self.modal = {"type": "stop", "title": "stop engine", "lines": [
@@ -1158,7 +1238,6 @@ class Screen:
             self.draw()
 
 
-HELP_LINES = HELP.splitlines()
 
 
 def main(runtime: str = cfgmod.RUNTIME) -> None:
