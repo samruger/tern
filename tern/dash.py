@@ -298,6 +298,8 @@ HELP = [
                  "|  band80   only favorites at 80-90c (from 2026-11-16)\n"
                  "|  late     only the 15m and 10m slots (from 2026-11-16)\n"
                  "|  tight1   only strikes with a 1c spread (from 2026-11-16)\n"
+                 "|  band75   only favorites at 75-80c (from 2026-11-16)\n"
+                 "|  early    only the 25m and 20m slots (from 2026-11-16)\n"
                  "The one marked ● in the variants box (3) is what the paper book trades, and live too once it "
                  "passes the gate. Highlight another with ↑↓ and press enter to switch; while live is on or armed "
                  "you type \"live\" to confirm. Open positions ride to settlement. Picking whichever looks best "
@@ -905,8 +907,11 @@ class Screen:
         # the picked variant: what it is, its cumulative P&L by hour, and what enter would do
         cur = next(v for v in vs if v["name"] == self.var_sel)
         yy = y + 3 + len(vs)
-        self.put(yy, x + 2, f"{cur['name']}: ", P(P.c("variant"), bold=True))
-        self.put(yy, x + 4 + len(cur["name"]), (cur.get("desc") or "")[:w - 8 - len(cur["name"])], P(WHITE))
+        if yy >= y + h - 2:                            # a short box: the rows and the tip line are all that fit
+            yy = y + h - 2
+        else:
+            self.put(yy, x + 2, f"{cur['name']}: ", P(P.c("variant"), bold=True))
+            self.put(yy, x + 4 + len(cur["name"]), (cur.get("desc") or "")[:w - 8 - len(cur["name"])], P(WHITE))
         curve = cur.get("curve") or []
         gy, gh = yy + 1, y + h - 3 - (yy + 1)
         gw = w - 2 - 11

@@ -685,13 +685,17 @@ class Shadows(unittest.TestCase):
             self.assertEqual(by("band80"), ["E-T2", "E-T3"])               # T1's mid is 92.5c: outside 80-90
             self.assertEqual(by("late"), [])                               # 25m is not one of its slots
             self.assertEqual(by("tight1"), ["E-T1", "E-T2", "E-T3"])       # all three are 1c wide
+            self.assertEqual(by("band75"), [])                             # 80.5c and up: none under 80
+            self.assertEqual(by("early"), ["E-T1", "E-T2", "E-T3"])        # 25m is one of its slots
             sh.step("E", 1000.0, ms, S, 1000.0 - 25 * 60 + 3)              # same slot: no second entry
-            self.assertEqual(len(sh.rows), 12)
+            self.assertEqual(len(sh.rows), 15)
             sh.step("E", 1000.0, [self.m("E-T1", 0.92, 0.93, 1), self.m("E-T2", 0.79, 0.81, 2)], S, 1000.0 - 15 * 60 + 1)
             self.assertEqual(sorted(r["ticker"] for r in sh.rows if r["v"] == "late"), ["E-T1", "E-T2"])
+            self.assertEqual(sum(r["v"] == "early" and r["slot"] == 15 for r in sh.rows), 0)   # not its slot
+            self.assertEqual(sorted(r["ticker"] for r in sh.rows if r["v"] == "band75"), [])  # 80c mid is band80's: 75-80 stops short of it
             self.assertEqual(sorted(r["ticker"] for r in sh.rows if r["v"] == "tight1" and r["slot"] == 15), ["E-T1"])
             sh.rows = [r for r in sh.rows if r["slot"] == 25]
-            self.assertEqual(sh.settle({"E-T1": True, "E-T2": False, "E-T3": False}), 12)
+            self.assertEqual(sh.settle({"E-T1": True, "E-T2": False, "E-T3": False}), 15)
             self.assertAlmostEqual(sh.agg["band90"]["E"][0], 5 * 0.07 - 0.03)
             self.assertAlmostEqual(sh.agg["base"]["E"][0], 5 * 0.07 - 0.03 - 5 * 0.81 - 0.06 + 5 * 0.10 - 0.04)
             sh.save()

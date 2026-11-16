@@ -13,6 +13,8 @@ Added 2026-11-16, written down before any of them traded; their hours start when
   band80   only favorites at 80-90c, the band where the 67-day study found the bias (favorites ~2 points under)
   late     only the 15 and 10 minute slots: less time left for the price to cross the strike
   tight1   only strikes with a 1c spread: pays less to get in
+  band75   only favorites at 75-80c, the cheapest slice (with band80 and band90 it splits the band in three)
+  early    only the 25 and 20 minute slots: the other half of late
 
 Retired 2026-11-16 (their settled rows stay in shadow-settled.jsonl; `tern report` still lists them):
   stop20   sell once the favorite's bid is 20c under entry: 165 hours, -$191, t -3.0. The stop loses.
@@ -35,6 +37,8 @@ VARIANTS = {   # name -> (band_lo, band_hi, entries per strike per hour, slots, 
     "band80": (0.80, 0.90, None, None, None),
     "late": (None, None, None, (15, 10), None),
     "tight1": (None, None, None, None, 0.01),
+    "band75": (None, 0.80, None, None, None),
+    "early": (None, None, None, (25, 20), None),
 }
 ORDER = list(VARIANTS)
 DESC = {
@@ -44,6 +48,8 @@ DESC = {
     "band80": "only favorites at 80-90¢ (from 2026-11-16)",
     "late": "only the 15m and 10m slots (from 2026-11-16)",
     "tight1": "only strikes with a 1¢ spread (from 2026-11-16)",
+    "band75": "only favorites at 75-80¢ (from 2026-11-16)",
+    "early": "only the 25m and 20m slots (from 2026-11-16)",
 }
 RETIRED = {
     "stop20": "sold at 20¢ under entry; retired 2026-11-16, the stop lost money",
