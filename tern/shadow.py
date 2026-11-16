@@ -15,6 +15,9 @@ Added 2026-11-16, written down before any of them traded; their hours start when
   tight1   only strikes with a 1c spread: pays less to get in
   band75   only favorites at 75-80c, the cheapest slice (with band80 and band90 it splits the band in three)
   early    only the 25 and 20 minute slots: the other half of late
+  multi    the rule on every coin at once (BTC ETH SOL XRP BNB HYPE), each coin's hour with its own budget.
+           Only BTC was tested on 67 days, so this is the first look at the others. Its dollars are up to six
+           times base's; compare it by cents a contract and t, not P&L.
 
 Retired 2026-11-16 (their settled rows stay in shadow-settled.jsonl; `tern report` still lists them):
   stop20   sell once the favorite's bid is 20c under entry: 165 hours, -$191, t -3.0. The stop loses.
@@ -28,17 +31,20 @@ import math
 import os
 
 from .book import taker_fee
+from .config import SERIES
 from .strategy import due_slot, signals
 
-VARIANTS = {   # name -> (band_lo, band_hi, entries per strike per hour, slots, max spread); None takes the configured value / no cap
-    "base": (None, None, None, None, None),
-    "band90": (0.90, None, None, None, None),
-    "cap1": (None, None, 1, None, None),
-    "band80": (0.80, 0.90, None, None, None),
-    "late": (None, None, None, (15, 10), None),
-    "tight1": (None, None, None, None, 0.01),
-    "band75": (None, 0.80, None, None, None),
-    "early": (None, None, None, (25, 20), None),
+VARIANTS = {   # name -> (band_lo, band_hi, entries per strike per hour, slots, max spread, coins);
+               # None takes the configured value (coins: strategy.series, the r key) / no cap
+    "base": (None, None, None, None, None, None),
+    "band90": (0.90, None, None, None, None, None),
+    "cap1": (None, None, 1, None, None, None),
+    "band80": (0.80, 0.90, None, None, None, None),
+    "late": (None, None, None, (15, 10), None, None),
+    "tight1": (None, None, None, None, 0.01, None),
+    "band75": (None, 0.80, None, None, None, None),
+    "early": (None, None, None, (25, 20), None, None),
+    "multi": (None, None, None, None, None, tuple(SERIES)),
 }
 ORDER = list(VARIANTS)
 DESC = {
@@ -50,6 +56,7 @@ DESC = {
     "tight1": "only strikes with a 1¢ spread (from 2026-11-16)",
     "band75": "only favorites at 75-80¢ (from 2026-11-16)",
     "early": "only the 25m and 20m slots (from 2026-11-16)",
+    "multi": "every coin at once, each its own budget; judge by ¢/ct (from 2026-11-16)",
 }
 RETIRED = {
     "stop20": "sold at 20¢ under entry; retired 2026-11-16, the stop lost money",
@@ -58,11 +65,19 @@ RETIRED = {
 
 
 def params(name: str, S) -> tuple:
-    """(band_lo, band_hi, cap, slots, max_spread) for a variant on strategy S. An unknown name is the rule
-    as configured. A variant's slots are a subset of S.minutes; a slot it skips still counts as taken."""
-    lo, hi, cap, slots, spread = VARIANTS.get(name, (None,) * 5)
+    """(band_lo, band_hi, cap, slots, max_spread, coins) for a variant on strategy S. An unknown name is the
+    rule as configured. A variant's slots are a subset of S.minutes; a slot it skips still counts as taken."""
+    lo, hi, cap, slots, spread, coins = VARIANTS.get(name, (None,) * 6)
     mins = [m for m in S.minutes if slots is None or m in slots]
-    return lo or S.band_lo, hi or S.band_hi, cap, mins, spread or S.max_spread
+    return lo or S.band_lo, hi or S.band_hi, cap, mins, spread or S.max_spread, list(coins or S.series)
+
+
+def all_coins(S) -> list[str]:
+    """Every series some variant trades: the engine fetches these and the shadow steps on them."""
+    out = list(S.series)
+    for name in VARIANTS:
+        out += [c for c in params(name, S)[5] if c not in out]
+    return out
 
 
 def hour_of(event: str) -> str:
@@ -146,9 +161,10 @@ class Shadow:
         if slot is None:
             return []
         done.append(slot); self.dirty = True
+        series = event.split("-", 1)[0]
         for name in VARIANTS:
-            lo, hi, cap, mins, spread = params(name, S)
-            if slot not in mins:
+            lo, hi, cap, mins, spread, coins = params(name, S)
+            if slot not in mins or series not in coins:
                 continue
             mine = [r for r in self.rows if r["v"] == name and r["event"] == event]
             spent = sum(r["n"] * r["cost"] + r["fee"] for r in mine)

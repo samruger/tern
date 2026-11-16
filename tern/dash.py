@@ -300,6 +300,7 @@ HELP = [
                  "|  tight1   only strikes with a 1c spread (from 2026-11-16)\n"
                  "|  band75   only favorites at 75-80c (from 2026-11-16)\n"
                  "|  early    only the 25m and 20m slots (from 2026-11-16)\n"
+                 "|  multi    every coin at once, each its own budget: judge it by c/contract (from 2026-11-16)\n"
                  "The one marked ● in the variants box (3) is what the paper book trades, and live too once it "
                  "passes the gate. Highlight another with ↑↓ and press enter to switch; while live is on or armed "
                  "you type \"live\" to confirm. Open positions ride to settlement. Picking whichever looks best "

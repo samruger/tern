@@ -675,7 +675,7 @@ class Shadows(unittest.TestCase):
         from tern.config import Strategy
         from tern.shadow import Shadow
         with tempfile.TemporaryDirectory() as d:
-            sh, S = Shadow(d), Strategy()
+            sh, S = Shadow(d), Strategy(series=["E"])
             ms = [self.m("E-T1", 0.92, 0.93, 1), self.m("E-T2", 0.80, 0.81, 2), self.m("E-T3", 0.10, 0.11, 3)]
             sh.step("E", 1000.0, ms, S, 1000.0 - 25 * 60 + 1)
             by = lambda v: sorted(r["ticker"] for r in sh.rows if r["v"] == v)
@@ -687,6 +687,7 @@ class Shadows(unittest.TestCase):
             self.assertEqual(by("tight1"), ["E-T1", "E-T2", "E-T3"])       # all three are 1c wide
             self.assertEqual(by("band75"), [])                             # 80.5c and up: none under 80
             self.assertEqual(by("early"), ["E-T1", "E-T2", "E-T3"])        # 25m is one of its slots
+            self.assertEqual(by("multi"), [])                              # "E" is no coin's event
             sh.step("E", 1000.0, ms, S, 1000.0 - 25 * 60 + 3)              # same slot: no second entry
             self.assertEqual(len(sh.rows), 15)
             sh.step("E", 1000.0, [self.m("E-T1", 0.92, 0.93, 1), self.m("E-T2", 0.79, 0.81, 2)], S, 1000.0 - 15 * 60 + 1)
@@ -703,6 +704,21 @@ class Shadows(unittest.TestCase):
             self.assertEqual(again.rows, [])
             self.assertAlmostEqual(again.agg["base"]["E"][0], sh.agg["base"]["E"][0])
             self.assertEqual(again.summary(["base"])[0]["curve"], [round(sh.agg["base"]["E"][0], 2)])
+
+    def test_multi_trades_every_coin_and_the_rest_only_the_rule_coin(self):
+        from tern.config import Strategy
+        from tern.shadow import Shadow, all_coins
+        with tempfile.TemporaryDirectory() as d:
+            sh, S = Shadow(d), Strategy()
+            self.assertEqual(all_coins(S)[0], "KXBTCD")
+            self.assertIn("KXHYPED", all_coins(S))
+            for ev in ("KXBTCD-H1", "KXSOLD-H1"):
+                sh.step(ev, 1000.0, [self.m(ev + "-T1", 0.92, 0.93, 1)], S, 1000.0 - 25 * 60 + 1)
+            on = lambda v: sorted(r["event"] for r in sh.rows if r["v"] == v)
+            self.assertEqual(on("base"), ["KXBTCD-H1"])
+            self.assertEqual(on("multi"), ["KXBTCD-H1", "KXSOLD-H1"])
+            sh.settle({"KXBTCD-H1-T1": True, "KXSOLD-H1-T1": True})
+            self.assertEqual(sh.summary(["multi"])[0]["hours"], 1)         # two coins in one hour are one hour
 
     def test_retired_variants_keep_their_record_but_stop_trading(self):
         import json
@@ -721,7 +737,7 @@ class Shadows(unittest.TestCase):
         from tern.config import Strategy
         from tern.shadow import Shadow
         with tempfile.TemporaryDirectory() as d:
-            sh, S = Shadow(d), Strategy()
+            sh, S = Shadow(d), Strategy(series=["E"])
             ms = [self.m("E-T1", 0.92, 0.93, 1), self.m("E-T2", 0.80, 0.81, 2)]
             sh.step("E", 1000.0, ms, S, 1000.0 - 25 * 60 + 1)
             ms.append(self.m("E-T3", 0.10, 0.11, 3))                       # T3 comes into the band at the 20m slot

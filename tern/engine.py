@@ -535,13 +535,13 @@ class Desk:
 
     def _auto(self, gate: dict | None = None) -> None:
         S = self.cfg.strategy
-        lo, hi, cap, mins, spread = shadowmod.params(self.variant(), S)
+        lo, hi, cap, mins, spread, coins = shadowmod.params(self.variant(), S)
         gate = gate or self.gate()
         books = [self.paper]
         if self._live_rule_on(gate):
             books.append(self.live)
         now = time.time()
-        for series in S.series:
+        for series in coins:
             e = self.events.get(series)
             if not e or not e["markets"] or now - e["fetched"] > 10:
                 continue
@@ -620,7 +620,7 @@ class Desk:
     # ------------------------------------------------------------ shadow variants and the recorder
     def _shadow(self) -> None:
         now = time.time()
-        for series in self.cfg.strategy.series:
+        for series in shadowmod.all_coins(self.cfg.strategy):
             e = self.events.get(series)
             if e and e["markets"] and now - e["fetched"] <= 10 and e["close"] > now and e.get("shadowed") != e["fetched"]:
                 e["shadowed"] = e["fetched"]
@@ -739,6 +739,8 @@ class Desk:
             lst = list(self.cfg.strategy.series)
             lst = [x for x in lst if x != s] if s in lst else lst + [s]
             self.cfg.strategy.series = lst; cfgmod.save(self.cfg, self.runtime)
+            if shadowmod.VARIANTS.get(self.variant(), (None,) * 6)[5]:
+                return f"rule coins set to {', '.join(lst) or 'nothing'}, but {self.variant()} trades its own coins until you switch back"
             return f"rule trades: {', '.join(lst) or 'nothing'}"
         if op == "variant":
             name = c.get("name")
@@ -813,9 +815,9 @@ class Desk:
         shadow = self.shadow.summary()
         variants = [{**r, "desc": shadowmod.DESC.get(r["name"], ""), "active": r["name"] == self.variant(),
                      "gate": self.gate(r["name"], r)} for r in shadow]
-        lo, hi, cap, mins, spread = shadowmod.params(self.variant(), self.cfg.strategy)
+        lo, hi, cap, mins, spread, coins = shadowmod.params(self.variant(), self.cfg.strategy)
         strategy = {**self.cfg.strategy.__dict__, "variant": self.variant(), "band_lo": lo, "band_hi": hi, "cap": cap,
-                    "minutes": mins, "max_spread": spread}
+                    "minutes": mins, "max_spread": spread, "series": coins}
         st = {"heartbeat": now, "stopped": stopped, "pid": os.getpid(), "mode": self.mode, "live_enabled": self.cfg.live.enabled,
               "live_error": self.live_error, "keys": self._has_keys(now), "balance": self.balance,
               "spot": sp, "events": evs, "hist": hist, "view": self.view,
@@ -842,7 +844,7 @@ class Desk:
             self.last["cfg"] = now
             self.cfg = cfgmod.load(self.runtime, self.cfg)
         self._read_view()
-        wanted = set(self.cfg.strategy.series) | {self.view["series"]}
+        wanted = set(shadowmod.all_coins(self.cfg.strategy)) | {self.view["series"]}
         unknown = sorted(wanted - set(cfgmod.SERIES))
         if unknown and now - self.last["badseries"] > 60:
             self.last["badseries"] = now
