@@ -9,10 +9,9 @@ from __future__ import annotations
 import http.client
 import json
 import time
-import urllib.error
 import urllib.parse
-import urllib.request
 
+from . import net
 from .sign import load_key, signature
 
 BASE = "https://api.elections.kalshi.com"
@@ -37,6 +36,7 @@ class Kalshi:
     def __init__(self, key_id: str | None = None, pem: str | None = None, base: str = BASE,
                  tries: int = 3, timeout: float = 10.0):
         self.base = base
+        self.host = urllib.parse.urlsplit(base).netloc
         self.tries, self.timeout = tries, timeout    # defaults for every call; an order is always sent once
         self.key_id = key_id
         self.key = load_key(pem) if pem else None
@@ -48,7 +48,7 @@ class Kalshi:
         timeout = self.timeout if timeout is None else timeout
         tries = self.tries if tries is None else tries
         full = PREFIX + path
-        url = self.base + full + ("?" + urllib.parse.urlencode(query) if query else "")
+        target = full + ("?" + urllib.parse.urlencode(query) if query else "")
         data = json.dumps(body).encode() if body is not None else None
         for attempt in range(tries):
             headers = {"User-Agent": UA, "Accept": "application/json"}
@@ -60,29 +60,27 @@ class Kalshi:
                 ts = str(int(time.time() * 1000))
                 headers.update({"KALSHI-ACCESS-KEY": self.key_id, "KALSHI-ACCESS-TIMESTAMP": ts,
                                 "KALSHI-ACCESS-SIGNATURE": signature(self.key, ts, method, full)})
-            req = urllib.request.Request(url, data=data, method=method, headers=headers)
-            try:
-                with urllib.request.urlopen(req, timeout=timeout) as r:
-                    raw = r.read()
-                try:
-                    out = json.loads(raw) if raw else {}
-                except ValueError as e:              # a truncated or garbled reply: no status, like a lost one
-                    raise KalshiError(f"{method} {path}: unreadable reply ({e})")
-                if not isinstance(out, dict):
-                    raise KalshiError(f"{method} {path}: reply is not an object")
-                return out
-            except urllib.error.HTTPError as e:
-                text = e.read().decode(errors="replace")[:300]
-                if e.code == 429 and attempt + 1 < tries:
-                    self._last_429 = time.time()
-                    time.sleep(0.5 * 2 ** attempt); continue
-                if e.code >= 500 and attempt + 1 < tries and method == "GET":
-                    time.sleep(0.5 * 2 ** attempt); continue
-                raise KalshiError(f"{method} {path}: HTTP {e.code} {text}", e.code)
-            except (urllib.error.URLError, TimeoutError, OSError, http.client.HTTPException) as e:   # HTTPException: a reply cut off mid-read
+            try:                                     # GETs share a kept connection; anything else goes out once, on its own
+                status, raw = net.request(self.host, method, target, data, headers, timeout, reuse=method == "GET")
+            except (OSError, http.client.HTTPException) as e:   # no reply, or one cut off mid-read
                 if attempt + 1 < tries and method == "GET":
                     time.sleep(0.5 * 2 ** attempt); continue
                 raise KalshiError(f"{method} {path}: {e}")
+            if not 200 <= status < 300:
+                text = raw.decode(errors="replace")[:300]
+                if status == 429 and attempt + 1 < tries:
+                    self._last_429 = time.time()
+                    time.sleep(0.5 * 2 ** attempt); continue
+                if status >= 500 and attempt + 1 < tries and method == "GET":
+                    time.sleep(0.5 * 2 ** attempt); continue
+                raise KalshiError(f"{method} {path}: HTTP {status} {text}", status)
+            try:
+                out = json.loads(raw) if raw else {}
+            except ValueError as e:                  # a truncated or garbled reply: no status, like a lost one
+                raise KalshiError(f"{method} {path}: unreadable reply ({e})")
+            if not isinstance(out, dict):
+                raise KalshiError(f"{method} {path}: reply is not an object")
+            return out
         raise KalshiError(f"{method} {path}: not sent (tries={tries})")
 
     # ------------------------------------------------------------ public

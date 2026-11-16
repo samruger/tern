@@ -929,6 +929,94 @@ class Shadows(unittest.TestCase):
                                      "400,600,75001.5,74999.99,0.5,0.52,50,40", "460,540,,74999.99,0.5,0.52,50,40"])
 
 
+class Net(unittest.TestCase):
+    """The kept-open HTTPS connections, against a fake connection class."""
+
+    def setUp(self):
+        import gzip
+        from tern import net
+        test, self.net = self, net
+        self.made, self.script = [], []           # connections opened; what each request does, in order
+
+        class Reply:
+            status, will_close = 200, False
+            def __init__(self, body, gz): self.body, self.gz = (gzip.compress(body) if gz else body), gz
+            def read(self): return self.body
+            def getheader(self, name): return "gzip" if self.gz and name == "Content-Encoding" else None
+
+        class Conn:
+            def __init__(self, host, timeout=None):
+                self.sock, self.closed, self.sent = None, False, []
+                test.made.append(self)
+            def request(self, method, target, body=None, headers=None):
+                self.sock = self.sock or type("S", (), {"settimeout": lambda s, t: None})()
+                self.sent.append((method, target))
+                self.todo = test.script.pop(0)
+                if isinstance(self.todo, Exception):
+                    raise self.todo
+            def getresponse(self): return Reply(*self.todo)
+            def close(self): self.closed = True
+
+        self.real = net.http.client.HTTPSConnection
+        net.http.client.HTTPSConnection = Conn
+        net._local.__dict__.pop("conns", None)
+
+    def tearDown(self):
+        self.net.http.client.HTTPSConnection = self.real
+        self.net._local.__dict__.pop("conns", None)
+
+    def test_requests_share_one_connection_and_gzip_is_unpacked(self):
+        self.script += [(b"one", False), (b"two", True)]
+        self.assertEqual(self.net.request("h", "GET", "/a"), (200, b"one"))
+        self.assertEqual(self.net.request("h", "GET", "/b"), (200, b"two"))
+        self.assertEqual(len(self.made), 1)
+        self.assertEqual(self.made[0].sent, [("GET", "/a"), ("GET", "/b")])
+
+    def test_a_kept_connection_the_server_closed_is_retried_once_on_a_new_one(self):
+        self.script += [(b"one", False), ConnectionResetError("gone"), (b"two", False)]
+        self.net.request("h", "GET", "/a")
+        self.assertEqual(self.net.request("h", "GET", "/b"), (200, b"two"))
+        self.assertEqual(len(self.made), 2)
+        self.assertTrue(self.made[0].closed)
+        self.script += [ConnectionResetError("gone"), ConnectionResetError("still gone")]
+        with self.assertRaises(ConnectionResetError):          # the new one failing too is an error, not a loop
+            self.net.request("h", "GET", "/c")
+        self.script += [(b"x", False), TimeoutError("slow")]
+        self.net.request("h", "GET", "/d")
+        with self.assertRaises(TimeoutError):                  # a timeout is not retried: it already took its time
+            self.net.request("h", "GET", "/e")
+        self.assertEqual(self.script, [])
+
+    def test_an_order_never_rides_a_kept_connection_and_is_never_resent(self):
+        self.script += [(b"one", False), ConnectionResetError("gone")]
+        self.net.request("h", "GET", "/a")
+        with self.assertRaises(ConnectionResetError):
+            self.net.request("h", "POST", "/orders", b"{}", reuse=False)
+        self.assertEqual(len(self.made), 2)                    # its own connection,
+        self.assertEqual(self.made[1].sent, [("POST", "/orders")])   # sent once,
+        self.assertTrue(self.made[1].closed)                   # and not kept
+
+    def test_kalshi_maps_statuses_and_lost_replies(self):
+        from tern.kalshi import Kalshi, KalshiError
+        real = self.net.request
+        try:
+            calls = []
+            self.net.request = lambda host, method, target, body, headers, timeout, reuse: calls.append((method, reuse)) or (503, b"bad gateway")
+            with self.assertRaises(KalshiError) as cm:
+                Kalshi(tries=1)._req("POST", "/portfolio/events/orders", body={})
+            self.assertEqual(cm.exception.status, 503)
+            self.assertEqual(calls, [("POST", False)])
+            def lost(*a, **k): raise TimeoutError("timed out")
+            self.net.request = lost
+            with self.assertRaises(KalshiError) as cm:
+                Kalshi(tries=1)._req("GET", "/markets")
+            self.assertIsNone(cm.exception.status)             # no status: the engine treats an order like this as maybe sent
+            self.net.request = lambda *a, **k: (200, b'{"markets": []}')
+            self.assertEqual(Kalshi()._req("GET", "/markets"), {"markets": []})
+        finally:
+            self.net.request = real
+
+
 class Signing(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
