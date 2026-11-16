@@ -1,6 +1,6 @@
 # tern
 
-A desk for Kalshi's hourly BTC and ETH above-or-below markets, with a btop-style
+A desk for Kalshi's hourly crypto above-or-below markets (BTC, ETH, SOL, XRP, BNB, HYPE), with a btop-style
 screen: braille charts, a strike ladder, and paper and live books.
 Every trade comes from the rule; there are no manual orders.
 It paper trades from the start and sends no real order until you arm live.
@@ -43,8 +43,9 @@ favorite side (YES or NO) has its mid between **75¢ and 95¢** and a spread of
 **2¢ or less**, it buys **5 contracts** of the favorite at the ask
 (immediate-or-cancel) and holds to settlement. It puts at most **$60** into any
 one hour. All of this is under `strategy` in `runtime/config.json`, re-read
-every 5 seconds. It trades BTC only by default; `r` on the ETH view adds ETH,
-which was only tested on 14 days.
+every 5 seconds. It trades BTC only by default. `r` on another coin's view adds
+that coin, but ETH was only tested on 14 days and SOL, XRP, BNB and HYPE not at
+all; those four are there to watch.
 
 ## Paper and live
 
@@ -119,7 +120,7 @@ python3 -m tern live-check
 | ⁵ equity | that book's equity by the minute |
 | log | what the engine did |
 
-Keys: `↑↓` / `PgUp PgDn` move in the ladder · `1`–`6` show/hide a box · `tab` BTC/ETH · `r` rule trades this coin ·
+Keys: `↑↓` / `PgUp PgDn` move in the ladder · `1`–`6` show/hide a box · `tab` next coin · `r` rule trades this coin ·
 `c` chart range · `v` book · `L` arm/disarm live · `g` gate · `R` reset paper ·
 `s` start the engine · `?` help · `q` close (the engine keeps running).
 

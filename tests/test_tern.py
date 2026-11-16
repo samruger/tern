@@ -231,18 +231,24 @@ class Commands(unittest.TestCase):
             self.assertIn("rule trades: KXBTCD, KXETHD", k.results["new"])
             self.assertEqual(os.listdir(k.cmd_dir), [])
 
+    def test_strikes_and_prices_read_right_for_every_coin(self):
+        from tern.dash import strike_of, px
+        for k, want in ((66799.99, 66800), (74.4999, 74.5), (74.7499, 74.75), (0.8599, 0.86), (604.99, 605), (70000, 70000)):
+            self.assertAlmostEqual(strike_of(k), want, places=6)
+        self.assertEqual([px(66800), px(604.99), px(74.75), px(2.5), px(0.86)], ["66,800", "604.99", "74.75", "2.500", "0.8600"])
+
     def test_unknown_series_is_ignored_not_fatal(self):
         with tempfile.TemporaryDirectory() as d:
             k = self.desk(d)
-            self.assertIn("unknown series", k._command({"op": "series", "series": "KXSOLD"}))
+            self.assertIn("unknown series", k._command({"op": "series", "series": "KXFAKED"}))
             self.assertEqual(k.cfg.strategy.series, ["KXBTCD"])
-            k.cfg.strategy.series = ["KXSOLD"]; k.view = {"series": "KXSOLD", "ticker": None}
+            k.cfg.strategy.series = ["KXFAKED"]; k.view = {"series": "KXFAKED", "ticker": None}
             k.last["cfg"] = __import__("time").time()
             k._read_view = lambda: None
             for name in ("_live_ready", "_commands", "_auto", "_shadow", "_settle", "_status"):
                 setattr(k, name, lambda: None)
             k.step()                                          # no KeyError, no network
-            self.assertTrue(any("unknown series KXSOLD" in m for _, _, m in k.logs))
+            self.assertTrue(any("unknown series KXFAKED" in m for _, _, m in k.logs))
 
     def test_reset_paper_clears_the_hour_budget(self):
         with tempfile.TemporaryDirectory() as d:

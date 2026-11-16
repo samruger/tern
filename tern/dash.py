@@ -100,8 +100,21 @@ def cents(p) -> str:
     return f"{c:4.1f}" if c < 10 or c > 90 else f"{c:4.0f}"
 
 
+def strike_of(k: float) -> float:
+    """Kalshi's floor_strike sits one tick under the round number (66799.99, 74.4999, 0.8599): add that tick back."""
+    s = repr(float(k))
+    d = len(s.split(".")[1]) if "." in s and "e" not in s else 0
+    return round(k + 10 ** -d, d) if d and s.endswith("9") else k
+
+
+def px(v: float) -> str:
+    """A coin price at a precision that suits its size: 66,800 · 604.99 · 74.75 · 0.8600."""
+    a = abs(v)
+    return f"{v:,.0f}" if a >= 1000 else f"{v:,.2f}" if a >= 10 else f"{v:.3f}" if a >= 1 else f"{v:.4f}"
+
+
 def strike_label(k) -> str:
-    return f"{k + 0.01:,.0f}" if k is not None else "?"
+    return px(strike_of(k)) if k is not None else "?"
 
 
 # ---------------------------------------------------------------- braille
@@ -198,7 +211,7 @@ def start_engine(runtime: str) -> str:
 
 
 HELP = """\
-tern trades Kalshi's hourly BTC/ETH above-or-below markets.
+tern trades Kalshi's hourly crypto above-or-below markets (the rule: BTC only).
 
 THE RULE  Kalshi prices long shots too high and favorites too low. At 25,
 20, 15 and 10 minutes before each hourly close, the rule buys the favorite
@@ -213,7 +226,7 @@ LIVE      L arms live: it asks you to type "live". Needs KALSHI_KEY_ID and
 KALSHI_KEY_FILE (in ~/.config/tern/kalshi.env). Caps: live.capital_usd at
 risk, live.max_order_usd per order, live.max_daily_loss turns live off.
 
-  ↑↓ PgUp PgDn  move in the ladder     tab         BTC <-> ETH
+  ↑↓ PgUp PgDn  move in the ladder     tab         next coin: BTC ETH SOL XRP BNB HYPE
   mouse wheel   scrolls the panel under the pointer: ladder, log, open positions
   1-6           show / hide a box: spot, contract, ladder, book, equity, log
   r             rule trades this coin on/off
@@ -444,7 +457,7 @@ class Screen:
         strike = None
         row = self.row(self.sel)
         if row:
-            strike = row["k"] + 0.01
+            strike = strike_of(row["k"])
         self.box(y, x, h, w, prod.lower(), CYAN, "", f"{self.chart} · c")
         gh = h - 3
         if not vals:
@@ -458,16 +471,16 @@ class Screen:
         lx = x + 1 + gw + 1
         for i, v in enumerate([hi, (hi + lo) / 2, lo]):
             ry = y + 1 + [0, gh // 2, gh - 1][i]
-            self.put(ry, lx, f"{v:,.0f}"[:10], P(self.P.grey))
+            self.put(ry, lx, px(v)[:10], P(self.P.grey))
         if strike and lo <= strike <= hi:
             ry = y + 1 + int(round((hi - strike) / (hi - lo) * (gh - 1)))
-            self.put(ry, lx, f"{strike:,.0f}"[:10], P(YELLOW, bold=True))
+            self.put(ry, lx, px(strike)[:10], P(YELLOW, bold=True))
         span = "-15m" if self.chart == "15m" else "-24h"
         self.put(y + h - 2, x + 2, span, P(self.P.grey))
         self.put(y + h - 2, x + 1 + gw - 3, "now", P(self.P.grey))
         if strike and vals:
             d = vals[-1] - strike
-            self.put(y + h - 2, x + 2 + gw // 2 - 12, f"spot {'above' if d >= 0 else 'below'} strike by ${abs(d):,.0f}",
+            self.put(y + h - 2, x + 2 + gw // 2 - 12, f"spot {'above' if d >= 0 else 'below'} strike by ${px(abs(d))}",
                      P(GREEN if d >= 0 else RED))
 
     def ladder(self) -> list[dict]:
@@ -557,7 +570,7 @@ class Screen:
             fav = max(mid, 1 - mid) if mid is not None else 0
             spread = (ask - bid) if bid is not None and ask is not None else None
             inb = S and S["band_lo"] <= fav < S["band_hi"] and spread is not None and spread <= S["max_spread"] + 1e-9
-            above = spot is not None and spot >= r["k"] + 0.01
+            above = spot is not None and spot > r["k"]
             sel = r["t"] == self.sel
             base = curses.A_REVERSE if sel else 0
             self.put(yy, x + 1, " " * (w - 2), base)
@@ -867,7 +880,8 @@ class Screen:
         elif ord("1") <= ch <= ord(str(len(PANELS))):
             self.toggle(ch - ord("1"))
         elif ch == 9:
-            self.series = "KXETHD" if self.series == "KXBTCD" else "KXBTCD"
+            order = list(cfgmod.SERIES)
+            self.series = order[(order.index(self.series) + 1) % len(order)] if self.series in order else order[0]
             self.sel = None; self.write_view(); self.say(f"viewing {cfgmod.SERIES[self.series]}")
         elif ch == ord("r"):
             self.send(op="series", series=self.series)

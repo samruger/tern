@@ -10,9 +10,13 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 RUNTIME = os.environ.get("TERN_RUNTIME") or os.path.join(ROOT, "runtime")
 KEYFILE_ENV = os.path.expanduser("~/.config/tern/kalshi.env")
 
-SERIES = {  # Kalshi hourly above/below series -> Coinbase spot product
+SERIES = {  # Kalshi hourly above/below series -> Coinbase spot product; tab cycles them in this order
     "KXBTCD": "BTC-USD",
     "KXETHD": "ETH-USD",
+    "KXSOLD": "SOL-USD",
+    "KXXRPD": "XRP-USD",
+    "KXBNBD": "BNB-USD",
+    "KXHYPED": "HYPE-USD",
 }
 
 
