@@ -435,11 +435,11 @@ class Screen:
             self.put(y + r, x + w - 1, "│", a)
         self.put(y + h - 1, x, "╰" + "─" * (w - 2) + "╯", a)
         cx = x + 2
-        self.put(y, cx, "┤", a); cx += 1
+        self.put(y, cx, "─", a); cx += 1
         if key:
             self.put(y, cx, key, P(PINK if P.many else MAGENTA, bold=True)); cx += len(key)
         self.put(y, cx, title, P(WHITE, bold=True)); cx += len(title)
-        self.put(y, cx, "├", a)
+        self.put(y, cx, "─", a)
         segs = [right] if isinstance(right, str) else list(right)
         segs = [s for s in segs if s]
         lens = [len(s) if isinstance(s, str) else sum(map(len, s)) for s in segs]
@@ -453,13 +453,13 @@ class Screen:
     def hint(self, y: int, x: int, seg, border: int) -> None:
         """One ┤segment├ on a border line."""
         P = self.P
-        self.put(y, x, "┤", border); x += 1
+        self.put(y, x, "─", border); x += 1
         if isinstance(seg, str):
             self.put(y, x, seg, P(P.grey)); x += len(seg)
         else:                                    # pieces alternate pink (a key, or the rule's state) and white
             for i, piece in enumerate(seg):
                 self.put(y, x, piece, P(PINK if P.many else MAGENTA, bold=True) if i % 2 == 0 else P(WHITE)); x += len(piece)
-        self.put(y, x, "├", border)
+        self.put(y, x, "─", border)
 
     def rule_on(self) -> bool | None:
         """Whether the rule trades the coin on screen; None until the engine has said."""
@@ -513,27 +513,37 @@ class Screen:
         chg = None
         if p and len(mins) > 60:
             chg = p / mins[-61][1] - 1
-        seg = f" {prod.split('-')[0]} {money(p)} "
-        self.put(hy, x, seg, P(WHITE, bold=True)); x += len(seg)
+        many, grey = P.many, P.grey
+        # each segment is (text, attr) pieces; segments are set apart by color and a gap, not a bar
+        def span(pieces):
+            nonlocal x
+            for text, attr in pieces:
+                self.put(hy, x, text, attr); x += len(text)
+            x += 2
+        x += 1
+        price = [(prod.split('-')[0] + " ", P(CYAN, bold=True)), (money(p), P(WHITE, bold=True))]
         if chg is not None:
-            seg = f"{'▲' if chg >= 0 else '▼'}{chg:+.2%} 1h "
-            self.put(hy, x, seg, P(GREEN if chg >= 0 else RED)); x += len(seg)
+            price.append((f" {'▲' if chg >= 0 else '▼'}{chg:+.2%}", P(GREEN if chg >= 0 else RED, bold=True)))
+            price.append((" 1h", P(grey)))
+        span(price)
         ev = (st.get("events") or {}).get(self.series)
         if ev:
             tau = ev["close"] - now
-            seg = f"│ {ev['event']} closes {clock(tau)} "
-            self.put(hy, x, seg, P(YELLOW if tau < 600 else WHITE)); x += len(seg)
+            span([(ev['event'], P(75 if many else BLUE, bold=True)), (" closes ", P(grey)),
+                  (clock(tau), P(YELLOW if tau < 600 else WHITE, bold=True))])
         S = st.get("strategy") or {}
         if S:
             on = self.series in (S.get("series") or [])
-            nxt = ""
+            seg = [("rule ", P(grey)), ("ON" if on else "off", P(GREEN, bold=True) if on else P(grey))]
             if ev and on:
                 tau = ev["close"] - now
                 ahead = [m for m in S.get("minutes", []) if m * 60 < tau]
                 if ahead:
-                    nxt = f" next {max(ahead)}m slot in {clock(tau - max(ahead) * 60)}"
-            seg = f"│ rule {'ON' if on else 'off'}{nxt}{' +live' if st.get('auto_live') and on else ''} "
-            self.put(hy, x, seg, P(GREEN if on else self.P.grey)); x += len(seg)
+                    seg += [(" next ", P(grey)), (f"{max(ahead)}m", P(PINK if many else MAGENTA, bold=True)),
+                            (" slot in ", P(grey)), (clock(tau - max(ahead) * 60), P(WHITE))]
+            if st.get('auto_live') and on:
+                seg.append((" +live", P(RED, bold=True)))
+            span(seg)
         # the engine can be up while its feeds are not (Wi-Fi drops): say how old the data is
         stale = []
         sec = sp.get("sec") or []
@@ -543,7 +553,7 @@ class Screen:
             stale.append(f"ladder {ago(ev['age'])} old")
         right = f" {'●' if ok else '○'} engine {'ok' if ok else ('down — s starts it' if down else 'starting' if st.get('stopped') or not hb else 'stale')}  {time.strftime('%H:%M:%S')} "
         if stale:
-            seg = "│ " + " · ".join(stale) + " "
+            seg = " · ".join(stale) + " "
             self.put(hy, x, seg[:max(0, W - x - len(right))], P(YELLOW, bold=True))
         self.put(hy, W - len(right), right, P(GREEN if ok else RED))
 
@@ -836,8 +846,9 @@ class Screen:
         if end - rows > 0:
             self.put(y, x + w - 2, "▲", P(YELLOW))
         if end < len(logs):
-            note = f"▼ {len(logs) - end} newer"
+            note = f"{len(logs) - end} newer "
             self.put(y + h - 1, x + w - 2 - len(note), note, P(YELLOW))
+            self.put(y + h - 1, x + w - 2, "▼", P(YELLOW))
 
     def log_spans(self, msg: str, lvl: str) -> list[tuple[str, int]]:
         """Split one log line into colored pieces: book names, tickers, YES/NO, signed money, slots, numbers."""
