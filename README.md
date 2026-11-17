@@ -14,8 +14,6 @@ python3 -m tern run           # the engine in the foreground
 python3 -m tern status        # plain-text summary
 python3 -m tern report        # the rule's variants side by side
 python3 -m tern live-check    # test your Kalshi key (balance, positions; no orders)
-python3 -m tern web           # the screen in a browser, view only: http://localhost:8787/
-python3 -m tern web-service   # a systemd user service for it (tern-web.service)
 python3 -m tern service       # a systemd user service so the engine keeps running
 python3 -m unittest tests.test_tern
 ```
@@ -145,23 +143,6 @@ Keys: `↑↓` / `PgUp PgDn` move in the focused box · `←→` focus · `1`–
 `c` chart range · `v` book · `L` arm/disarm live · `g` gate · `R` reset paper ·
 `s` start the engine · `?` help · `q` close (the engine keeps running).
 
-## The web screen
-
-`tern web` serves the screen at http://localhost:8787/ (`--host 0.0.0.0` to reach it from a phone on
-the LAN, `--port` to move it). It is not a copy of the screen: each browser tab runs the real screen
-code on a virtual terminal, and the page paints its cells with foot's colors and font. So it looks
-and behaves the same: boxes `1`–`6`, `3` ladder/variants, `c` chart span, `tab`/shift+tab coins,
-`t`/`T` themes, `v` paper/live, `w` watch a variant, `g` gate, `h` help, `↑↓ ←→` and the wheel.
-Clicking a key on a box border, a box's number, or a ladder or variant row does what the key would;
-on a phone, drag to scroll.
-
-It is view only. `q`, `s`, `R`, `L`, `r` and `enter` (pick a variant) do nothing there, and their
-hints are not drawn. It writes no command files and never touches the screen's `dash.json` or
-`view.json`: each browser keeps its own settings. It writes `view-web.json` (in the same tmpfs folder)
-with the coins and strikes its viewers have up, so the engine sends those strikes' contract history
-too; the engine ignores the file 30 seconds after the last viewer leaves. There is no login, so keep
-it on localhost unless you trust the network.
-
 ## Files
 
 `runtime/` (gitignored) holds `config.json`, `state.json` (the books as they
@@ -184,7 +165,6 @@ because they are rewritten every second.
 | `shadow.py` | the variants, each with its own paper record (also each one's gate) |
 | `record.py` | writes quotes and results to `runtime/ticks/` |
 | `dash.py` | the curses screen |
-| `web.py`, `web.html` | the same screen in a browser, view only |
 | `research/` | the scripts and data behind the numbers above |
 
 ## Limits
