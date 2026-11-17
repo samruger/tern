@@ -1098,5 +1098,61 @@ class Charts(unittest.TestCase):
         self.assertEqual(by_time(pts, 0, 40, 4), [1.0, 2.0, 2.0, 2.0])     # the last value carries forward
 
 
+class Web(unittest.TestCase):
+    """tern web: the screen in a browser, view only."""
+    T = "KXBTCD-E1-T100"
+
+    def status(self, d):
+        import json, time
+        from tern.engine import live_dir
+        st = {"heartbeat": time.time(), "mode": "paper", "pid": os.getpid(), "strategy": {"variant": "base", "series": ["KXBTCD"],
+              "band_lo": 0.75, "band_hi": 0.95, "max_spread": 0.02, "minutes": [25, 20, 15, 10]},
+              "variants": [{"name": "base", "active": True, "hours": 1, "entries": 1, "pnl": 1.0, "curve": []},
+                           {"name": "band90", "hours": 1, "entries": 1, "pnl": 2.0, "curve": []}],
+              "events": {"KXBTCD": {"event": "KXBTCD-E1", "close": time.time() + 900, "age": 0,
+                                    "ladder": [{"t": self.T, "k": 99.99, "b": 0.5, "a": 0.52, "v": 10}]}}}
+        with open(os.path.join(live_dir(d), "status.json"), "w") as fh:
+            json.dump(st, fh)
+
+    def test_control_keys_send_nothing_and_view_keys_work(self):
+        from tern.web import Hub
+        with tempfile.TemporaryDirectory() as d:
+            self.status(d)
+            hub = Hub(d)
+            f = hub.handle({"w": 120, "h": 40, "prefs": {"slot3": "variants", "theme": "classic"}})
+            sid = f["sid"]
+            for k in ("q", "s", "R", "L", "r", "Enter", "ArrowDown", "Enter"):
+                f = hub.handle({"sid": sid, "w": 120, "h": 40, "key": k})
+            self.assertEqual(os.listdir(os.path.join(d, "cmd")), [])          # no command reached the engine
+            self.assertFalse(os.path.exists(os.path.join(d, "dash.json")))     # the screen's prefs are its own
+            self.assertIn("view only", "".join(t for t, _ in f["rows"][38]))
+            for k in ("t", "c", "Tab", "BackTab", "w", "2"):
+                f = hub.handle({"sid": sid, "w": 120, "h": 40, "key": k})
+            self.assertEqual(f["prefs"]["watch"], "band90")                    # ↓ then w: watching, trading unchanged
+            self.assertNotEqual(f["prefs"]["theme"], "classic")
+            self.assertEqual(f["prefs"]["chart"], "1h")
+            self.assertEqual(f["prefs"]["hidden"], ["contract"])
+            self.assertEqual(len(f["rows"]), 40)
+
+    def test_engine_sends_history_for_strikes_web_viewers_picked(self):
+        import collections, json, time
+        from tern.engine import Desk
+        with tempfile.TemporaryDirectory() as d:
+            k = Desk(d)
+            k.hist[self.T] = collections.deque([(time.time(), 0.5, 0.52)])
+            k.seeded.add(self.T)                                               # no network
+            with open(os.path.join(k.fast, "view-web.json"), "w") as fh:
+                json.dump({"series": ["KXETHD", "KXFAKED"], "tickers": [self.T]}, fh)
+            k._read_view()
+            self.assertEqual(k.web, {"series": ["KXETHD"], "tickers": [self.T]})
+            k._status()
+            with open(os.path.join(k.fast, "status.json")) as fh:
+                self.assertIn(self.T, json.load(fh)["hist"])
+            old = time.time() - 60                                             # tern web gone: stop serving it
+            os.utime(os.path.join(k.fast, "view-web.json"), (old, old))
+            k._read_view()
+            self.assertEqual(k.web, {"series": [], "tickers": []})
+
+
 if __name__ == "__main__":
     unittest.main()

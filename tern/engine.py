@@ -30,6 +30,8 @@ CMD_MAX_AGE = 30.0     # seconds a command from the screen stays valid
 
 
 LOCK_TRIES = 6                           # 0.2s apart
+WEB_VIEW_AGE = 30.0    # seconds view-web.json counts after tern web last wrote it
+WEB_TICKERS = 12       # strikes at most whose contract history goes to web viewers
 LOG_TIME = "%Y-%m-%d %H:%M:%S"           # how log() stamps a line in tern.log, and how it is read back
 LOG_LINE = re.compile(r"^(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d) (\w[\w ]{4}) (.*)$")   # level is padded to 5
 TRADES_KEPT, CURVE_KEPT, ENTRIES_KEPT = 5000, 20_000, 20_000   # history lines read back into memory on start
@@ -143,6 +145,7 @@ class Desk:
         self.events: dict[str, dict] = {}      # series -> {event, title, close, markets, fetched}
         self.hist: dict[str, collections.deque] = {}   # ticker -> (ts, bid, ask)
         self.view = {"series": "KXBTCD", "ticker": None}
+        self.web = {"series": [], "tickers": []}   # what web viewers (tern web) look at: view only, never trades
         self.seeded: set[str] = set()
         self.mode = "paper"
         self.live_error = ""
@@ -858,9 +861,11 @@ class Desk:
             evs[series] = {"event": e["event"], "title": e["title"], "close": e["close"], "age": now - e["fetched"],
                            "ladder": ladder}
         sel = self.view.get("ticker")
-        if sel and sel not in self.seeded and not stopped:   # no network on the way out
-            self.seeded.add(sel); self._seed(sel)
-        hist = {sel: [[round(t), b, a] for t, b, a in self.hist.get(sel, [])]} if sel in self.hist else {}
+        picked = ([sel] if sel else []) + [t for t in self.web["tickers"] if t != sel]
+        for t in picked:
+            if t not in self.seeded and not stopped:      # no network on the way out
+                self.seeded.add(t); self._seed(t)
+        hist = {t: [[round(ts), b, a] for ts, b, a in self.hist[t]] for t in picked if t in self.hist}
 
         def book_view(b: Book) -> dict:
             eq = b.equity(mids)
@@ -907,6 +912,16 @@ class Desk:
                 self.view = v
         except (OSError, json.JSONDecodeError):
             pass
+        self.web = {"series": [], "tickers": []}
+        try:                                        # tern web: the coins and strikes its viewers have on screen
+            path = os.path.join(self.fast, "view-web.json")
+            if time.time() - os.path.getmtime(path) < WEB_VIEW_AGE:   # no viewer left: stop serving them
+                with open(path) as fh:
+                    v = json.load(fh)
+                self.web = {"series": [s for s in v.get("series", []) if s in cfgmod.SERIES][:len(cfgmod.SERIES)],
+                            "tickers": [t for t in v.get("tickers", []) if isinstance(t, str)][:WEB_TICKERS]}
+        except (OSError, json.JSONDecodeError, AttributeError, TypeError):
+            pass
 
     def step(self) -> None:
         now = time.time()
@@ -914,7 +929,7 @@ class Desk:
             self.last["cfg"] = now
             self.cfg = cfgmod.load(self.runtime, self.cfg)
         self._read_view()
-        wanted = set(shadowmod.all_coins(self.cfg.strategy)) | {self.view["series"]}
+        wanted = set(shadowmod.all_coins(self.cfg.strategy)) | {self.view["series"]} | set(self.web["series"])
         unknown = sorted(wanted - set(cfgmod.SERIES))
         if unknown and now - self.last["badseries"] > 60:
             self.last["badseries"] = now
