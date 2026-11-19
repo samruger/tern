@@ -579,6 +579,13 @@ class Desk:
     def _live_rule_on(self, gate: dict) -> bool:
         return self.mode == "live" and (gate["passed"] or not self.cfg.live.auto_needs_gate)
 
+    def vol(self, series: str, now: float) -> float | None:
+        """The coin's realized volatility over the last hour (shadow.vol), from the spot feed."""
+        with self.spot.lock:
+            mq = self.spot.minute.get(cfgmod.SERIES[series])
+            rows = list(mq)[-70:] if mq else []
+        return shadowmod.vol(rows, now)
+
     def variant(self) -> str:
         """The variant paper and live trade. A name config.json doesn't know falls back to base."""
         v = self.cfg.strategy.variant
@@ -586,7 +593,7 @@ class Desk:
 
     def _auto(self, gate: dict | None = None) -> None:
         S = self.cfg.strategy
-        lo, hi, cap, mins, spread, coins = shadowmod.params(self.variant(), S)
+        lo, hi, cap, mins, spread, coins, mvol = shadowmod.params(self.variant(), S)
         gate = gate or self.gate()
         books = [self.paper]
         if self._live_rule_on(gate):
@@ -606,6 +613,8 @@ class Desk:
                 done.add(slot)
                 if slot not in mins:
                     continue                         # the variant skips this slot
+                if shadowmod.too_wild(mvol, self.vol(series, now)):
+                    continue                         # the coin moved too hard this past hour (calm)
                 held = self.taken.setdefault(key, {})
                 sig = [s for s in signals(e["markets"], lo, hi, spread) if cap is None or held.get(s["ticker"], 0) < cap]
                 if book is self.live and sig:
@@ -677,7 +686,8 @@ class Desk:
             e = self.events.get(series)
             if e and e["markets"] and now - e["fetched"] <= 10 and e["close"] > now and e.get("shadowed") != e["fetched"]:
                 e["shadowed"] = e["fetched"]
-                for note in self.shadow.step(e["event"], e["close"], e["markets"], self.cfg.strategy, now):
+                for note in self.shadow.step(e["event"], e["close"], e["markets"], self.cfg.strategy, now,
+                                             vol=self.vol(series, now)):
                     self.log(note)
         for ev, c in list(self.closed.items()):
             late = now > c["close"] + 1800
@@ -797,7 +807,7 @@ class Desk:
             lst = list(self.cfg.strategy.series)
             lst = [x for x in lst if x != s] if s in lst else lst + [s]
             self.cfg.strategy.series = lst; cfgmod.save(self.cfg, self.runtime)
-            if shadowmod.VARIANTS.get(self.variant(), (None,) * 6)[5]:
+            if shadowmod.VARIANTS.get(self.variant(), (None,) * 7)[5]:
                 return f"rule coins set to {', '.join(lst) or 'nothing'}, but {self.variant()} trades its own coins until you switch back"
             return f"rule trades: {', '.join(lst) or 'nothing'}"
         if op == "variant":
@@ -880,9 +890,9 @@ class Desk:
                      "gate": self.checks(r["name"], r)} for r in shadow]
 
         def strat(name: str) -> dict:
-            lo, hi, cap, mins, spread, coins = shadowmod.params(name, self.cfg.strategy)
+            lo, hi, cap, mins, spread, coins, mvol = shadowmod.params(name, self.cfg.strategy)
             return {**self.cfg.strategy.__dict__, "variant": name, "band_lo": lo, "band_hi": hi, "cap": cap,
-                    "minutes": mins, "max_spread": spread, "series": coins}
+                    "minutes": mins, "max_spread": spread, "series": coins, "max_vol": mvol}
         strategy = strat(self.variant())
         # every variant as if it traded, for the screen's watch view (w): its shadow record shaped like a book
         strikes = {t: m.get("strike") for t, m in self.meta.items()}

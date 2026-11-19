@@ -888,6 +888,27 @@ class Shadows(unittest.TestCase):
         for name, desc in list(shadow.DESC.items()) + list(shadow.RETIRED.items()):
             self.assertIn(f"{name:<8} {desc}", text)
 
+    def test_vol_is_realized_bp_a_minute_and_none_with_gaps(self):
+        import math
+        from tern.shadow import vol
+        rows = [[60.0 * i, 100.0 * math.exp(0.001 * (i % 2))] for i in range(70)]   # ±10 bp every minute
+        self.assertAlmostEqual(vol(rows, 70 * 60), 10.0, places=6)
+        self.assertIsNone(vol(rows[:30], 70 * 60))                                # under an hour of minutes
+        gap = rows[:20] + [[r[0] + 600, r[1]] for r in rows[20:]]                 # ten missing minutes
+        self.assertIsNone(vol(gap, 80 * 60))
+
+    def test_calm_skips_a_slot_when_the_coin_is_wild_or_unknown(self):
+        from tern.config import Strategy
+        from tern.shadow import Shadow
+        S = Strategy(series=["E"])
+        ms = [self.m("E-T1", 0.92, 0.93, 1)]
+        for v, want in ((5.0, 1), (9.0, 0), (None, 0)):
+            with tempfile.TemporaryDirectory() as d:
+                sh = Shadow(d)
+                sh.step("E", 1000.0, ms, S, 1000.0 - 25 * 60 + 1, vol=v)
+                self.assertEqual(sum(r["v"] == "calm" for r in sh.rows), want, v)
+                self.assertEqual(sum(r["v"] == "base" for r in sh.rows), 1)      # the others never look at vol
+
     def test_cap1_takes_each_strike_once_per_hour(self):
         from tern.config import Strategy
         from tern.shadow import Shadow

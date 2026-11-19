@@ -101,6 +101,7 @@ Nothing about what trades changes. `w` again or `v` goes back to the real book.
 | `band75` | only favorites at 75–80¢; with `band80` and `band90` it splits the band in three (from 2026-11-16) |
 | `early` | only the 25m and 20m slots, the other half of `late` (from 2026-11-16) |
 | `multi` | the rule on every coin at once, each coin's hour with its own budget. Its dollars are up to six times `base`'s, so compare it by ¢/contract and t (from 2026-11-16) |
+| `calm` | skips a slot when the coin's realized volatility over the last hour (one-minute returns) is above 7.6 bp/min, the 75th percentile of `base`'s entry slots 11-09..11-18. Added after the −$93 day of 11-19; on that day's data it would not have helped, so it is a test, not a fix (from 2026-11-20) |
 
 Retired 2026-11-16, records kept in `runtime/shadow-settled.jsonl` and listed by `report`:
 `stop20` (sell 20¢ under entry: −$191 over 165 hours, t −3.0) and `arb`

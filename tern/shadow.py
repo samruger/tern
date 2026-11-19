@@ -20,29 +20,35 @@ from .book import taker_fee
 from .config import SERIES
 from .strategy import due_slot, signals
 
-# name, (band_lo, band_hi, entries per strike per hour, slots, max spread, coins), what it does.
+# name, (band_lo, band_hi, entries per strike per hour, slots, max spread, coins, max vol), what it does.
+# max vol is the coin's realized volatility over the last hour (vol() below, bp a minute); above it a slot is skipped.
 # None takes the configured value (coins: strategy.series, the r key) / no cap. The description is what
 # people see; the comment is why the variant exists. A new variant's hours start when the engine
 # restarts with it, so say that date in its description.
 TABLE = [
-    ("base", (None, None, None, None, None, None), "the rule: favorites at 75-95¢, every slot"),
-    ("band90", (0.90, None, None, None, None, None), "only favorites at 90-95¢"),
+    ("base", (None, None, None, None, None, None, None), "the rule: favorites at 75-95¢, every slot"),
+    ("band90", (0.90, None, None, None, None, None, None), "only favorites at 90-95¢"),
     # added 2026-11-14 after two hours lost on strikes bought at every slot: later slots skip a strike already held
-    ("cap1", (None, None, 1, None, None, None), "one entry per strike per hour (from 2026-11-15)"),
+    ("cap1", (None, None, 1, None, None, None, None), "one entry per strike per hour (from 2026-11-15)"),
     # the band where the 67-day study found the bias (favorites ~2 points under)
-    ("band80", (0.80, 0.90, None, None, None, None), "only favorites at 80-90¢ (from 2026-11-16)"),
+    ("band80", (0.80, 0.90, None, None, None, None, None), "only favorites at 80-90¢ (from 2026-11-16)"),
     # less time left for the price to cross the strike
-    ("late", (None, None, None, (15, 10), None, None), "only the 15m and 10m slots (from 2026-11-16)"),
+    ("late", (None, None, None, (15, 10), None, None, None), "only the 15m and 10m slots (from 2026-11-16)"),
     # pays less to get in
-    ("tight1", (None, None, None, None, 0.01, None), "only strikes with a 1¢ spread (from 2026-11-16)"),
+    ("tight1", (None, None, None, None, 0.01, None, None), "only strikes with a 1¢ spread (from 2026-11-16)"),
     # the cheapest slice: with band80 and band90 it splits the band in three
-    ("band75", (None, 0.80, None, None, None, None), "only favorites at 75-80¢ (from 2026-11-16)"),
+    ("band75", (None, 0.80, None, None, None, None, None), "only favorites at 75-80¢ (from 2026-11-16)"),
     # the other half of late
-    ("early", (None, None, None, (25, 20), None, None), "only the 25m and 20m slots (from 2026-11-16)"),
+    ("early", (None, None, None, (25, 20), None, None, None), "only the 25m and 20m slots (from 2026-11-16)"),
     # Only BTC was tested on 67 days, so this is the first look at the others. Its dollars are up to
     # six times base's: compare it by cents a contract and t, not P&L.
-    ("multi", (None, None, None, None, None, tuple(SERIES)),
+    ("multi", (None, None, None, None, None, tuple(SERIES), None),
      "every coin at once, each its own budget; judge by ¢/ct (from 2026-11-16)"),
+    # added 2026-11-19 after the worst day (-$93, five hours lost to sharp late moves). 7.6 bp/min is the
+    # 75th percentile of base's entry slots 11-09..11-18, set from that data alone, not from P&L and not from
+    # 11-19. Before 11-19 calm slots made more (+3.1 vs +1.2 ¢/ct), but on 11-19 they lost more: unproven.
+    ("calm", (None, None, None, None, None, None, 7.6),
+     "skips slots after a wild hour: rv60 over 7.6 bp/min (from 2026-11-20)"),
 ]
 VARIANTS = {name: p for name, p, _ in TABLE}
 ORDER = list(VARIANTS)
@@ -55,11 +61,27 @@ RETIRED = {
 
 
 def params(name: str, S) -> tuple:
-    """(band_lo, band_hi, cap, slots, max_spread, coins) for a variant on strategy S. An unknown name is the
-    rule as configured. A variant's slots are a subset of S.minutes; a slot it skips still counts as taken."""
-    lo, hi, cap, slots, spread, coins = VARIANTS.get(name, (None,) * 6)
+    """(band_lo, band_hi, cap, slots, max_spread, coins, max_vol) for a variant on strategy S. An unknown name
+    is the rule as configured. A variant's slots are a subset of S.minutes; a slot it skips still counts as taken."""
+    lo, hi, cap, slots, spread, coins, mvol = VARIANTS.get(name, (None,) * 7)
     mins = [m for m in S.minutes if slots is None or m in slots]
-    return lo or S.band_lo, hi or S.band_hi, cap, mins, spread or S.max_spread, list(coins or S.series)
+    return lo or S.band_lo, hi or S.band_hi, cap, mins, spread or S.max_spread, list(coins or S.series), mvol
+
+
+def vol(minute, now: float, n: int = 60) -> float | None:
+    """Realized volatility of the last n one-minute returns, in basis points a minute, from [minute_ts, close]
+    rows oldest first (the spot feed's minute queue; the last row is the minute still running). None when
+    the hour has gaps of more than two minutes: a variant with a max vol then skips, it can't tell."""
+    rows = [r for r in minute if r[0] <= now][-(n + 1):]
+    if len(rows) < n + 1 or rows[-1][0] - rows[0][0] > (n + 2) * 60:
+        return None
+    rets = [math.log(b[1] / a[1]) for a, b in zip(rows, rows[1:]) if a[1] > 0 and b[1] > 0]
+    if len(rets) < n:
+        return None
+    return math.sqrt(sum(x * x for x in rets) / len(rets)) * 1e4
+
+def too_wild(mvol: float | None, v: float | None) -> bool:
+    return mvol is not None and (v is None or v > mvol)
 
 
 def all_coins(S) -> list[str]:
@@ -148,8 +170,9 @@ class Shadow:
         return taker_fee(n, p, self.rate)
 
     # ------------------------------------------------------------ each engine step
-    def step(self, event: str, close: float, markets: list[dict], S, now: float) -> list[str]:
-        """Run every variant on one fresh snapshot of an hourly event. Returns lines for the log."""
+    def step(self, event: str, close: float, markets: list[dict], S, now: float, vol: float | None = None) -> list[str]:
+        """Run every variant on one fresh snapshot of an hourly event; vol is the coin's vol() now.
+        Returns lines for the log."""
         done = self.slots.setdefault(event, [])
         self.closes[event] = close                 # settle() keeps an event's slots until it has closed
         slot = due_slot(close - now, S.minutes, set(done))
@@ -158,8 +181,8 @@ class Shadow:
         done.append(slot); self.dirty = True
         series = event.split("-", 1)[0]
         for name in VARIANTS:
-            lo, hi, cap, mins, spread, coins = params(name, S)
-            if slot not in mins or series not in coins:
+            lo, hi, cap, mins, spread, coins, mvol = params(name, S)
+            if slot not in mins or series not in coins or too_wild(mvol, vol):
                 continue
             mine = [r for r in self.rows if r["v"] == name and r["event"] == event]
             spent = sum(r["n"] * r["cost"] + r["fee"] for r in mine)
