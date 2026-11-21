@@ -1,3 +1,12 @@
+<img width="1364" height="682" alt="screenshot-2026-11-21_17-49-26-tern" src="https://github.com/user-attachments/assets/e5b7f060-8be7-4843-ab2b-88077bc40738" />
+<img width="1364" height="682" alt="screenshot-2026-11-21_17-49-07-tern" src="https://github.com/user-attachments/assets/e3c5f332-30ae-41ac-bae7-a796b2ad9275" />
+<img width="1364" height="682" alt="screenshot-2026-11-21_17-48-45-tern" src="https://github.com/user-attachments/assets/41fada51-6dc4-4381-9249-3ed672e7d72d" />
+<img width="1364" height="682" alt="screenshot-2026-11-21_17-48-09-tern" src="https://github.com/user-attachments/assets/cbb7bd30-6a45-4c50-9b88-612ebf1c984e" />
+<img width="1364" height="682" alt="screenshot-2026-11-21_17-47-55-tern" src="https://github.com/user-attachments/assets/ede6700a-221c-4e0f-9b6e-87c2758cb057" />
+<img width="1364" height="682" alt="screenshot-2026-11-21_17-47-02-tern" src="https://github.com/user-attachments/assets/b8b0be7f-77f2-40b1-a825-020223802583" />
+<img width="1364" height="682" alt="screenshot-2026-11-21_17-46-50-tern" src="https://github.com/user-attachments/assets/ee8ac357-4425-492f-91d3-d9fdeb5d1415" />
+<img width="1364" height="682" alt="screenshot-2026-11-21_17-46-22-tern" src="https://github.com/user-attachments/assets/b7378d7a-d73a-44a6-8ee0-a264e34c64da" />
+<img width="1364" height="682" alt="screenshot-2026-11-21_17-46-09-tern" src="https://github.com/user-attachments/assets/9814d2f4-8def-486d-ad7b-99a3412f14e1" />
 # tern
 
 A desk for Kalshi's hourly crypto above-or-below markets (BTC, ETH, SOL, XRP, BNB, HYPE), with a btop-style
