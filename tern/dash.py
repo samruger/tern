@@ -319,8 +319,9 @@ HELP_WIDTH = 78                                   # the prose wraps here; the ke
 # the boxes and the status line: (number, name, what it shows)
 HELP_BOXES = [
     ("¹", "spot", "the coin's price; (c) cycles the span: 5m 15m 1h 24h"),
-    ("²", "contract", "the strike picked in the ladder: bid, ask, probability over the hour, and"),
-    ("", "", "  whether it is in the variant's band (★)"),
+    ("²", "contract", "one strike as a bet (\"BTC above $61,900?\"): YES and NO bid/ask in cents,"),
+    ("", "", "  YES's price this hour on 0-100¢ (◀ now; green/red: where the rule buys"),
+    ("", "", "  YES/NO), and how far it is from being bought. Starts on the nearest ★"),
     ("³", "ladder", "every strike high to low: bid, ask, probability bar, spread, volume and"),
     ("", "", "  your position; ★ marks the band. ↑↓ picks the strike the contract box shows"),
     ("³", "variants", "(3) swaps it in for the ladder: each variant's hours, entries, P&L, ¢ a"),
@@ -364,11 +365,17 @@ HELP_KEYS = [
     [("trade", [("enter", "use the highlighted variant"),
                 ("r", "the rule trades this coin on / off"),
                 ("g", "gate, variants and go-live checklist"),
+                ("e", "settings: live limits and size, paper,"),
+                ("", "gate, alerts, what the log shows"),
                 ("L", "arm (type \"live\") / disarm live"),
                 ("R", "reset the paper book (asks y)")]),
      ("engine", [("s", "stop (asks y) / start the engine"),
                  ("h ?", "this help"),
                  ("q", "close the screen; the engine keeps going")]),
+     ("settings", [("↑↓", "pick a setting"),
+                   ("←→  - +", "step it down / up, or flip it"),
+                   ("enter 0-9", "type a value, enter saves"),
+                   ("esc", "close")]),
      ("in here", [("↑↓ PgUp PgDn", "scroll this help or the gate"),
                   ("Home End", "top / bottom"),
                   ("any other key", "close it")])],
@@ -382,6 +389,13 @@ HELP_CLI = [
     ("tern live-check", "test the Kalshi key: balance and positions, no orders"),
     ("systemctl --user status tern", "the engine's service"),
 ]
+
+# what the log box may show (settings, e): key -> how the settings box names it
+LOG_FILTERS = {"all": "everything", "no_shadow": "no shadow lines", "quiet": "live, warnings, commands",
+               "trades": "trades only"}
+TRADE_LINE = re.compile(r"^(?:paper|live): (?:\d+m slot on .*, [1-9]\d* bought$|\S+ (?:settled|finalized) )")
+SCREEN_SETTINGS = [cfgmod.Setting("screen", "log", "log shows", kind="choice", group="SCREEN",
+                                  what="shadow: the variants' hourly results · quiet hides paper too · trades: buys and settlements only")]
 
 # spot chart spans: c cycles them in this order (the engine sends ~15 min of seconds and 24h of minutes)
 CHARTS = {"5m": 300, "15m": 900, "1h": 3600, "24h": 86400}
@@ -401,7 +415,7 @@ PANEL_KEYS = {
                        ("c", "hart " + s.chart)],
     "book": lambda s: [("v", "iew"), ("L", "ive"), ("R", "eset")],
     "contract": lambda s: [("t", "heme ", s.P.name)],
-    "log": lambda s: [("g", "ate"), ("s", "top" if s.alive else "tart"), ("h", "elp"), ("q", "uit")],
+    "log": lambda s: [("g", "ate"), ("", "s", "e", "ttings"), ("s", "top" if s.alive else "tart"), ("h", "elp"), ("q", "uit")],
 }
 
 
@@ -418,7 +432,11 @@ class Screen:
         self.sel: str | None = None
         self.chart = "15m"
         self.book_view = None
-        self.overlay: str | None = None        # "help" or "gate" while one is open
+        self.overlay: str | None = None        # "help", "gate" or "settings" while one is open
+        self.set_sel = 0                       # the settings row the cursor is on
+        self.set_buf: str | None = None        # the value being typed in the settings box, or None
+        self.set_sent: dict[str, tuple] = {}   # key -> (value, time) sent but not yet in the status
+        self.log_filter = "all"                # what the log box shows: LOG_FILTERS
         self.ov_off, self.ov_room, self.ov_len = 0, 1, 0   # its scroll: first line shown, lines that fit, lines in all
         self.modal: dict | None = None
         self.flash, self.flash_at = "", 0.0
@@ -448,6 +466,8 @@ class Screen:
                 self.chart = d["chart"]
             if isinstance(d.get("watch"), str):
                 self.watch = d["watch"]
+            if d.get("log_filter") in LOG_FILTERS:
+                self.log_filter = d["log_filter"]
             if d.get("slot3") in SLOT3:
                 self.slot3 = d["slot3"]
                 if self.slot3 == "variants":
@@ -486,7 +506,7 @@ class Screen:
         try:
             with open(self.prefs_path + ".tmp", "w") as fh:
                 json.dump({"hidden": sorted(self.hidden), "series": self.series, "chart": self.chart, "theme": self.P.name,
-                           "slot3": self.slot3, "watch": self.watch}, fh)
+                           "slot3": self.slot3, "watch": self.watch, "log_filter": self.log_filter}, fh)
             os.replace(self.prefs_path + ".tmp", self.prefs_path)
         except OSError:
             pass
@@ -780,10 +800,23 @@ class Screen:
                 return r
         return None
 
+    def in_band(self, r: dict, S: dict | None = None) -> bool:
+        """The strike's favorite is in the variant's band with a tight enough spread: the rule would buy it."""
+        S = S if S is not None else (self.strat() or {})
+        bid, ask = r.get("b"), r.get("a")
+        if not S or bid is None or ask is None:
+            return False
+        mid = (bid + ask) / 2
+        return S["band_lo"] <= max(mid, 1 - mid) < S["band_hi"] and ask - bid <= S["max_spread"] + 1e-9
+
     def contract_panel(self, y, x, h, w) -> None:
+        """One strike as the bet it is: "BTC above $61,900?", both sides' prices, YES's price over the
+        hour on a fixed 0-100¢ scale with the rule's bands beside it, and how far it is from being bought."""
         P, st = self.P, self.st
         r = self.row(self.sel)
-        title = f"yes {strike_label(r['k'])}" if r else "contract"
+        prod = cfgmod.SERIES[self.series]
+        coin = prod.split("-")[0]
+        title = f"{coin} above ${strike_label(r['k'])}?" if r else "contract"
         self.box(y, x, h, w, title, self.P.border("contract"), "", PANEL_KEYS["contract"](self))
         if not r:
             self.put(y + 2, x + 3, "pick a strike in the ladder", P(self.P.grey)); return
@@ -796,33 +829,75 @@ class Screen:
                 pts.append([t, b if b is not None else a])
         ev = (st.get("events") or {}).get(self.series) or {}
         t1 = time.time(); t0 = (ev.get("close") or t1) - 3600
-        mids = by_time(pts, min(t0, pts[0][0]) if pts else t0, t1, (w - 8) * 2)
         bid, ask = r["b"], r["a"]
-        mid = (bid + ask) / 2 if bid is not None and ask is not None else (bid or ask)
-        info = [("bid", cents(bid) + "¢", GREEN), ("ask", cents(ask) + "¢", RED),
-                ("prob", f"{(mid or 0)*100:.1f}%", WHITE), ("vol", f"{r['v']:,.0f}", self.P.grey)]
+        mid = (bid + ask) / 2 if bid is not None and ask is not None else (bid if bid is not None else ask)
+        S = self.strat() or {}
+        no = lambda p: None if p is None else 1 - p
+        # YES 52/53¢  NO 47/48¢  53% YES  vol 1,234 (bid/ask: what you'd get selling / pay buying)
+        info = [("YES", f"{cents(bid).strip()}/{cents(ask).strip()}¢", GREEN),
+                ("NO", f"{cents(no(ask)).strip()}/{cents(no(bid)).strip()}¢", RED),
+                ("", f"{(mid or 0)*100:.0f}% YES", WHITE), ("vol", f"{r['v']:,.0f}", self.P.grey)]
         cx = x + 2
         for k, v, c in info:
-            self.put(y + 1, cx, k + " ", P(self.P.grey)); cx += len(k) + 1
-            self.put(y + 1, cx, v + "  ", P(c, bold=True)); cx += len(v) + 2
-        gh, gw = h - 4, w - 2 - 6
-        if mids and gh > 0:
-            lo, hi = max(0.0, min(mids) - 0.05), min(1.0, max(mids) + 0.05)
-            S = self.strat() or {}
-            marks = [m for m in (S.get("band_lo"), 1 - (S.get("band_lo") or 0)) if m is not None]
-            self.graph(y + 2, x + 1, gh, gw, mids, lo, hi, P.grad("yes"), marks, self.P.grey)
-            self.put(y + 2, x + 1 + gw + 1, f"{hi*100:3.0f}¢", P(self.P.grey))
-            self.put(y + 2 + gh - 1, x + 1 + gw + 1, f"{lo*100:3.0f}¢", P(self.P.grey))
-        else:
-            self.put(y + 3, x + 3, "history builds while the screen watches this strike", P(self.P.grey))
-        S = self.strat() or {}
+            if k:
+                self.put(y + 1, cx, k + " ", P(c, bold=True)); cx += len(k) + 1
+            self.put(y + 1, cx, v + "   ", P(WHITE if k in ("YES", "NO") else c, bold=k != "vol")); cx += len(v) + 3
+        if cx < x + w - 17:
+            self.put(y + 1, x + w - 16, "bid/ask, cents", P(self.P.grey))
+        gh, gw = h - 4, w - 2 - 7
+        if gh > 0:
+            lo_b, hi_b = S.get("band_lo", 0.75), S.get("band_hi", 0.95)
+            row_of = lambda v: max(0, min(gh - 1, int(round((1 - v) * (gh - 1)))))
+            mids = by_time(pts, min(t0, pts[0][0]) if pts else t0, t1, gw * 2) if pts else []
+            if mids:
+                self.graph(y + 2, x + 1, gh, gw, mids, 0.0, 1.0, P.grad("yes"), [lo_b, 1 - lo_b, 0.5], self.P.grey)
+            else:
+                self.put(y + 2 + gh // 2, x + 3, "history builds while the screen watches this strike"[:gw - 2], P(self.P.grey))
+            # the bands beside the chart: green where the rule buys YES, red where it buys NO
+            gx = x + 1 + gw
+            step = 1 / max(1, gh - 1)
+            for rr in range(gh):                             # a row covers prices v ± half a row
+                top, bot = 1 - (rr - 0.5) * step, 1 - (rr + 0.5) * step
+                if bot < hi_b and top > lo_b:
+                    self.put(y + 2 + rr, gx, "▐", P(GREEN, bold=True))
+                elif bot < 1 - lo_b and top > 1 - hi_b:
+                    self.put(y + 2 + rr, gx, "▐", P(RED, bold=True))
+            for v in (1.0, lo_b, 0.5, 1 - lo_b, 0.0):
+                col = GREEN if v == lo_b else RED if v == 1 - lo_b else self.P.grey
+                self.put(y + 2 + row_of(v), gx + 1, f"{v*100:3.0f}¢", P(col, bold=col != self.P.grey))
+            if mid is not None:                              # where the price is now, on the scale
+                self.put(y + 2 + row_of(mid), gx, "◀", P(YELLOW, bold=True))
         if mid is not None and S:
-            fav = mid if mid >= 0.5 else 1 - mid
-            spread = (ask - bid) if bid is not None and ask is not None else 1
-            inb = S["band_lo"] <= fav < S["band_hi"] and spread <= S["max_spread"] + 1e-9
-            msg = (f"★ in {'the rule' if not self.wview() else self.watch}'s band: favorite {'YES' if mid >= 0.5 else 'NO'} at {fav*100:.0f}¢" if inb
-                   else f"outside {'the rule' if not self.wview() else self.watch}'s band ({S['band_lo']*100:.0f}-{S['band_hi']*100:.0f}¢, spread ≤{S['max_spread']*100:.0f}¢)")
-            self.put(y + h - 2, x + 2, msg[:w - 4], P(YELLOW if inb else self.P.grey))
+            cx = x + 2
+            for text, col in self.leaning(r, mid, S, prod):
+                self.put(y + h - 2, cx, text, P(col, bold=col not in (self.P.grey, WHITE))); cx += len(text)
+
+    def leaning(self, r: dict, mid: float, S: dict, prod: str) -> list[tuple[str, int]]:
+        """How far this strike is from being bought: which side leads, at what price, how many cents from
+        the band, and how far the coin is from the strike."""
+        grey = self.P.grey
+        side, fav = ("YES", mid) if mid >= 0.5 else ("NO", 1 - mid)
+        col = GREEN if side == "YES" else RED
+        who = "the rule" if not self.wview() else self.watch
+        lo_b, hi_b = S["band_lo"], S["band_hi"]
+        out: list = []
+        if self.in_band(r, S):
+            out += [("★ ", YELLOW), (f"{who} buys {side} ", YELLOW), (f"{int(fav * 100 + 0.5)}¢", col)]
+        elif fav >= hi_b:
+            out += [(f"{side} {int(fav * 100 + 0.5)}¢", col), (f" · over {hi_b*100:.0f}¢: too sure to buy", grey)]
+        elif lo_b <= fav:
+            out += [(f"{side} {int(fav * 100 + 0.5)}¢", col), (f" · in band, spread over {S['max_spread']*100:.0f}¢", grey)]
+        else:
+            fc, lc = int(fav * 100 + 0.5), int(lo_b * 100 + 0.5)
+            out += [("leaning " if fav > 0.52 else "coin flip, ", grey), (f"{side} {fc}¢", col),
+                    (" · ", grey), (f"{lc - fc}¢", WHITE), (f" from the {lc}¢ band", grey)]
+        spot = (((self.st.get("spot") or {}).get(prod) or {}).get("now"))
+        if spot is not None and r.get("k") is not None:
+            k = strike_of(r["k"])
+            d = spot - k
+            out += [(" · ", grey), (f"{prod.split('-')[0]} ${f'{abs(d):,.0f}' if spot >= 1000 else px(abs(d))} "
+                                       f"{'over' if d >= 0 else 'under'}", WHITE)]
+        return out
 
     def ladder_panel(self, y, x, h, w) -> None:
         P, st = self.P, self.st
@@ -834,8 +909,9 @@ class Screen:
         spot = ((st.get("spot") or {}).get(prod) or {}).get("now")
         tickers = [r["t"] for r in lad]
         if self.sel not in tickers:
-            if spot:
-                self.sel = min(lad, key=lambda r: abs(r["k"] - spot))["t"]
+            if spot:   # the nearest strike the rule would buy (★), else the nearest one
+                pool = [r for r in lad if self.in_band(r)] or lad
+                self.sel = min(pool, key=lambda r: abs(r["k"] - spot))["t"]
             else:
                 self.sel = tickers[len(tickers) // 2]
             self.write_view()
@@ -1146,7 +1222,7 @@ class Screen:
     def log_panel(self, y, x, h, w) -> None:
         P = self.P
         self.box(y, x, h, w, "log", self.P.border("log"), "", PANEL_KEYS["log"](self))
-        logs = self.st.get("logs") or []
+        logs = self.logs_shown()
         rows = h - 2
         end = self.log_end(logs, rows)
         saved, self.clip = self.clip, x + w - 2
@@ -1245,7 +1321,7 @@ class Screen:
         elif name == "book":
             self.pos_off = max(0, self.pos_off + d)    # book_panel clamps the far end
         elif name == "log":
-            logs = self.st.get("logs") or []
+            logs = self.logs_shown()
             rows = self.rects["log"][2] - 2 if "log" in self.rects else 1
             end = max(min(rows, len(logs)), min(len(logs), self.log_end(logs, rows) + 3 * d))
             self.log_anchor = None if end >= len(logs) else logs[end - 1][0]
@@ -1288,7 +1364,7 @@ class Screen:
             msg = f" {self.flash} "[:max(0, W - 4)]
             self.put(H - 2, 2, msg, P(YELLOW, bold=True) | curses.A_REVERSE)
 
-    def draw_overlay(self, lines: list, title: str, color: int = CYAN, scroll: bool = False) -> None:
+    def draw_overlay(self, lines: list, title: str, color: int = CYAN, scroll: bool = False, hints=None) -> None:
         """A centered box of lines. A line is a plain string (colored by `rich`) or a list of (text, attr).
         With scroll, lines that don't fit scroll by self.ov_off (help and gate); ▲▼ and the place show on the border."""
         H, W = self.s.getmaxyx()
@@ -1304,7 +1380,7 @@ class Screen:
         for r in range(h):
             self.put(y + r, x, " " * w)
         long = scroll and len(lines) > room
-        self.box(y, x, h, w, title, color, "", [("↑↓", " scroll"), ("esc", " close")] if long else [("any key", " closes")])
+        self.box(y, x, h, w, title, color, "", hints or ([("↑↓", " scroll"), ("esc", " close")] if long else [("any key", " closes")]))
         saved, self.clip = self.clip, x + w - 2
         for j, l in enumerate(lines[off:off + room]):
             cx = x + 2
@@ -1442,6 +1518,153 @@ class Screen:
                     f"-${L.get('max_daily_loss', 0):,.0f} a day turns live off"]
         return out
 
+    # ------------------------------------------------------------ settings (e)
+    def set_rows(self) -> list:
+        """The settings box's rows: the engine's (config.SETTINGS) and the screen's own."""
+        return cfgmod.SETTINGS + SCREEN_SETTINGS
+
+    def set_value(self, key: str):
+        """What the setting is: the engine's value, or the one just sent until the engine shows it (10 s)."""
+        if key == "screen.log":
+            return self.log_filter
+        now_v = (self.st.get("settings") or {}).get(key)
+        sent = self.set_sent.get(key)
+        if sent and now_v != sent[0] and time.time() - sent[1] < 10:
+            return sent[0]
+        self.set_sent.pop(key, None)
+        return now_v
+
+    @staticmethod
+    def set_fmt(row, v) -> str:
+        if v is None:
+            return "?"
+        if row.kind == "bool":
+            return "on" if v else "off"
+        if row.kind == "choice":
+            return LOG_FILTERS.get(v, v)
+        if row.kind == "n":
+            return f"{v:g}"
+        return ("-" if v < 0 else "") + f"${abs(v):,.2f}".replace(".00", "")
+
+    def settings_lines(self) -> list:
+        P = self.P
+        rows = self.set_rows()
+        self.set_sel %= len(rows)
+        lw = max(len(r.label) for r in rows)
+        armed = self.st.get("live_enabled") or self.st.get("mode") == "live"
+        out: list = []
+        for i, row in enumerate(rows):
+            if row.group:
+                out += ([""] if out else []) + [[(row.group, P(P.c("head"), bold=True))]]
+            sel = i == self.set_sel
+            if sel and self.set_buf is not None:
+                val = [(f" {self.set_buf}▏", P(YELLOW, bold=True) | curses.A_REVERSE)]
+            else:
+                v = self.set_value(row.key)
+                col = YELLOW if row.key in self.set_sent else (GREEN if v else RED) if row.kind == "bool" else P.c("key")
+                val = [(f" {self.set_fmt(row, v)} ", P(col, bold=True) | (curses.A_REVERSE if sel else 0))]
+            mark = ("▸ ", P(P.c("key"), bold=True)) if sel else ("  ", 0)
+            out.append([mark, (f"{row.label:<{lw}}  ", P(WHITE, bold=sel))] + val)
+        row = rows[self.set_sel]
+        def details(r) -> list[str]:
+            """The two lines under the divider for row r."""
+            if r.kind in ("usd", "n"):
+                return [r.what, f"{self.set_fmt(r, r.lo)} to {self.set_fmt(r, r.hi)}, steps of {self.set_fmt(r, r.step)}  ·  saved at once"]
+            return [r.what, "←→ or enter changes it  ·  saved at once"]
+        # pad to the widest any row needs, so the box keeps one size while the cursor moves
+        wide = max(len(t) for r in rows for t in details(r))
+        out += [RULE_LINE] + [[(t.ljust(wide), P(P.grey))] for t in details(row)]
+        if "settings" not in self.st or any(r.key not in self.st["settings"] for r in cfgmod.SETTINGS):
+            out += [[("The engine running is older than this screen: restart it (s, s) to change these.", P(YELLOW, bold=True))]]
+        elif armed:
+            out += [[("Live is armed: raising a live limit or lowering a gate asks you to type \"live\".", P(YELLOW, bold=True))]]
+        return out
+
+    def send_setting(self, row, value) -> None:
+        key = row.key
+        if row.key == "screen.log":
+            self.log_filter = value; self.log_anchor = None; self.save_prefs(); return
+        if row.kind in ("usd", "n"):
+            if not row.lo <= value <= row.hi:
+                self.say(f"{row.label} must be {self.set_fmt(row, row.lo)} to {self.set_fmt(row, row.hi)}"); return
+            if row.kind == "n":
+                value = float(int(value))
+        cur = self.set_value(key)
+        if cur is not None and value == cur:
+            return
+        loosens = row.risk and cur is not None and (value - cur) * row.risk > 0
+        if loosens and (self.st.get("live_enabled") or self.st.get("mode") == "live"):
+            what = "Raise" if row.risk > 0 else "Lower"
+            self.modal = {"type": "setlive", "title": "LIVE IS ARMED", "color": RED, "buf": "", "key": key, "value": value,
+                          "lines": [f"{what} {row.sec} {row.label} from {self.set_fmt(row, cur)} to {self.set_fmt(row, value)}?",
+                                    "Live is armed: this is real money on Kalshi.", "",
+                                    "type live and press enter (esc cancels):", "> "]}
+            return
+        self.send(op="set", key=key, value=value)
+        self.set_sent[key] = (value, time.time())
+
+    def settings_key(self, ch: int) -> None:
+        rows = self.set_rows()
+        row = rows[self.set_sel % len(rows)]
+        if self.set_buf is not None:                      # typing a value
+            if ch in (10, 13, curses.KEY_ENTER):
+                buf, self.set_buf = self.set_buf.strip().lstrip("$").replace(",", ""), None
+                try:
+                    self.send_setting(row, float(buf))
+                except ValueError:
+                    if buf:
+                        self.say(f"not a number: {buf}")
+            elif ch == 27:
+                self.set_buf = None
+            elif ch in (curses.KEY_BACKSPACE, 127, 8):
+                self.set_buf = self.set_buf[:-1]
+            elif 32 <= ch < 127 and chr(ch) in "0123456789.$,-" and (chr(ch) != "-" or not self.set_buf):
+                self.set_buf = (self.set_buf + chr(ch))[:12]
+            return
+        step = {curses.KEY_LEFT: -1, ord("-"): -1, curses.KEY_RIGHT: 1, ord("+"): 1, ord("="): 1}.get(ch)
+        if ch in (curses.KEY_UP, ord("k")):
+            self.set_sel = (self.set_sel - 1) % len(rows)
+        elif ch in (curses.KEY_DOWN, ord("j")):
+            self.set_sel = (self.set_sel + 1) % len(rows)
+        elif row.kind in ("bool", "choice") and (step or ch in (10, 13, curses.KEY_ENTER, ord(" "))):
+            cur = self.set_value(row.key)
+            if cur is None:
+                self.say("no value from the engine yet"); return
+            if row.kind == "bool":
+                self.send_setting(row, not cur)
+            else:
+                order = list(LOG_FILTERS)
+                i = order.index(cur) if cur in order else 0
+                self.send_setting(row, order[(i + (step or 1)) % len(order)])
+        elif step:
+            cur = self.set_value(row.key)
+            if cur is None:
+                self.say("no value from the engine yet"); return
+            self.send_setting(row, max(row.lo, min(row.hi, round((cur + step * row.step) / row.step) * row.step)))
+        elif ch in (10, 13, curses.KEY_ENTER):
+            self.set_buf = ""
+        elif ord("0") <= ch <= ord("9"):
+            self.set_buf = chr(ch)
+        else:                                             # esc, e or anything else closes it
+            self.overlay = None
+
+    def logs_shown(self) -> list:
+        """The engine's log lines the log box shows, after the log filter (settings, e)."""
+        logs = self.st.get("logs") or []
+        if self.log_filter == "all":
+            return logs
+        out = []
+        for line in logs:
+            lvl, msg = line[1], line[2]
+            if msg.startswith("shadow:"):
+                continue
+            if self.log_filter == "trades" and not TRADE_LINE.match(msg):
+                continue
+            if self.log_filter == "quiet" and lvl == "info" and msg.startswith("paper:"):
+                continue
+            out.append(line)
+        return out
+
     def draw(self) -> None:
         self.s.erase()
         H, W = self.s.getmaxyx()
@@ -1463,7 +1686,10 @@ class Screen:
             msg = "every box is hidden · press 1-6 to show spot, contract, ladder, book, equity, log"
             self.put(H // 2, max(0, (W - len(msg)) // 2), msg, self.P(self.P.grey))
         self.footer(H, W)
-        if self.overlay:
+        if self.overlay == "settings":
+            self.draw_overlay(self.settings_lines(), "settings", self.P.border("contract"),
+                              hints=[("↑↓", " pick"), ("←→", " step"), ("enter", " type"), ("esc", " close")])
+        elif self.overlay:
             lines = self.help_lines(W) if self.overlay == "help" else self.gate_lines()
             self.draw_overlay(lines, self.overlay, self.P.border("contract"), scroll=True)
         if self.modal:
@@ -1478,26 +1704,32 @@ class Screen:
             except curses.error:
                 return True
             d = -1 if bs & curses.BUTTON4_PRESSED else 1 if bs & curses.BUTTON5_PRESSED else 0
-            if d and self.overlay and not self.modal:
+            if d and self.overlay == "settings" and not self.modal:
+                self.set_sel = (self.set_sel + d) % len(self.set_rows())
+            elif d and self.overlay and not self.modal:
                 self.ov_off = max(0, self.ov_off + 3 * d)
             elif d and not self.modal:
                 self.wheel(my, mx, d)
             return True
         if self.modal:
             m = self.modal; self.modal = None
-            if m.get("type") in ("arm", "variant"):
+            if m.get("type") in ("arm", "variant", "setlive"):
                 arm = m["type"] == "arm"
+                kept = "not armed" if arm else "cap kept" if m["type"] == "setlive" else f"kept {m.get('was')}"
                 if ch in (10, 13, curses.KEY_ENTER):
                     if m["buf"].strip().lower() == "live":
                         if arm:
                             self.send(op="live", on=True); self.say("live armed")
+                        elif m["type"] == "setlive":
+                            self.send(op="set", key=m["key"], value=m["value"])
+                            self.set_sent[m["key"]] = (m["value"], time.time())
                         else:
                             self.send(op="variant", name=m["name"])
                     else:
-                        self.say("not armed (type live exactly)" if arm else f"kept {m['was']} (type live exactly)")
+                        self.say(kept + " (type live exactly)")
                     return True
                 if ch in (27,):
-                    self.say("not armed" if arm else f"kept {m['was']}"); return True
+                    self.say(kept); return True
                 if ch in (curses.KEY_BACKSPACE, 127, 8):
                     m["buf"] = m["buf"][:-1]
                 elif 32 <= ch < 127:
@@ -1515,6 +1747,9 @@ class Screen:
                 if ch in (ord("y"), ord("Y")):
                     self.send(op="reset_paper")
                 return True
+            return True
+        if self.overlay == "settings":
+            self.settings_key(ch)
             return True
         if self.overlay:
             step = {curses.KEY_UP: -1, ord("k"): -1, curses.KEY_DOWN: 1, ord("j"): 1, curses.KEY_PPAGE: -(self.ov_room - 1),
@@ -1564,6 +1799,8 @@ class Screen:
             self.toggle_watch()
         elif ch == ord("g"):
             self.overlay, self.ov_off = "gate", 0
+        elif ch == ord("e"):
+            self.overlay, self.set_buf = "settings", None
         elif ch == ord("?") or ch == ord("h"):
             self.overlay, self.ov_off = "help", 0
         elif ch == ord("s"):

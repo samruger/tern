@@ -67,6 +67,14 @@ def _atomic_write(path: str, text: str, sync: bool = False) -> None:
     os.replace(path + ".tmp", path)
 
 
+def _run_quiet(cmd: list) -> None:
+    import subprocess
+    try:
+        subprocess.run(cmd, timeout=10, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except (OSError, subprocess.SubprocessError):
+        pass
+
+
 def _atomic_json(path: str, obj) -> None:
     _atomic_write(path, json.dumps(obj, separators=(",", ":")))
 
@@ -138,6 +146,7 @@ class Desk:
         self.api: Kalshi | None = None
         self.spot = SpotFeed()
         self.logs: collections.deque = collections.deque(maxlen=400)
+        self.alerted: dict[str, float] = {}     # message shape -> when it last made a desktop alert
         self._load_log_tail()                  # the screen's log box keeps its history across restarts
         self.results: dict[str, str] = {}
         self.events: dict[str, dict] = {}      # series -> {event, title, close, markets, fetched}
@@ -318,6 +327,27 @@ class Desk:
             fh.write(f"{time.strftime(LOG_TIME)} {level:5s} {msg}\n")
         if self.echo:
             print(f"{time.strftime('%H:%M:%S')} {msg}", flush=True)
+        self._alert(msg, level)
+
+    def _alert(self, msg: str, level: str) -> None:
+        """A desktop pop-up (notify-send) for what matters with the screen closed: live orders and
+        settlements, KILL, live turning off, errors, the engine stopping. Paper, shadow and Wi-Fi
+        warnings never alert. The same message (numbers aside) alerts at most once in 10 minutes."""
+        if not getattr(self, "cfg", None) or not self.cfg.alerts or os.environ.get("TERN_NO_ALERTS"):
+            return
+        live = level == "live" or msg.startswith(("live", "LIVE", "KILL"))
+        if not (live or level == "error" or msg.startswith("engine stopped")) or msg.endswith(", 0 bought"):
+            return
+        shape, now = re.sub(r"[\d.,$+-]+", "#", msg), time.time()
+        if now - self.alerted.get(shape, 0) < 600:
+            return
+        self.alerted[shape] = now
+        urgent = level == "error" or msg.startswith("KILL")
+        cmd = ["notify-send", "-a", "tern", "-u", "critical" if urgent else "normal", "tern", msg]
+        if msg.startswith("engine stopped"):
+            _run_quiet(cmd)                  # the process is about to exit: a thread would die with it
+        else:
+            threading.Thread(target=_run_quiet, args=(cmd,), daemon=True).start()
 
     # ------------------------------------------------------------ market data
     def _refresh_event(self, series: str) -> None:
@@ -629,8 +659,10 @@ class Desk:
                         break
                     spent = self.hour_cost.get(key, 0.0)
                     unit = s["price"] if s["delta_sign"] > 0 else 1 - s["price"]
-                    # whole contracts, no more than the quote shows: sized exactly as the shadow record sizes it
-                    n = float(int(min(S.contracts, s["size"], max(0.0, (S.max_hour_cost - spent) / max(unit, 1e-6)))))
+                    # whole contracts, no more than the quote shows: paper is sized exactly as the shadow record
+                    # sizes it; live has its own size (live.contracts)
+                    size = self.cfg.live.contracts if book is self.live else S.contracts
+                    n = float(int(min(size, s["size"], max(0.0, (S.max_hour_cost - spent) / max(unit, 1e-6)))))
                     if n < 1:
                         continue                     # a cheaper favorite further on may still fit (as in shadow)
                     try:
@@ -825,6 +857,20 @@ class Desk:
                        f" · live waits: {name} has not passed the gate"
             self.log(msg, "warn" if self.mode == "live" else "info")
             return msg
+        if op == "set":
+            key, was = c.get("key"), None
+            if cfgmod.setting(key) is not None:
+                was = cfgmod.get_setting(self.cfg, key)
+            try:
+                v = cfgmod.set_setting(self.cfg, key, c.get("value"))
+            except ValueError as ex:
+                return f"not set: {ex}"
+            cfgmod.save(self.cfg, self.runtime)
+            r = cfgmod.setting(key)
+            label = {"live": "live ", "gate": "gate ", "strategy": "paper " if r.name == "contracts" else ""}.get(r.sec, "") + r.label
+            show = (lambda x: "on" if x else "off") if r.kind == "bool" else (lambda x: f"{x:g}")
+            msg = f"{label}: {show(was)} → {show(v)}" + (" (the paper book starts there at the next reset)" if key == "paper_capital" else "")
+            return msg
         if op == "reset_paper":
             self.paper = Book("paper", self.cfg.paper_capital); self.auto = []; self.auto_done = []
             for name in ("paper-trades.jsonl", "paper-curve.jsonl", RULE_LOG):   # its history goes with it
@@ -904,6 +950,7 @@ class Desk:
               "paper": book_view(self.paper), "live": book_view(self.live),
               "gate": gate, "shadow": shadow, "variants": variants, "gate_cfg": self.cfg.gate.__dict__,
               "strategy": strategy, "views": views, "live_cfg": self.cfg.live.__dict__,
+              "settings": {r.key: cfgmod.get_setting(self.cfg, r.key) for r in cfgmod.SETTINGS},
               "logs": [list(x) for x in list(self.logs)[-200:]], "results": self.results,
               "auto_live": self._live_rule_on(gate)}
         _atomic_json(os.path.join(self.fast, "status.json"), st)

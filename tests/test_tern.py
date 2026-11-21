@@ -21,6 +21,7 @@ def setUpModule():
     _RUN["old"] = os.environ.get("XDG_RUNTIME_DIR")
     _RUN["dir"] = tempfile.mkdtemp(prefix="tern-tests-")
     os.environ["XDG_RUNTIME_DIR"] = _RUN["dir"]
+    os.environ["TERN_NO_ALERTS"] = "1"          # no desktop pop-ups from test engines
 
 
 def tearDownModule():
@@ -345,6 +346,57 @@ class Commands(unittest.TestCase):
             k2._auto()
             self.assertIn(self.T, k2.paper.pos)
 
+    def test_settings_change_only_listed_fields_within_bounds(self):
+        with tempfile.TemporaryDirectory() as d:
+            k = self.desk(d)
+            from tern import config
+            self.assertIn("25 → 40", k._command({"op": "set", "key": "live.max_order_usd", "value": 40}))
+            self.assertEqual(config.load(d).live.max_order_usd, 40.0)
+            self.assertIn("5 → 3", k._command({"op": "set", "key": "strategy.contracts", "value": 3}))
+            self.assertEqual(k.cfg.strategy.contracts, 3.0)
+            self.assertIn("next reset", k._command({"op": "set", "key": "paper_capital", "value": 2000}))
+            self.assertIn("not set", k._command({"op": "set", "key": "live.enabled", "value": 1}))
+            self.assertIn("not set", k._command({"op": "set", "key": "live.capital_usd", "value": -5}))
+            self.assertIn("not set", k._command({"op": "set", "key": "live.capital_usd", "value": "100"}))
+            self.assertFalse(config.load(d).live.enabled)
+            self.assertEqual(config.load(d).live.capital_usd, 100.0)
+
+    def test_gate_and_alert_settings(self):
+        with tempfile.TemporaryDirectory() as d:
+            k = self.desk(d)
+            from tern import config
+            self.assertIn("gate days of hours traded: 14 → 7", k._command({"op": "set", "key": "gate.min_days", "value": 7}))
+            self.assertEqual(config.load(d).gate.min_days, 7.0)
+            self.assertIn("-50", k._command({"op": "set", "key": "gate.min_pnl", "value": -50}))
+            self.assertIn("not set", k._command({"op": "set", "key": "alerts", "value": 0}))
+            self.assertIn("on → off", k._command({"op": "set", "key": "alerts", "value": False}))
+            self.assertFalse(config.load(d).alerts)
+
+    def test_alerts_only_for_what_matters(self):
+        from tern import engine
+        with tempfile.TemporaryDirectory() as d:
+            k = self.desk(d)
+            sent, real = [], engine._run_quiet
+            engine._run_quiet = lambda cmd: sent.append(cmd[-1])
+            os.environ.pop("TERN_NO_ALERTS")
+            try:
+                k.log("paper: KXBTCD-E1-T100 settled YES, +$0.80")
+                k.log("shadow: KXBTCD-E1 settled · base +1.00")
+                k.log("KXBTCD market data: timed out", "warn")
+                k.log("live: 20m slot on KXBTCD-E1 (base): 1 favorites in band, 0 bought")
+                k.log("live: 20m slot on KXBTCD-E1 (base): 1 favorites in band, 1 bought")
+                k.log("KILL: live down $31.00 today", "error")
+                k.log("step failed: boom", "error"); k.log("step failed: boom", "error")
+                import time as _t; _t.sleep(0.2)
+                self.assertEqual(sent, ["live: 20m slot on KXBTCD-E1 (base): 1 favorites in band, 1 bought",
+                                        "KILL: live down $31.00 today", "step failed: boom"])
+                k.cfg.alerts = False
+                k.log("KILL: something else", "error"); _t.sleep(0.1)
+                self.assertEqual(len(sent), 3)
+            finally:
+                engine._run_quiet = real
+                os.environ["TERN_NO_ALERTS"] = "1"
+
     def test_cap1_skips_a_strike_already_held_this_hour(self):
         with tempfile.TemporaryDirectory() as d:
             k = self.desk(d, bid="0.80", ask="0.81")
@@ -554,6 +606,21 @@ class Live(unittest.TestCase):
             def order_fills(self, oid):
                 return kw.get("fills", [])
         return Api()
+
+    def test_live_has_its_own_size(self):
+        with tempfile.TemporaryDirectory() as d:
+            got = []
+            class Api:
+                def order(self, t, side, n, price, cid):
+                    got.append(n)
+                    return {"order_id": "o1", "fill_count": str(n), "average_fill_price": "0.82", "average_fee_paid": "0"}
+            k = self.desk(d, Api())
+            k.cfg.live.auto_needs_gate = False
+            k.cfg.live.contracts = 2.0
+            k._auto()
+            self.assertEqual(got, [2.0])
+            self.assertAlmostEqual(k.live.pos[self.T]["q"], 2)
+            self.assertAlmostEqual(k.paper.pos[self.T]["q"], 5)        # paper keeps strategy.contracts
 
     def test_reply_fields_are_read_as_documented(self):
         with tempfile.TemporaryDirectory() as d:

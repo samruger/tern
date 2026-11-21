@@ -42,6 +42,7 @@ class Live:
     max_order_usd: float = 25.0    # largest single live order the rule may send
     max_daily_loss: float = 30.0   # live loss since local midnight that cancels everything and returns to paper
     auto_needs_gate: bool = True   # the rule trades live only after its paper record passes the gate
+    contracts: float = 5.0         # contracts live buys per strike per slot (paper uses strategy.contracts)
 
 
 @dataclass
@@ -56,6 +57,7 @@ class Config:
     paper_capital: float = 1_000.0
     taker_fee: float = 0.07        # Kalshi: ceil(0.07 * C * P * (1-P)) per order, to the cent
     view_strikes: int = 15         # rows in the ladder
+    alerts: bool = True            # desktop notifications (notify-send) for live events, errors, engine stop
     live: Live = field(default_factory=Live)
     strategy: Strategy = field(default_factory=Strategy)
     gate: Gate = field(default_factory=Gate)
@@ -95,6 +97,84 @@ class Config:
         top["strategy"] = Strategy(**keep(Strategy, d.get("strategy")))
         top["gate"] = Gate(**keep(Gate, d.get("gate")))
         return cls(**top)
+
+
+@dataclass(frozen=True)
+class Setting:
+    """One row of the screen's settings box (e). kind: "usd", "n" (a count) or "bool". risk: the direction
+    that loosens a safety limit (+1 raising, -1 lowering, 0 neither); while live is armed that direction
+    asks you to type "live" first."""
+    sec: str
+    name: str
+    label: str
+    lo: float = 0.0
+    hi: float = 0.0
+    step: float = 1.0
+    kind: str = "usd"
+    risk: int = 0
+    what: str = ""
+    group: str = ""
+
+    @property
+    def key(self) -> str:
+        return f"{self.sec}.{self.name}" if self.sec else self.name
+
+
+# The settings the screen's settings box (e) may change. The engine checks every change against this list
+# and its bounds; anything else stays a config.json edit.
+SETTINGS = [
+    Setting("live", "capital_usd", "most at risk at once", 1, 10_000, 5, risk=+1, group="LIVE",
+            what="$ of open live positions the rule may hold at once"),
+    Setting("live", "max_order_usd", "largest order", 1, 1_000, 1, risk=+1,
+            what="$ cap on any one live order"),
+    Setting("live", "max_daily_loss", "daily loss limit", 1, 5_000, 5, risk=+1,
+            what="live loss since local midnight that turns live off"),
+    Setting("live", "contracts", "contracts a strike", 1, 100, 1, kind="n", risk=+1,
+            what="contracts live buys per strike per slot; paper and the variants' records keep their own size"),
+    Setting("strategy", "contracts", "contracts a strike", 1, 100, 1, kind="n", group="PAPER",
+            what="contracts paper and the variants' records buy per strike per slot ($ P&L scales with it)"),
+    Setting("strategy", "max_hour_cost", "most an hour", 5, 2_000, 5,
+            what="$ the rule may put into one hourly event (paper, live and the variants' records)"),
+    Setting("", "paper_capital", "paper start", 100, 1_000_000, 100,
+            what="the paper book's starting cash; takes effect at the next reset (R)"),
+    Setting("gate", "min_days", "days of hours traded", 1, 90, 1, kind="n", risk=-1, group="GATE",
+            what="hours the variant in use has traded on paper, in days, before live may trade it"),
+    Setting("gate", "min_entries", "settled entries", 10, 10_000, 50, kind="n", risk=-1,
+            what="settled paper entries the variant in use needs before live may trade it"),
+    Setting("gate", "min_pnl", "paper P&L at least", -1_000, 10_000, 10, risk=-1,
+            what="paper P&L after fees the variant in use needs before live may trade it"),
+    Setting("", "alerts", "desktop alerts", kind="bool", group="ALERTS",
+            what="pop-ups for live orders and settlements, live turning off, errors and the engine stopping"),
+]
+
+
+def setting(key: str) -> Setting | None:
+    """The SETTINGS row for "section.field" (or "field" for a top-level one)."""
+    return next((r for r in SETTINGS if r.key == key), None)
+
+
+def get_setting(cfg: "Config", key: str):
+    r = setting(key)
+    return getattr(getattr(cfg, r.sec) if r.sec else cfg, r.name)
+
+
+def set_setting(cfg: "Config", key: str, value):
+    """Set one SETTINGS value on cfg (not saved). Raises ValueError on an unknown key or a bad value."""
+    r = setting(key)
+    if r is None:
+        raise ValueError(f"{key!r} is not a setting the screen may change")
+    obj = getattr(cfg, r.sec) if r.sec else cfg
+    if r.kind == "bool":
+        if not isinstance(value, bool):
+            raise ValueError(f"{r.label} must be on or off")
+    else:
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or value != value:
+            raise ValueError(f"{r.label} must be a number")
+        if not r.lo <= value <= r.hi:
+            raise ValueError(f"{r.label} must be between {r.lo:g} and {r.hi:g}")
+        value = type(getattr(obj, r.name))(value)
+    setattr(obj, r.name, value)
+    return value
 
 
 def load(runtime: str = RUNTIME, fallback: Config | None = None) -> Config:
