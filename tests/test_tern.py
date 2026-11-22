@@ -849,6 +849,34 @@ class Shadows(unittest.TestCase):
         return {"ticker": t, "yes_bid_dollars": str(bid), "yes_ask_dollars": str(ask),
                 "yes_bid_size_fp": "50", "yes_ask_size_fp": "40", "floor_strike": k, "status": "active"}
 
+    def test_rows_carry_settings_version(self):
+        from tern.config import Strategy
+        from tern.shadow import Shadow
+        with tempfile.TemporaryDirectory() as d:
+            sh, S = Shadow(d), Strategy(series=["E"])
+            ms = [self.m("E-T1", 0.92, 0.93, 1)]
+            sh.step("E", 1000.0, ms, S, 1000.0 - 25 * 60 + 1, sv=1)
+            sh.step("E", 1000.0, ms, S, 1000.0 - 20 * 60 + 1, sv=2)
+            self.assertEqual({r["sv"] for r in sh.rows if r["v"] == "base"}, {1, 2})
+            sh.settle({"E-T1": True})
+            self.assertEqual(sh.versions("base"), [1, 2])
+            self.assertEqual(sh.summary(["base"], sv=1)[0]["entries"], 1)
+            self.assertEqual(sh.summary(["base"])[0]["entries"], 2)          # no sv: everything, as before
+            sh.save()
+            again = Shadow(d)
+            self.assertEqual(again.summary(["base"], sv=2)[0]["entries"], 1)  # survives a restart
+
+    def test_old_rows_are_period_zero(self):
+        import json
+        from tern.shadow import Shadow
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, "shadow-settled.jsonl"), "w") as fh:
+                fh.write(json.dumps({"v": "base", "ts": 1.0, "event": "E", "close": 2.0, "ticker": "E-T1", "side": "yes",
+                                     "n": 5, "cost": 0.9, "fee": 0.02, "slot": 25, "pnl": 0.48}) + "\n")
+            sh = Shadow(d)
+            self.assertEqual(sh.versions("base"), [0])
+            self.assertEqual(sh.summary(["base"], sv=0)[0]["entries"], 1)
+
     def test_variants_enter_and_settle(self):
         from tern.config import Strategy
         from tern.shadow import Shadow

@@ -109,6 +109,7 @@ class Shadow:
         self.rows: list[dict] = []                 # open entries
         self.slots: dict[str, list] = {}           # event -> slots taken
         self.agg: dict[str, dict[str, list]] = {}  # variant -> event -> [pnl, contracts, entries, wins, stops]
+        self.by_sv: dict[tuple, dict[str, list]] = {}   # (variant, settings version) -> event -> the same
         self.closes: dict[str, float] = {}         # event -> close time, to order the hours
         self.recent: dict[str, deque] = {}         # variant -> its last settled rows, for the screen's watch view
         self.fees: dict[str, float] = {}           # variant -> entry fees paid on settled rows
@@ -145,7 +146,9 @@ class Shadow:
     # ------------------------------------------------------------ bookkeeping
     def _count(self, r: dict) -> None:
         a = self.agg.setdefault(r["v"], {}).setdefault(r["event"], [0.0, 0.0, 0, 0, 0])
-        a[0] += r["pnl"]; a[1] += r["n"]; a[2] += 1; a[3] += r["pnl"] > 0; a[4] += r.get("exit") == "stop"
+        b = self.by_sv.setdefault((r["v"], r.get("sv", 0)), {}).setdefault(r["event"], [0.0, 0.0, 0, 0, 0])
+        for x in (a, b):
+            x[0] += r["pnl"]; x[1] += r["n"]; x[2] += 1; x[3] += r["pnl"] > 0; x[4] += r.get("exit") == "stop"
         if r.get("close"):
             self.closes[r["event"]] = r["close"]
         self.recent.setdefault(r["v"], deque(maxlen=30)).append(r)
@@ -170,9 +173,10 @@ class Shadow:
         return taker_fee(n, p, self.rate)
 
     # ------------------------------------------------------------ each engine step
-    def step(self, event: str, close: float, markets: list[dict], S, now: float, vol: float | None = None) -> list[str]:
+    def step(self, event: str, close: float, markets: list[dict], S, now: float, vol: float | None = None,
+             sv: int | None = None) -> list[str]:
         """Run every variant on one fresh snapshot of an hourly event; vol is the coin's vol() now.
-        Returns lines for the log."""
+        sv, when given, is the settings version each new row is stamped with. Returns lines for the log."""
         done = self.slots.setdefault(event, [])
         self.closes[event] = close                 # settle() keeps an event's slots until it has closed
         slot = due_slot(close - now, S.minutes, set(done))
@@ -200,7 +204,8 @@ class Shadow:
                 spent += n * unit + fee
                 held[s["ticker"]] = held.get(s["ticker"], 0) + 1
                 self.rows.append({"v": name, "ts": now, "event": event, "close": close, "ticker": s["ticker"],
-                                  "side": s["side"], "n": n, "cost": unit, "fee": fee, "slot": slot, "pnl": None})
+                                  "side": s["side"], "n": n, "cost": unit, "fee": fee, "slot": slot, "pnl": None,
+                                  **({} if sv is None else {"sv": sv})})
         return []
 
     # ------------------------------------------------------------ settlement
@@ -240,12 +245,16 @@ class Shadow:
         return n
 
     # ------------------------------------------------------------ report
-    def summary(self, names: list[str] | None = None) -> list[dict]:
+    def versions(self, name: str) -> list[int]:
+        """The settings versions a variant has settled rows under (0: rows from before versions)."""
+        return sorted(v for n, v in self.by_sv if n == name)
+
+    def summary(self, names: list[str] | None = None, sv: int | None = None) -> list[dict]:
         """One record per variant. hours counts distinct closing hours; curve is the cumulative P&L
-        after each of the last 240 of them, oldest first."""
+        after each of the last 240 of them, oldest first. With sv, only rows made under that settings version."""
         out = []
         for name in names or ORDER:
-            ev = self.agg.get(name, {})
+            ev = self.agg.get(name, {}) if sv is None else self.by_sv.get((name, sv), {})
             by_hour: dict[str, float] = {}
             for e, a in ev.items():
                 by_hour[hour_of(e)] = by_hour.get(hour_of(e), 0.0) + a[0]
@@ -263,7 +272,7 @@ class Shadow:
             curve, run = [], 0.0
             for h in sorted(by_hour, key=lambda h: when[h]):
                 run += by_hour[h]; curve.append(round(run, 2))
-            out.append({"name": name, "entries": entries, "open": sum(1 for r in self.rows if r["v"] == name),
+            out.append({"name": name, "entries": entries, "open": sum(1 for r in self.rows if r["v"] == name and (sv is None or r.get("sv", 0) == sv)),
                         "contracts": n, "pnl": pnl, "per_contract": pnl / n if n else None,
                         "win": wins / entries if entries else None, "stops": stops, "hours": len(hours), "t": t,
                         "curve": curve[-240:]})
