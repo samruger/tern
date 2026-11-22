@@ -1317,6 +1317,74 @@ class EngineProfiles(unittest.TestCase):
             self.assertEqual({r.get("sv") for r in k.shadow.rows}, {4})
 
 
+class ProfileCommands(unittest.TestCase):
+    """The screen's profile commands, and what status.json tells it."""
+    T, desk, profile = EngineProfiles.T, EngineProfiles.desk, EngineProfiles.profile
+
+    def status(self, k):
+        import json
+        k._status()
+        with open(os.path.join(k.fast, "status.json")) as fh:
+            return json.load(fh)
+
+    def view(self, k, **v):
+        import json
+        with open(os.path.join(k.fast, "view.json"), "w") as fh:
+            json.dump({"series": "KXBTCD", "ticker": None, **v}, fh)
+        k._read_view()
+
+    def test_profile_commands(self):
+        with tempfile.TemporaryDirectory() as d:
+            k = self.desk(d)
+            msg = k._command({"op": "profile_new", "name": "try 80"})
+            self.assertIn("try 80", msg)
+            p = next(x for x in k.profiles if x.name == "try 80")
+            self.assertIn("off", k._command({"op": "profile_enable", "id": p.id, "on": False}))
+            self.assertFalse(p.enabled)
+            self.assertEqual(p.log.sv, 1)                                      # on/off is not a settings period
+            msg = k._command({"op": "profile_set", "id": p.id, "key": "strategy.band_lo", "value": 0.82})
+            self.assertIn("settings 2", msg)
+            self.assertEqual(p.cfg.strategy.band_lo, 0.82)
+            self.assertIn("not set", k._command({"op": "profile_set", "id": p.id, "key": "strategy.band_lo", "value": 0.99}))
+            for c in ({"op": "profile_set", "id": "1", "key": "strategy.band_lo", "value": 0.8},
+                      {"op": "profile_enable", "id": "1", "on": False}, {"op": "profile_delete", "id": "1"}):
+                self.assertIn("profile 1", k._command(c))
+            self.assertEqual(k.cfg.strategy.band_lo, 0.75)                     # profile 1 untouched
+            self.assertIn("no profile", k._command({"op": "profile_set", "id": "nope", "key": "enabled", "value": True}))
+            msg = k._command({"op": "profile_delete", "id": p.id})
+            self.assertIn("profiles-deleted", msg)
+            self.assertEqual(k.profiles, [])
+            self.assertTrue(os.listdir(os.path.join(d, "profiles-deleted")))
+
+    def test_pviews_only_for_viewed_profiles(self):
+        with tempfile.TemporaryDirectory() as d:
+            k = self.desk(d)
+            a = self.profile(k, "a", band_lo=0.80)
+            self.profile(k, "b")
+            self.view(k, profile=a.id)
+            st = self.status(k)
+            self.assertEqual([p["id"] for p in st["profiles"]], ["1", "a", "b"])
+            self.assertEqual(st["profiles"][0]["name"], "profile 1")
+            self.assertEqual(list(st["pviews"]), ["a"])
+            pv = st["pviews"]["a"]
+            self.assertEqual(pv["settings"]["strategy.band_lo"], 0.80)
+            self.assertIn("base", pv["views"])
+            self.assertEqual(pv["strategy"]["band_lo"], 0.80)
+            self.assertEqual(pv["views"]["base"]["start"], a.cfg.paper_capital)
+            self.assertIn("checks", pv["gate"])
+
+    def test_deleted_viewed_profile_falls_back(self):
+        with tempfile.TemporaryDirectory() as d:
+            k = self.desk(d)
+            a = self.profile(k, "a")
+            self.view(k, profile=a.id)
+            self.assertEqual(k.view["profile"], a.id)
+            k._command({"op": "profile_delete", "id": a.id})
+            self.view(k, profile=a.id)
+            self.assertIsNone(k.view["profile"])
+            self.assertEqual(self.status(k)["pviews"], {})
+
+
 class Net(unittest.TestCase):
     """The kept-open HTTPS connections, against a fake connection class."""
 

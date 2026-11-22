@@ -155,7 +155,7 @@ class Desk:
         self.events: dict[str, dict] = {}      # series -> {event, title, close, markets, fetched}
         self.hist: dict[str, collections.deque] = {}   # ticker -> (ts, bid, ask)
         self.view = {"series": "KXBTCD", "ticker": None}
-        self.web = {"series": [], "tickers": []}   # what web viewers (tern web) look at: view only, never trades
+        self.web = {"series": [], "tickers": [], "profiles": []}   # what web viewers (tern web) look at: view only, never trades
         self.seeded: set[str] = set()
         self.mode = "paper"
         self.live_error = ""
@@ -956,6 +956,8 @@ class Desk:
             show = (lambda x: "on" if x else "off") if r.kind == "bool" else (lambda x: f"{x:g}")
             msg = f"{label}: {show(was)} → {show(v)}" + (" (the paper book starts there at the next reset)" if key == "paper_capital" else "")
             return msg
+        if op and op.startswith("profile_"):
+            return self._profile_command(op, c)
         if op == "reset_paper":
             self.paper = Book("paper", self.cfg.paper_capital); self.auto = []; self.auto_done = []
             for name in ("paper-trades.jsonl", "paper-curve.jsonl", RULE_LOG):   # its history goes with it
@@ -968,6 +970,83 @@ class Desk:
             self.taken = {k: v for k, v in self.taken.items() if not k.startswith("paper|")}
             return f"paper reset to ${self.cfg.paper_capital:,.2f}"
         return f"unknown command {op!r}"
+
+    def _profile(self, pid) -> "profmod.Profile | None":
+        return next((p for p in self.profiles if p.id == pid), None)
+
+    def _profile_command(self, op: str, c: dict) -> str:
+        pid = c.get("id")
+        if op == "profile_new":
+            name = c.get("name") if isinstance(c.get("name"), str) else ""
+            try:
+                p = profmod.create(self.runtime, name, self.cfg, self.cfg.taker_fee)
+            except ValueError as ex:
+                return f"no new profile: {ex}"
+            self.profiles.append(p)
+            return f"{p.name} made: profile 1's settings, empty records, running from the next slot (settings 1)"
+        if pid == "1":
+            return {"profile_enable": "profile 1 always runs: it holds the paper book and live",
+                    "profile_delete": "profile 1 can't be deleted: it holds the paper book and live",
+                    }.get(op, "profile 1's settings are changed in its own settings box")
+        p = self._profile(pid)
+        if p is None:
+            return f"no profile {pid!r}"
+        if op == "profile_delete":
+            to = profmod.delete(self.runtime, p.id)
+            self.profiles = [x for x in self.profiles if x is not p]
+            if self.view.get("profile") == p.id:
+                self.view = {**self.view, "profile": None}
+            return f"{p.name} deleted: kept in {os.path.relpath(to, self.runtime)}"
+        if op == "profile_enable":
+            p.set("enabled", bool(c.get("on")))
+            return f"{p.name} " + ("on: enters from the next slot" if p.enabled else "off: no new entries; open ones still settle")
+        if op == "profile_set":
+            key = c.get("key")
+            try:
+                was, now = p.set(key, c.get("value"))
+            except ValueError as ex:
+                return f"{p.name}: not set: {ex}"
+            r = profmod.PSET[key]
+            return f"{p.name}: {r.label} {self._show(r, was)} → {self._show(r, now)} (settings {p.log.sv})"
+        return f"unknown command {op!r}"
+
+    @staticmethod
+    def _show(r, v) -> str:
+        if r.kind == "bool":
+            return "on" if v else "off"
+        if r.kind == "p":
+            return f"{v * 100:.0f}¢"
+        if isinstance(v, list):
+            return " ".join(str(x).removeprefix("KX").removesuffix("D") for x in v)
+        return f"{v:g}" if isinstance(v, (int, float)) else str(v)
+
+    def _profile_rows(self, variants: list[dict]) -> list[dict]:
+        """One row per profile for the screen's profiles box, profile 1 first."""
+        out = [{"id": "1", "name": "profile 1", "enabled": True, "variant": self.variant(), "sv": self.slog.sv,
+                "created": 0, "variants": variants}]
+        for p in self.profiles:
+            out.append({"id": p.id, "name": p.name, "enabled": p.enabled, "variant": p.variant, "sv": p.log.sv,
+                        "created": p.created,
+                        "variants": [{**r, "desc": shadowmod.DESC.get(r["name"], ""), "active": r["name"] == p.variant}
+                                     for r in p.shadow.summary()]})
+        return out
+
+    def _pview(self, p: "profmod.Profile", mids: dict, strikes: dict) -> dict:
+        """What the screen needs to show one profile: every variant as a book on its paper start, its settings."""
+        rows = {r["name"]: r for r in p.shadow.summary()}
+        return {"views": {n: {**p.shadow.view(n, r, mids, strikes, p.cfg.paper_capital),
+                              "strategy": self._strat(n, p.cfg.strategy)} for n, r in rows.items()},
+                "strategy": self._strat(p.variant, p.cfg.strategy),
+                "settings": {r.key: (p.enabled if r.key == "enabled" else profmod._get(p.cfg, r.key))
+                             for r in profmod.PROFILE_SETTINGS},
+                "gate": self.checks(p.variant, rows[p.variant]),
+                "log": p.log.lines()[-20:]}
+
+    @staticmethod
+    def _strat(name: str, S) -> dict:
+        lo, hi, cap, mins, spread, coins, mvol = shadowmod.params(name, S)
+        return {**S.__dict__, "variant": name, "band_lo": lo, "band_hi": hi, "cap": cap,
+                "minutes": mins, "max_spread": spread, "series": coins, "max_vol": mvol}
 
     # ------------------------------------------------------------ status
     def _has_keys(self, now: float) -> bool:
@@ -1023,9 +1102,7 @@ class Desk:
                      "gate": self.checks(r["name"], r)} for r in shadow]
 
         def strat(name: str) -> dict:
-            lo, hi, cap, mins, spread, coins, mvol = shadowmod.params(name, self.cfg.strategy)
-            return {**self.cfg.strategy.__dict__, "variant": name, "band_lo": lo, "band_hi": hi, "cap": cap,
-                    "minutes": mins, "max_spread": spread, "series": coins, "max_vol": mvol}
+            return self._strat(name, self.cfg.strategy)
         strategy = strat(self.variant())
         # every variant as if it traded, for the screen's watch view (w): its shadow record shaped like a book
         strikes = {t: m.get("strike") for t, m in self.meta.items()}
@@ -1039,7 +1116,16 @@ class Desk:
               "strategy": strategy, "views": views, "live_cfg": self.cfg.live.__dict__,
               "settings": {r.key: cfgmod.get_setting(self.cfg, r.key) for r in cfgmod.SETTINGS},
               "logs": [list(x) for x in list(self.logs)[-200:]], "results": self.results,
-              "auto_live": self._live_rule_on(gate)}
+              "auto_live": self._live_rule_on(gate), "profiles": self._profile_rows(variants), "pviews": {}}
+        looked = {self.view.get("profile")} | set(self.web.get("profiles", []))
+        for p in self.profiles:
+            if p.id in looked:
+                try:
+                    st["pviews"][p.id] = self._pview(p, mids, strikes)
+                except Exception as ex:          # the screen goes without this profile's views, nothing else
+                    if now - self.last["perr" + p.id] >= 60:
+                        self.last["perr" + p.id] = now
+                        self.log(f"profile {p.name}: status: {ex}", "error")
         _atomic_json(os.path.join(self.fast, "status.json"), st)
 
     # ------------------------------------------------------------ loop
@@ -1051,14 +1137,18 @@ class Desk:
                 self.view = v
         except (OSError, json.JSONDecodeError):
             pass
-        self.web = {"series": [], "tickers": []}
+        ids = {p.id for p in self.profiles}
+        if self.view.get("profile") not in ids:  # profile 1, or one since deleted: profile 1
+            self.view = {**self.view, "profile": None}
+        self.web = {"series": [], "tickers": [], "profiles": []}
         try:                                        # tern web: the coins and strikes its viewers have on screen
             path = os.path.join(self.fast, "view-web.json")
             if time.time() - os.path.getmtime(path) < WEB_VIEW_AGE:   # no viewer left: stop serving them
                 with open(path) as fh:
                     v = json.load(fh)
                 self.web = {"series": [s for s in v.get("series", []) if s in cfgmod.SERIES][:len(cfgmod.SERIES)],
-                            "tickers": [t for t in v.get("tickers", []) if isinstance(t, str)][:WEB_TICKERS]}
+                            "tickers": [t for t in v.get("tickers", []) if isinstance(t, str)][:WEB_TICKERS],
+                            "profiles": [x for x in v.get("profiles", []) if x in ids][:profmod.MAX_PROFILES]}
         except (OSError, json.JSONDecodeError, AttributeError, TypeError):
             pass
 
