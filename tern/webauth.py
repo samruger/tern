@@ -30,6 +30,10 @@ ALL = 30                  # wrong guesses from everyone before every login waits
 def _private_write(path: str, text: str) -> None:
     os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
     tmp = path + ".tmp"
+    try:
+        os.unlink(tmp)                            # a left-over one could have looser permissions
+    except FileNotFoundError:
+        pass
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w") as fh:
         fh.write(text)
@@ -70,12 +74,14 @@ class Auth:
         try:
             exp, nonce, sig = (tok or "").split(".")
             return hmac.compare_digest(self._sig(f"{exp}.{nonce}"), sig) and int(exp) > (now or time.time())
-        except ValueError:
+        except (ValueError, TypeError):           # TypeError: compare_digest on a non-ASCII signature
             return False
 
 
 class Limiter:
-    """Wrong guesses per address and in all. wait() is the seconds until a guess is heard again."""
+    """Wrong guesses per address and in all. A guess is counted when it starts (attempt), not when it
+    has been checked, so guesses sent in parallel cannot all slip in before the first is counted;
+    a right one takes its count back (ok)."""
 
     def __init__(self):
         self.ips: dict[str, list[float]] = {}
@@ -99,13 +105,20 @@ class Limiter:
             w = max(w, self.all[-ALL] + WINDOW - now)
         return max(0.0, w)
 
-    def fail(self, ip: str, now: float | None = None) -> None:
+    def attempt(self, ip: str, now: float | None = None) -> tuple[float, float]:
+        """(seconds to wait, 0) if the guess may not be checked; else (0, the guess's stamp), counted."""
         now = now or time.time()
+        w = self.wait(ip, now)
+        if w:
+            return w, 0.0
         self.ips.setdefault(ip, []).append(now)
         self.all.append(now)
+        return 0.0, now
 
-    def ok(self, ip: str) -> None:
+    def ok(self, ip: str, stamp: float) -> None:
         self.ips.pop(ip, None)
+        if stamp in self.all:
+            self.all.remove(stamp)
 
 
 def make_cert(ips: list[str], cert: str | None = None, key: str | None = None) -> str:

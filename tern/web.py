@@ -17,9 +17,12 @@ import html
 import json
 import os
 import re
+import socket
 import ssl
+import sys
 import threading
 import time
+import traceback
 import uuid
 from http.cookies import CookieError, SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -437,19 +440,69 @@ button{background:#7aa2f7;color:#1a1b26;border:0;cursor:pointer}p{margin:0;color
 <button>sign in</button><p>{msg}</p></form></body></html>"""
 
 LOOPBACK = ("127.0.0.1", "::1", "localhost")
+CSP = ("default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; "
+       "font-src 'self'; img-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'")
 
 
 class Server(ThreadingHTTPServer):
     """Each connection gets its own thread, and its TLS handshake happens there, not in the accept loop,
-    so a client that connects and says nothing holds up only itself, for at most TIMEOUT seconds."""
+    so a client that connects and says nothing holds up only itself, for at most TIMEOUT seconds a read.
+    Connections are capped in all and per address, so a flood of idle ones cannot pile up threads.
+    Plain http:// on the HTTPS port gets a redirect to https:// instead of a reset."""
     daemon_threads = True
+    request_queue_size = 64
     TIMEOUT = 20
+    MAX_CONN, MAX_PER_IP = 64, 16
     ctx = None
+
+    def __init__(self, *a, **kw):
+        self.conns: dict[str, int] = {}
+        self.conn_lock = threading.Lock()
+        super().__init__(*a, **kw)
+
+    def process_request(self, request, client_address):
+        ip = client_address[0]
+        with self.conn_lock:
+            full = sum(self.conns.values()) >= self.MAX_CONN or self.conns.get(ip, 0) >= self.MAX_PER_IP
+            if not full:
+                self.conns[ip] = self.conns.get(ip, 0) + 1
+        if full:
+            self.shutdown_request(request); return
+        try:
+            super().process_request(request, client_address)
+        except Exception:
+            self._release(ip); raise
+
+    def handle_error(self, request, client_address):
+        """A browser or scanner hanging up mid-request is normal on the internet: say nothing about it."""
+        if isinstance(sys.exc_info()[1], (ConnectionError, TimeoutError, ssl.SSLError)):
+            return
+        super().handle_error(request, client_address)
+
+    def _release(self, ip: str) -> None:
+        with self.conn_lock:
+            n = self.conns.get(ip, 1) - 1
+            if n > 0:
+                self.conns[ip] = n
+            else:
+                self.conns.pop(ip, None)
+
+    def process_request_thread(self, request, client_address):
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self._release(client_address[0])
 
     def finish_request(self, request, client_address):
         request.settimeout(self.TIMEOUT)
         if self.ctx is None:
             return super().finish_request(request, client_address)
+        try:
+            first = request.recv(1, socket.MSG_PEEK)
+        except OSError:
+            return
+        if first and first != b"\x16":            # not a TLS handshake: someone typed http://
+            return self._to_https(request)
         try:
             tls = self.ctx.wrap_socket(request, server_side=True)
         except (ssl.SSLError, OSError):
@@ -458,6 +511,21 @@ class Server(ThreadingHTTPServer):
             super().finish_request(tls, client_address)
         finally:
             tls.close()
+
+    def _to_https(self, request) -> None:
+        try:
+            head = request.recv(4096).decode("latin-1")
+            path = (head.split(" ", 2)[1:2] or ["/"])[0]
+            m = re.search(r"^host:[ \t]*([A-Za-z0-9.\-]+|\[[0-9A-Fa-f:.]+\])(:\d+)?[ \t]*\r?$", head, re.M | re.I)
+            if m and path.startswith("/"):
+                to = f"https://{m.group(1)}:{self.server_address[1]}{path}"
+                request.sendall(f"HTTP/1.1 301 Moved Permanently\r\nLocation: {to}\r\nContent-Length: 0\r\n"
+                                f"Connection: close\r\n\r\n".encode("latin-1"))
+            else:
+                request.sendall(b"HTTP/1.1 400 Bad Request\r\nContent-Length: 11\r\nConnection: close\r\n\r\n"
+                                b"use https:/")
+        except (OSError, UnicodeError):
+            pass
 
 
 def serve(runtime: str = cfgmod.RUNTIME, host: str = "127.0.0.1", port: int = 8787) -> None:
@@ -469,6 +537,7 @@ def serve(runtime: str = cfgmod.RUNTIME, host: str = "127.0.0.1", port: int = 87
         raise SystemExit("tern web: off localhost it needs a login and HTTPS first:\n"
                          "  python3 -m tern web-password\n  python3 -m tern web-cert")
     limiter, guard = webauth.Limiter(), threading.Lock()
+    cookie_name = "__Host-" + webauth.COOKIE if tls else webauth.COOKIE   # __Host-: only this host, https, path /
     hub = Hub(runtime)
     look = {**_foot_colors(), "attr": {"bold": curses.A_BOLD, "dim": curses.A_DIM, "reverse": curses.A_REVERSE}}
     fonts = _font_files()
@@ -494,6 +563,7 @@ def serve(runtime: str = cfgmod.RUNTIME, host: str = "127.0.0.1", port: int = 87
             self.send_header("X-Content-Type-Options", "nosniff")
             self.send_header("X-Frame-Options", "DENY")
             self.send_header("Referrer-Policy", "no-referrer")
+            self.send_header("Content-Security-Policy", CSP)
             for k, v in (extra or {}).items():
                 self.send_header(k, v)
             self.end_headers()
@@ -503,7 +573,7 @@ def serve(runtime: str = cfgmod.RUNTIME, host: str = "127.0.0.1", port: int = 87
             self.reply(303, b"", "text/plain", extra={"Location": to, **({"Set-Cookie": cookie} if cookie else {})})
 
         def cookie(self, value: str, age: int) -> str:
-            return (f"{webauth.COOKIE}={value}; Max-Age={age}; Path=/; HttpOnly; SameSite=Strict"
+            return (f"{cookie_name}={value}; Max-Age={age}; Path=/; HttpOnly; SameSite=Strict"
                     + ("; Secure" if tls else ""))
 
         def signed_in(self) -> bool:
@@ -514,7 +584,7 @@ def serve(runtime: str = cfgmod.RUNTIME, host: str = "127.0.0.1", port: int = 87
                 jar.load(self.headers.get("Cookie") or "")
             except CookieError:
                 return False
-            m = jar.get(webauth.COOKIE)
+            m = jar.get(cookie_name)
             return bool(m) and auth.valid(m.value)
 
         def login_page(self, msg: str = "", code: int = 200) -> None:
@@ -554,15 +624,13 @@ def serve(runtime: str = cfgmod.RUNTIME, host: str = "127.0.0.1", port: int = 87
             ip = self.client_address[0]
             pw = parse_qs(data.decode(errors="replace")).get("password", [""])[0]
             with guard:
-                wait = limiter.wait(ip)
+                wait, stamp = limiter.attempt(ip)
             if wait:
                 return self.login_page(f"too many wrong tries: wait {int(wait // 60) + 1} min", 429)
             if auth.check(pw):
                 with guard:
-                    limiter.ok(ip)
+                    limiter.ok(ip, stamp)
                 return self.redirect("/", self.cookie(auth.token(), webauth.TTL))
-            with guard:
-                limiter.fail(ip)
             time.sleep(1)
             self.login_page("wrong password", 401)
 
@@ -583,6 +651,9 @@ def serve(runtime: str = cfgmod.RUNTIME, host: str = "127.0.0.1", port: int = 87
                 body = json.dumps(hub.handle(req), separators=(",", ":"), ensure_ascii=False).encode()
             except (ValueError, TypeError) as ex:
                 return self.reply(400, str(ex).encode(), "text/plain")
+            except Exception:
+                traceback.print_exc()
+                return self.reply(500, b"tern web hit an error drawing the screen", "text/plain")
             self.reply(200, body, "application/json; charset=utf-8")
 
     srv = Server((host, port), H)

@@ -1271,15 +1271,20 @@ class WebLogin(unittest.TestCase):
     def test_limiter(self):
         from tern import webauth
         lim = webauth.Limiter()
-        for _ in range(webauth.PER_IP):
-            self.assertEqual(lim.wait("1.1.1.1", 100.0), 0)
-            lim.fail("1.1.1.1", 100.0)
-        self.assertGreater(lim.wait("1.1.1.1", 101.0), 0)
+        for _ in range(webauth.PER_IP):                                      # counted as they start, so
+            self.assertEqual(lim.attempt("1.1.1.1", 100.0)[0], 0)            # parallel guesses cannot all slip in
+        self.assertGreater(lim.attempt("1.1.1.1", 100.0)[0], 0)
         self.assertEqual(lim.wait("2.2.2.2", 101.0), 0)                       # others still get in
         self.assertEqual(lim.wait("1.1.1.1", 100.0 + webauth.WINDOW + 1), 0)  # and it passes
         lim = webauth.Limiter()
+        for i in range(webauth.PER_IP - 1):
+            lim.attempt("1.1.1.1", 100.0)
+        _, stamp = lim.attempt("1.1.1.1", 100.0)
+        lim.ok("1.1.1.1", stamp)                                              # a right password clears the count
+        self.assertEqual((lim.wait("1.1.1.1", 101.0), len(lim.all)), (0, webauth.PER_IP - 1))
+        lim = webauth.Limiter()
         for i in range(webauth.ALL):
-            lim.fail(f"10.0.0.{i}", 100.0)
+            lim.attempt(f"10.0.0.{i}", 100.0)
         self.assertGreater(lim.wait("3.3.3.3", 101.0), 0)                     # many addresses: everyone waits
 
     def test_server_needs_login_and_https(self):
@@ -1318,14 +1323,34 @@ class WebLogin(unittest.TestCase):
                            {"Content-Type": "application/x-www-form-urlencoded"})
                 self.assertEqual(r.status, 303)
                 ck = r.getheader("Set-Cookie")
-                for flag in ("HttpOnly", "Secure", "SameSite=Strict"):
+                for flag in ("__Host-tern_s=", "HttpOnly", "Secure", "SameSite=Strict"):
                     self.assertIn(flag, ck)
                 cookie = {"Cookie": ck.split(";", 1)[0]}
                 r, body = ask("GET", "/look", headers=cookie)
                 self.assertEqual(r.status, 200)
                 self.assertIn("fg", json.loads(body))
+                self.assertIn("frame-ancestors 'none'", r.getheader("Content-Security-Policy"))
+                for bad in ("__Host-tern_s=1.2.\xe9", "__Host-tern_s=" + "9" * 12 + ".a.b", "garbage;;=="):
+                    self.assertEqual(ask("GET", "/look", headers={"Cookie": bad})[0].status, 401)
+                self.assertEqual(ask("POST", "/frame", b"{", cookie)[0].status, 400)
+                self.assertEqual(ask("POST", "/frame", b"[]", cookie)[0].status, 400)
+                self.assertEqual(ask("POST", "/frame", b'{"w": "x"}', cookie)[0].status, 400)
+                r, body = ask("POST", "/frame", b'{"w": 120, "h": 40}', cookie)
+                self.assertEqual((r.status, len(json.loads(body)["rows"])), (200, 40))
                 r, _ = ask("GET", "/logout", headers=cookie)
                 self.assertIn("Max-Age=0", r.getheader("Set-Cookie"))
+                p = http.client.HTTPConnection("127.0.0.1", port, timeout=10)    # http:// on the https port
+                p.request("GET", "/look")
+                r = p.getresponse()
+                self.assertEqual((r.status, r.getheader("Location")), (301, f"https://127.0.0.1:{port}/look"))
+                wrong = []                                                    # guesses in parallel: only 5 are heard
+                def guess():
+                    g = http.client.HTTPSConnection("localhost", port, context=ctx, timeout=30)
+                    g.request("POST", "/login", b"password=wrongwrongwrong", {"Content-Type": "application/x-www-form-urlencoded"})
+                    wrong.append(g.getresponse().status)
+                ts = [threading.Thread(target=guess) for _ in range(12)]
+                [t.start() for t in ts]; [t.join() for t in ts]
+                self.assertEqual(sorted(wrong).count(401), webauth.PER_IP)       # the right password cleared the earlier one
 
 
 if __name__ == "__main__":
