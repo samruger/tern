@@ -519,6 +519,7 @@ class Screen:
         self.prefs_path = os.path.join(runtime, "dash.json")
         self.hidden = clean_hidden(None)       # each view's boxes turned off with 1-8
         self.page = 1                          # p flips page 1 (trade) / page 2 (compare)
+        self.page_spots: list[tuple[int, int, int, int]] = []   # (y, x0, x1, page) of the page names on the border
         self.panel_key = ""                    # the number drawn in the title of the box being drawn
         self.drawing = ""                      # the box being drawn, so box() can mark the focused one
         self.focus = "ladder"                  # the box ↑↓ scroll; ←→ move it
@@ -2026,7 +2027,7 @@ class Screen:
             self.put(0, 0, f"tern needs at least 100x30 (now {W}x{H})", self.P(RED, bold=True)); self.s.refresh(); return
         self.header(H, W)
         self.rects = {}
-        self.page_spots: list[tuple[int, int, int, int]] = []   # (y, x0, x1, page) of the page names on the border
+        self.page_spots = []
         boxes = self.layout(H, W)
         names = [b[0] for b in boxes if b[0] in SCROLLS]
         if names and self.focus not in names:          # the focused box went off screen (page, hiding, size)

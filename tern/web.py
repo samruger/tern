@@ -283,11 +283,10 @@ class WebScreen(dash.Screen):
             return
         if self.overlay:                         # help / gate: scroll keys scroll, any other key closes
             self.key(code); return
-        if self.in_profiles() and name in ("Enter", " ", "n", "D"):
-            if name == "Enter":                  # viewing a profile changes nothing: allowed
-                self.key(code)
-            else:
-                self.say(PROFILE_ONLY)
+        if name == "Enter" and self.focus == "profiles" and self.in_profiles():
+            self.key(code)                       # viewing a profile changes nothing: allowed
+        elif self.in_profiles() and name in (" ", "n", "D"):
+            self.say(PROFILE_ONLY)
         elif name in VIEW_KEYS:
             self.key(code)
         elif name in CONTROL_KEYS:
@@ -300,6 +299,11 @@ class WebScreen(dash.Screen):
             self.wheel(cy, cx, d)
 
     def click(self, cy: int, cx: int) -> None:
+        for y, x0, x1, n in self.page_spots:     # a page's name on the bottom border: show that page
+            if y == cy and x0 <= cx < x1 and not self.overlay:
+                if n != self.page:
+                    self.press("p")
+                return
         for y, x0, x1, k in self.hits:
             if y == cy and x0 <= cx < x1:
                 self.press(k); return

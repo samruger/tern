@@ -1961,6 +1961,30 @@ class Web(unittest.TestCase):
             self.assertEqual(f["prefs"]["hidden"], {"page1": [], "page2": ["log"], "merged": []})
             self.assertEqual(len(f["rows"]), 40)
 
+    def test_web_pages_prefs(self):
+        from tern.web import Hub
+        with tempfile.TemporaryDirectory() as d:
+            self.status(d)
+            hub = Hub(d)
+            f = hub.handle({"w": 111, "h": 33, "prefs": {"page": 2, "hidden": {"page2": ["log"]}}})
+            self.assertEqual((f["prefs"]["page"], f["prefs"]["hidden"]["page2"]), (2, ["log"]))
+            old = hub.handle({"w": 111, "h": 33, "prefs": {"hidden": ["contract"], "slot3": "variants"}})
+            self.assertEqual((old["prefs"]["page"], old["prefs"]["hidden"]["page1"]), (1, ["contract"]))
+            self.assertNotIn("slot3", old["prefs"])
+            sid = f["sid"]
+            go = lambda **req: hub.handle({"sid": sid, "w": 111, "h": 33, **req})
+            f = go(key="Enter")                                                 # focus on variants: picking is control
+            self.assertIn("view only", "".join(t for t, _ in f["rows"][31]))
+            f = go(key="p")
+            self.assertEqual(f["prefs"]["page"], 1)
+            row = "".join(t for t, _ in f["rows"][31])
+            f = go(click={"y": 31, "x": row.index("compare")})                  # clicking a page's name shows it
+            self.assertEqual(f["prefs"]["page"], 2)
+            f = go(click={"y": 31, "x": row.index("compare")})                  # the one shown: stays
+            self.assertEqual(f["prefs"]["page"], 2)
+            self.assertEqual(os.listdir(os.path.join(d, "cmd")), [])
+            self.assertFalse(os.path.exists(os.path.join(d, "dash.json")))
+
     def test_settings_box_opens_but_changes_nothing(self):
         from tern.web import Hub
         with tempfile.TemporaryDirectory() as d:
