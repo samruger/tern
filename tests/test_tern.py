@@ -2052,6 +2052,35 @@ class Pages(unittest.TestCase):
                     self.assertIn("in ", row)                                   # when the next slot is
                     self.assertIn("closes", row)
 
+    def test_shadow_log_lines_print_as_columns(self):
+        with tempfile.TemporaryDirectory() as d:
+            k, p, scr = self.setup(d)
+            k._command({"op": "rename", "variant": "band90", "name": "high favs"})
+            line = ("shadow: KXETHD-E1 settled · base +234.14 · band90 +98.04 · cap1 +71.67 · band80 +18.27 · late +28.65"
+                    " · tight1 +4.96 · band75 -38.35 · early -38.79 · multi -1,132.43 · calm +47.12")
+            for _ in range(4):                                                 # more than the box holds
+                k.log(line)
+            k.log("paper: after it"); scr.flash = ""; self.sync()
+            rows = scr.log_rows([[1.0, "info", line], [2.0, "info", "shadow: odd line · no cells"]], 104)
+            self.assertEqual(rows[0], (1.0, "info", "shadow: KXETHD-E1 settled", 0))
+            self.assertEqual([r[3] for r in rows], [0, 1, 2, 3, 0])            # 4 columns a row at 104 wide
+            self.assertEqual(rows[1][2][1], ("high favs ", "   +98.04"))       # display names, P&L right-aligned
+            self.assertEqual(rows[-1][2], "shadow: odd line · no cells")       # not the shape: left as it is
+            H, W = scr.s.getmaxyx()
+            text = self.text()
+            self.assertIn("shadow: KXETHD-E1 settled", text)
+            self.assertNotIn("+234.14 · band90", text)
+            self.assertRegex(text, r"base +\+234\.14 +high favs +\+98\.04")
+            for r in scr.s.ch:                                                  # nothing runs past the box
+                self.assertIn("".join(r)[-1], "│╯╮ ")
+            scr.focus = "log"
+            for _ in range(10):
+                scr.scroll("log", -1)
+            self.assertIsNotNone(scr.log_anchor)
+            for _ in range(10):
+                scr.scroll("log", 1)
+            self.assertIsNone(scr.log_anchor)                                  # back to following new lines
+
     def test_page2_bottom_row_has_only_its_own_hints(self):
         from tern import themes
         with tempfile.TemporaryDirectory() as d:
