@@ -2062,20 +2062,21 @@ class Pages(unittest.TestCase):
                 k.log(line)
             k.log("paper: after it"); scr.flash = ""; self.sync()
             rows = scr.log_rows([[1.0, "info", line], [2.0, "info", "shadow: odd line · no cells"]], 104)
-            self.assertEqual(rows[0], (1.0, "info", "shadow: KXETHD-E1 settled", 0))
-            self.assertEqual([r[3] for r in rows], [0, 1, 2, 3, 4, 0])         # 3 of these wide ones fit at 104
-            self.assertEqual(max(len(r[2]) for r in scr.log_rows([[1.0, "info", line]], 400) if r[3]), 4)   # 4 at most
-            self.assertEqual(rows[1][2][1], ("high favs ", "   +98.04"))       # display names, P&L right-aligned
-            self.assertEqual(rows[-1][2], "shadow: odd line · no cells")       # not the shape: left as it is
-            H, W = scr.s.getmaxyx()
+            self.assertEqual(rows[0][:4], (1.0, "info", "shadow: KXETHD-E1 settled", 0))
+            self.assertEqual([r[3] for r in rows], [0, 1, 2, 3, 0])             # 3 a row: 10 variants in 4 rows
+            self.assertEqual([len(r[4]) for r in rows[:4]], [3, 3, 3, 1])
+            self.assertEqual({len(r[4]) for r in scr.log_rows([[1.0, "info", line]], 400)}, {3, 1})   # 3 however wide
+            self.assertEqual(rows[0][4][1], ("high favs ", "   +98.04"))       # display names, P&L right-aligned
+            self.assertEqual(rows[-1][2:5], ("shadow: odd line · no cells", 0, None))   # not the shape: as it is
             text = self.text()
-            self.assertIn("shadow: KXETHD-E1 settled", text)
             self.assertNotIn("+234.14 · band90", text)
-            self.assertRegex(text, r"base +\+234\.14 +high favs +\+98\.04")
             lines = text.splitlines()
-            head = next(l for l in lines if "shadow: KXETHD-E1 settled" in l)
-            grid = next(l for l in lines if "+234.14" in l)
-            self.assertEqual(grid.index("base"), head.index("KXETHD-E1"))      # the grid starts after "shadow: "
+            first = next(l for l in lines if "shadow: KXETHD-E1 settled" in l)
+            self.assertRegex(first, r"settled  base +\+234\.14   high favs +\+98\.04   cap1 +\+71\.67 +│$")
+            under = lines[lines.index(first) + 1]
+            self.assertNotRegex(under, r"\d\d:\d\d")                           # no time on the rows under it
+            for a, b in (("base", "band80"), ("high favs", "late"), ("cap1", "tight1")):   # each under the one above
+                self.assertEqual(first.index(a), under.index(b), (a, b))
             for r in scr.s.ch:                                                  # nothing runs past the box
                 self.assertIn("".join(r)[-1], "│╯╮ ")
             scr.focus = "log"
