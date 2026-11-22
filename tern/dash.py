@@ -327,15 +327,15 @@ HELP_BOXES = [
     ("", "", "  your position; ★ marks the band. ↑↓ picks the strike the contract box shows"),
     ("⁴", "book", "equity, P&L, cash, at risk, fees, the paper record of the rule, then open"),
     ("", "", "  positions, settlements and fills; (v) switches paper / live"),
-    ("⁵", "equity", "that book's equity by the minute"),
-    ("⁶", "log", "what the engine did, newest at the bottom; scroll back with ↑↓"),
+    ("⁵", "log", "what the engine did, newest at the bottom; scroll back with ↑↓ (page 2: ⁴)"),
     ("¹", "variants", "page 2: each variant's hours, entries, P&L, ¢ a contract, win rate, t,"),
     ("", "", "  and gate progress (yellow: still short); ● in use; the highlighted"),
     ("", "", "  one's P&L by hour below"),
     ("²", "profiles", "page 2: profile 1 (the desk) and the profiles you made, each running"),
     ("", "", "  every variant under its own settings, paper only; ● is the one shown"),
-    ("", "pages", "(p) flips page 1 (boxes 1-6) and page 2 (1 variants, 2 profiles, 3 equity,"),
-    ("", "", "  4 log); \"page 1/2\" on the bottom border says which. A screen big enough"),
+    ("³", "equity", "page 2: that book's equity by the minute"),
+    ("", "pages", "(p) flips page 1 (boxes 1-5) and page 2 (1 variants, 2 profiles, 3 equity,"),
+    ("", "", "  4 log); \"page 1/2\" at the log's bottom right says which. A screen big enough"),
     ("", "", "  for every box shows them all as one, numbered 1-8. A box's number zooms it"),
     ("", "", "  to the whole screen; \"3 back\" on the bottom border: the same number restores"),
     ("", "status", "bottom row: PAPER or LIVE, the coin's price and 1h change, the hourly event"),
@@ -362,8 +362,8 @@ HELP_KEYS = [
                ("mouse wheel", "scroll the box under the pointer"),
                ("tab S-tab", "next / previous coin")]),
      ("look", [("p", "page 1 / page 2"),
-               ("1-6", "page 1: zoom spot, contract, ladder,"),
-               ("", "book, equity or log to the whole screen"),
+               ("1-5", "page 1: zoom spot, contract, ladder,"),
+               ("", "book or log to the whole screen"),
                ("1-4", "page 2: variants, profiles, equity, log"),
                ("", "(the same number again goes back)"),
                ("c", "spot chart span: 5m 15m 1h 24h"),
@@ -420,7 +420,7 @@ BOXES = ["spot", "contract", "ladder", "book", "equity", "log", "variants", "pro
 PANELS = BOXES                                   # older name, kept for the web and tests
 # each view's rows of boxes, top to bottom; p flips page1 / page2, and a screen big enough for every box at its
 # smallest shows them all as one (merged). A box's number zooms it to the whole screen; the same number restores.
-PAGES = {"page1": [("spot", "contract"), ("ladder", "book"), ("equity", "log")],
+PAGES = {"page1": [("spot", "contract"), ("ladder", "book"), ("log",)],          # equity is page 2's
          "page2": [("variants",), ("profiles", "equity"), ("log",)],
          "merged": [("spot", "contract"), ("ladder", "book"), ("variants", "profiles"), ("equity", "log")]}
 PAGE_NAMES = {1: "trade", 2: "compare"}
@@ -1677,23 +1677,18 @@ class Screen:
         else:
             page_seg = ("p", "age ", str(self.page), "/2") if view != "merged" else ()   # ─page 1/2─
         paged = not flashing and bool(page_seg)
-        lo = 2 + sum(map(len, page_seg)) + 3 if paged else 1   # the moved hints stay right of it
         orphans = [k for name, fn in PANEL_KEYS.items() if name not in self.rects for k in fn(self)]
         width = lambda segs: sum(sum(map(len, seg)) + 3 for seg in segs) - 1
         for key in ORPHAN_DROP:                       # too many for the row: the least needed go first, tab last
-            if width(orphans) <= W - 3 - lo:
+            if width(orphans + ([page_seg] if paged else [])) <= W - 4:
                 break
             orphans = [seg for seg in orphans if isinstance(seg, str) or seg[0] != key]
-        if orphans:
-            border = P(P.grey)
-            need = width(orphans)
-            rx = W - 3 - need if self.rects else max(lo, (W - need) // 2)
-            for seg in orphans:
-                if rx >= lo:
-                    self.hint(H - 2, rx, seg, border)
-                rx += sum(map(len, seg)) + 3
-        if paged:                                     # a flash takes the row's left end instead
-            self.hint(H - 2, 2, page_seg, P(P.grey))
+        segs = orphans + ([page_seg] if paged else [])   # ─page 1/2─ (or ─3 back─) last, at the right end
+        rx = W - 3 - width(segs)
+        for seg in segs:
+            if rx >= 1:
+                self.hint(H - 2, rx, seg, P(P.grey))
+            rx += sum(map(len, seg)) + 3
         if flashing:
             msg = f" {self.flash} "[:max(0, W - 4)]
             self.put(H - 2, 2, msg, P(YELLOW, bold=True) | curses.A_REVERSE)

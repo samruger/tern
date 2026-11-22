@@ -177,12 +177,12 @@ python3 -m tern live-check
 
 ## The screen
 
-The boxes sit on two pages, and `p` flips between them. Page 1 · trade has spot, contract, ladder, book,
-equity and log. Page 2 · compare has variants across the full width, then profiles and equity, then log. Each
+The boxes sit on two pages, and `p` flips between them. Page 1 · trade has spot, contract, ladder, book
+and log. Page 2 · compare has variants across the full width, then profiles and equity, then log. Each
 page fits itself to the terminal: tables keep all their rows and the charts give up height first. A screen big
 enough for every box (about 150×45) shows them all as one page. Each page numbers its boxes in reading order
-(page 1: 1–6; page 2: 1 variants, 2 profiles, 3 equity, 4 log), and `page 1/2` on the bottom border says which
-page it is. A box's number zooms it to the whole screen; the same number again (the bottom border says `3 back`)
+(page 1: 1–5, log is 5; page 2: 1 variants, 2 profiles, 3 equity, 4 log), and `page 1/2` at the log's bottom
+right says which page it is. A box's number zooms it to the whole screen; the same number again (the bottom border says `3 back`)
 restores the page, and `p` restores it and flips.
 
 | Box | What it shows |
@@ -192,12 +192,12 @@ restores the page, and `p` restores it and flips.
 | ² contract | the selected strike's YES price this hour, seeded from Kalshi's minute candles, with the rule's band edges marked |
 | ³ ladder | every strike, high to low: bid, ask, probability bar, spread, volume, your position. ★ marks strikes in the rule's band |
 | ⁴ book | equity, P&L, cash, at risk, fees, the rule's paper record, and open positions. `v` switches between paper and live |
-| ⁵ equity | that book's equity by the minute |
-| ⁶ log | what the engine did |
+| ⁵ log | what the engine did (page 2: ⁴) |
 | ¹ variants (page 2) | each variant's record and gate progress, ● on the one in use, and the highlighted one's P&L by hour |
 | ² profiles (page 2) | profile 1 and the profiles you made (see Profiles) |
+| ³ equity (page 2) | that book's equity by the minute |
 
-Keys: `p` page 1 / page 2 · `↑↓` / `PgUp PgDn` move in the focused box · `←→` focus · `1`–`6` (page 1), `1`–`4` (page 2) or `1`–`8` (one big screen) zoom a box to the whole screen, the same number goes back · `enter` use the highlighted variant or view the highlighted profile (whichever box has focus) · `w` watch a variant (view only) · `tab` next coin · `r` rule trades this coin ·
+Keys: `p` page 1 / page 2 · `↑↓` / `PgUp PgDn` move in the focused box · `←→` focus · `1`–`5` (page 1), `1`–`4` (page 2) or `1`–`8` (one big screen) zoom a box to the whole screen, the same number goes back · `enter` use the highlighted variant or view the highlighted profile (whichever box has focus) · `w` watch a variant (view only) · `tab` next coin · `r` rule trades this coin ·
 `c` chart range · `v` book · `L` arm/disarm live · `g` gate · `R` reset paper ·
 `s` start the engine · `?` help · `q` close (the engine keeps running).
 
