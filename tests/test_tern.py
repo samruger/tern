@@ -2052,7 +2052,7 @@ class Pages(unittest.TestCase):
                     self.assertIn("in ", row)                                   # when the next slot is
                     self.assertIn("closes", row)
 
-    def test_page_hint_leaves_moved_hints_whole(self):
+    def test_page2_bottom_row_has_only_its_own_hints(self):
         from tern import themes
         with tempfile.TemporaryDirectory() as d:
             k, p, scr = self.setup(d)
@@ -2061,8 +2061,9 @@ class Pages(unittest.TestCase):
             for H, W in ((30, 100), (33, 111)):
                 scr.flash = ""; self.size(H, W)
                 row = "".join(scr.s.ch[H - 2])
-                self.assertIn("tab next coin", row, (W, row))                   # the moved hints keep tab, whole
                 self.assertIn("page 2/2", row, (W, row))
+                for page1 in ("tab next coin", "chart", "view", "Live", "Reset", "theme"):   # page 1's, not repeated
+                    self.assertNotIn(page1, row, (W, row))
 
     def test_profile_keys_follow_the_focus(self):
         with tempfile.TemporaryDirectory() as d:

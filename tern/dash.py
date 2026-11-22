@@ -1700,8 +1700,9 @@ class Screen:
         self.write_view()
 
     def footer(self, H: int, W: int) -> None:
-        """Row H-2 is the bottom border of the lowest boxes. It carries the hints of any box not on
-        screen (so tab, ?, q... never go missing) at its right end, and a flash message at its left."""
+        """Row H-2 is the bottom border of the lowest boxes. Zoomed, it carries the hints of the boxes not on
+        screen (so tab, ?, q... never go missing) at its right end; page 2 only its page hint; a flash message
+        goes at its left."""
         P = self.P
         flashing = bool(self.flash) and time.time() - self.flash_at < 8
         view = self.view(H, W)
@@ -1711,7 +1712,10 @@ class Screen:
         else:
             page_seg = ("p", "age ", str(self.page), "/2") if view != "merged" else ()   # ─page 1/2─
         paged = not flashing and bool(page_seg)
-        orphans = [k for name, fn in PANEL_KEYS.items() if name not in self.rects for k in fn(self)]
+        # page 2 shows only its own hints and the page one: page 1's keys are page 1's (they still work, and h
+        # lists them); a zoomed box hides every other, so then theirs move here
+        orphans = [] if view == "page2" and not z else \
+            [k for name, fn in PANEL_KEYS.items() if name not in self.rects for k in fn(self)]
         width = lambda segs: sum(sum(map(len, seg)) + 3 for seg in segs) - 1
         for key in ORPHAN_DROP:                       # too many for the row: the least needed go first, tab last
             if width(orphans + ([page_seg] if paged else [])) <= W - 4:
