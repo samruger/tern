@@ -91,7 +91,7 @@ once it has. Press `L` again to return to paper. Once live:
 The engine also runs these on paper, side by side, each with its own record
 and real fees. They were written down before seeing any data, so what they
 show after a few weeks is out of sample. `python3 -m tern report`, `g`, or the
-variants box (press `3` twice) compares them. The paper and live books trade
+variants box (`p`, page 2) compares them. The paper and live books trade
 whichever one `strategy.variant` names (`base` by default). Pick it in the
 variants box with `↑↓` and `enter`. While live is on or armed, switching asks
 you to type `live`. Choosing whichever looks best after watching them flatters
@@ -139,7 +139,7 @@ from timing.
 
 - **Profile 1 is the desk:** the paper book, live and the gate, with its files
   where they always were. Only profile 1 ever trades live.
-- **Make one** with `3` (three times, to the profiles box), then `n`. It starts
+- **Make one** in the profiles box (`p`, page 2; `←→` to focus it), then `n`. It starts
   with profile 1's settings and empty records. `enter` views it: the book,
   equity, variants box and settings box then show that profile. Viewing changes
   nothing about what trades. `space` turns one off (no new entries, open ones
@@ -177,18 +177,25 @@ python3 -m tern live-check
 
 ## The screen
 
+The boxes sit on two pages, and `p` flips between them. Page 1 · trade has spot, contract, ladder, book,
+equity and log. Page 2 · compare has variants across the full width, then profiles and equity, then log. Each
+page fits itself to the terminal: tables keep all their rows and the charts give up height first. A screen big
+enough for every box (about 130×46) shows them all as one page. A box keeps its number on every page, and
+hiding one hides it on that page only.
+
 | Box | What it shows |
 |---|---|
-| header | paper/live, spot and 1-hour change, the event and its countdown, the rule's next slot, engine health |
+| status line | paper/live, spot and 1-hour change, the event and its countdown, the rule's next slot, engine health |
 | ¹ spot | Coinbase spot (a BRTI constituent), 15 minutes at 1 s or 24 hours at 1 min (`c`), with the selected strike as a dotted line |
 | ² contract | the selected strike's YES price this hour, seeded from Kalshi's minute candles, with the rule's band edges marked |
-| ³ ladder / variants | `3` cycles ladder → variants → hidden. The variants box shows each variant's record and gate progress, ● on the one in use, and the highlighted one's P&L by hour |
 | ³ ladder | every strike, high to low: bid, ask, probability bar, spread, volume, your position. ★ marks strikes in the rule's band |
 | ⁴ book | equity, P&L, cash, at risk, fees, the rule's paper record, and open positions. `v` switches between paper and live |
 | ⁵ equity | that book's equity by the minute |
-| log | what the engine did |
+| ⁶ log | what the engine did |
+| ⁷ variants | page 2: each variant's record and gate progress, ● on the one in use, and the highlighted one's P&L by hour |
+| ⁸ profiles | page 2: profile 1 and the profiles you made (see Profiles) |
 
-Keys: `↑↓` / `PgUp PgDn` move in the focused box · `←→` focus · `1`–`6` show/hide a box (`3` cycles ladder/variants/hidden) · `enter` use the highlighted variant · `w` watch it (view only) · `tab` next coin · `r` rule trades this coin ·
+Keys: `p` page 1 / page 2 · `↑↓` / `PgUp PgDn` move in the focused box · `←→` focus · `1`–`8` show/hide a box on this page · `enter` use the highlighted variant or view the highlighted profile (whichever box has focus) · `w` watch a variant (view only) · `tab` next coin · `r` rule trades this coin ·
 `c` chart range · `v` book · `L` arm/disarm live · `g` gate · `R` reset paper ·
 `s` start the engine · `?` help · `q` close (the engine keeps running).
 
@@ -198,7 +205,7 @@ Keys: `↑↓` / `PgUp PgDn` move in the focused box · `←→` focus · `1`–
 
 `tern web` serves the screen at http://localhost:8787/ (`--port` to move it). It is not a copy of the
 screen: each browser tab runs the real screen code on a virtual terminal, and the page paints its cells
-with foot's colors and font. So it looks and behaves the same: boxes `1`–`6`, `3` ladder/variants, `c`
+with foot's colors and font. So it looks and behaves the same: `p` pages, boxes `1`–`8`, `c`
 chart span, `tab`/shift+tab coins, `t`/`T` themes, `v` paper/live, `w` watch a variant, `g` gate, `h`
 help, `↑↓ ←→` and the wheel. Clicking a key on a box border, a box's number, or a ladder or variant row
 does what the key would; on a phone, drag to scroll.

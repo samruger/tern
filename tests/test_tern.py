@@ -1735,6 +1735,49 @@ class Pages(unittest.TestCase):
                 seen.append(("ladder" in scr.rects, "variants" in scr.rects, "profiles" in scr.rects))
             self.assertEqual(seen, [(False, False, False), (True, False, False), (False, False, False)])
 
+    def test_enter_acts_on_focused_box(self):
+        with tempfile.TemporaryDirectory() as d:
+            k, p, scr = self.setup(d)
+            self.press("p"); self.cmds()
+            scr.focus, scr.var_sel = "variants", "band90"
+            self.press(10)
+            self.assertEqual([(c["op"], c.get("name")) for c in self.cmds()], [("variant", "band90")])
+            self.assertIsNone(scr.profile)
+            scr.focus, scr.prof_sel = "profiles", p.id
+            self.press(10)
+            self.assertEqual(scr.profile, p.id)
+            self.assertEqual(self.cmds(), [])
+            scr.focus = "log"
+            self.press(10)
+            self.assertIn("focus variants or profiles", scr.flash)
+            self.assertEqual(self.cmds(), [])
+
+    def test_page_hint_on_bottom_border(self):
+        import curses
+        with tempfile.TemporaryDirectory() as d:
+            k, p, scr = self.setup(d)
+            scr.flash = ""
+            H, W = scr.s.getmaxyx()
+            def word(w):
+                row = "".join(scr.s.ch[H - 2])
+                i = row.find(w)
+                self.assertGreaterEqual(i, 0, row)
+                return bool(scr.s.at[H - 2][i] & curses.A_REVERSE)
+            self.assertIn("page", "".join(scr.s.ch[H - 2]))
+            self.assertEqual((word("trade"), word("compare")), (True, False))
+            self.press("p"); scr.flash = ""; self.sync()
+            self.assertEqual((word("trade"), word("compare")), (False, True))
+            self.size(50, 140); scr.flash = ""; self.sync()
+            self.assertNotIn("compare", "".join(scr.s.ch[48]))
+
+    def test_watch_without_variants_box_says_page2(self):
+        with tempfile.TemporaryDirectory() as d:
+            k, p, scr = self.setup(d)
+            self.press("w")
+            self.assertIn("page 2", scr.flash)
+            self.press("p", "7", "w")
+            self.assertIn("page 2", scr.flash)
+
 
 class Net(unittest.TestCase):
     """The kept-open HTTPS connections, against a fake connection class."""

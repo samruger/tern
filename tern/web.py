@@ -5,7 +5,7 @@ drawing into a virtual terminal here; the cells go to the page, which paints the
 So the web view always looks and behaves like the screen, minus the keys that change anything:
 no quit, engine stop or start, paper reset, live, rule coins or picking a variant. The settings
 box (e) opens and its cursor moves, but only its log filter row changes (for that viewer). The
-profiles box (3) can show any profile; making, turning on/off or deleting one, and its settings, stay
+profiles box (8, page 2) can show any profile; making, turning on/off or deleting one, and its settings, stay
 with the terminal. It sends
 no command files and never writes the screen's own view.json or dash.json. Its viewers' coins
 and strikes go to view-web.json, so the engine also sends those strikes' contract history.

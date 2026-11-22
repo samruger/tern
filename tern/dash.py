@@ -295,7 +295,7 @@ HELP = [
     ("VARIANTS", "Each variant runs on paper side by side with its own record and real fees, written down "
                  "before it saw any data:\n"
                  "{variants}\n"
-                 "The one marked ● in the variants box (3) is what the paper book trades, and live too once it "
+                 "The one marked ● in the variants box (7, on page 2: p) is what the paper book trades, and live too once it "
                  "passes the gate. Highlight another with ↑↓ and press enter to switch; while live is on or armed "
                  "you type \"live\" to confirm. Open positions ride to settlement. Picking whichever looks best "
                  "after watching flatters it: the gate is the real check.\n"
@@ -325,15 +325,17 @@ HELP_BOXES = [
     ("", "", "  YES/NO), and how far it is from being bought. Starts on the nearest ★"),
     ("³", "ladder", "every strike high to low: bid, ask, probability bar, spread, volume and"),
     ("", "", "  your position; ★ marks the band. ↑↓ picks the strike the contract box shows"),
-    ("³", "variants", "(3) swaps it in for the ladder: each variant's hours, entries, P&L, ¢ a"),
-    ("", "", "  contract, win rate, t, and gate progress (yellow: still short); ● in use;"),
-    ("", "", "  the highlighted one's P&L by hour below"),
-    ("³", "profiles", "(3) again: profile 1 (the desk) and the profiles you made, each running"),
-    ("", "", "  every variant under its own settings, paper only; ● is the one shown"),
     ("⁴", "book", "equity, P&L, cash, at risk, fees, the paper record of the rule, then open"),
     ("", "", "  positions, settlements and fills; (v) switches paper / live"),
     ("⁵", "equity", "that book's equity by the minute"),
     ("⁶", "log", "what the engine did, newest at the bottom; scroll back with ↑↓"),
+    ("⁷", "variants", "page 2: each variant's hours, entries, P&L, ¢ a contract, win rate, t,"),
+    ("", "", "  and gate progress (yellow: still short); ● in use; the highlighted"),
+    ("", "", "  one's P&L by hour below"),
+    ("⁸", "profiles", "page 2: profile 1 (the desk) and the profiles you made, each running"),
+    ("", "", "  every variant under its own settings, paper only; ● is the one shown"),
+    ("", "pages", "(p) flips page 1 · trade (1-6) and page 2 · compare (variants, profiles,"),
+    ("", "", "  equity, log); a screen big enough for all of them shows one page"),
     ("", "status", "bottom row: PAPER or LIVE, the coin's price and 1h change, the hourly event"),
     ("", "", "  and time to its close, rule ON/off with the next slot (+live when live"),
     ("", "", "  trades), stale data warnings (usually Wi-Fi), engine ok / stale / down"),
@@ -342,7 +344,7 @@ HELP_BOXES = [
 # overlay text worth a color: checks, key references like (g), words to type, warnings, paths and names
 OVERLAY_TOKENS = re.compile(
     r"(?P<ok>\[x\])|(?P<todo>\[ \])"
-    r"|(?P<ref>\((?:[a-zA-Z?1-6]|tern \w[\w-]*|enter|tab|esc)\))"
+    r"|(?P<ref>\((?:[a-zA-Z?1-8]|tern \w[\w-]*|enter|tab|esc)\))"
     r"|(?P<quote>\"[^\"]+\"|\blive and press enter\b)"
     r"|(?P<warn>\b(?:real money|unproven|turns live off|turns itself off|Nothing trades|No key found yet|Wipe)\b)"
     r"|(?P<keyhint>^(?:y|any key|any other key)\b|\besc\b|·\s(?:any (?:other )?key)\b)"
@@ -351,28 +353,30 @@ RULE_LINE = "\0rule"                              # placeholder text: draw_overl
 
 # the help's key legend: two columns of (section, [(keys, what they do)])
 HELP_KEYS = [
-    [("move", [("←→", "focus: ladder or variants / book / log"),
+    [("move", [("←→", "focus: the scrolling boxes on this page"),
                ("↑↓  j k", "scroll the focused box: the ladder picks a"),
                ("", "strike, variants highlights one"),
                ("PgUp PgDn", "ten steps at a time"),
                ("mouse wheel", "scroll the box under the pointer"),
                ("tab S-tab", "next / previous coin")]),
-     ("look", [("1 2", "show / hide spot, contract"),
-               ("3", "ladder → variants → profiles → hidden"),
+     ("look", [("p", "page 1 trade / page 2 compare"),
+               ("1 2 3", "show / hide spot, contract, ladder"),
                ("4 5 6", "show / hide book, equity, log"),
+               ("7 8", "show / hide variants, profiles"),
+               ("", "(hidden on this page only)"),
                ("c", "spot chart span: 5m 15m 1h 24h"),
                ("v", "book and equity: paper / live"),
                ("w", "watch the highlighted variant: book,"),
                ("", "equity and band as if it traded (view only)"),
                ("t T", "next / previous of {themes} color themes")])],
-    [("trade", [("enter", "use the highlighted variant"),
+    [("trade", [("enter", "use the highlighted variant (page 2)"),
                 ("r", "the rule trades this coin on / off"),
                 ("g", "gate, variants and go-live checklist"),
                 ("e", "settings: live limits and size, paper,"),
                 ("", "gate, alerts, what the log shows"),
                 ("L", "arm (type \"live\") / disarm live"),
                 ("R", "reset the paper book (asks y)")]),
-     ("profiles", [("enter", "view the highlighted profile (3 x3 first)"),
+     ("profiles", [("enter", "view the highlighted profile (page 2)"),
                    ("space", "turn it on / off"),
                    ("n", "new profile: profile 1's settings, empty"),
                    ("D", "delete it (type delete); kept on disk"),
@@ -1635,9 +1639,25 @@ class Screen:
                 if rx >= 1:
                     self.hint(H - 2, rx, seg, border)
                 rx += sum(map(len, seg)) + 3
+        self.page_hint(H, W)
         if self.flash and time.time() - self.flash_at < 8:
             msg = f" {self.flash} "[:max(0, W - 4)]
             self.put(H - 2, 2, msg, P(YELLOW, bold=True) | curses.A_REVERSE)
+
+    def page_hint(self, H: int, W: int) -> None:
+        """─page  trade  compare─ at the left of the bottom border, the page shown highlighted. Not drawn when
+        both pages fit as one."""
+        if self.view(H, W) == "merged":
+            return
+        P = self.P
+        x = 2
+        self.hint(H - 2, x, ("p", "age"), P(P.grey)); x += 6
+        for n, name in PAGE_NAMES.items():
+            on = n == self.page
+            self.put(H - 2, x, f" {name} ", P(WHITE, bold=True) | curses.A_REVERSE if on else P(P.grey))
+            self.page_spots.append((H - 2, x, x + len(name) + 2, n))
+            x += len(name) + 3
+        self.put(H - 2, x - 1, "─", P(P.grey))
 
     def draw_overlay(self, lines: list, title: str, color: int = CYAN, scroll: bool = False, hints=None) -> None:
         """A centered box of lines. A line is a plain string (colored by `rich`) or a list of (text, attr).
@@ -1783,7 +1803,7 @@ class Screen:
             out.append(f"  [{'x' if c['ok'] else ' '}] {c['name']}  ({c['detail']})")
         if st.get("shadow"):
             rows = shadowmod.table(st["shadow"])
-            out += ["", head("VARIANTS", "   side by side on paper; (3) shows them, enter picks one (tern report)")]
+            out += ["", head("VARIANTS", "   side by side on paper; (p) page 2 shows them, enter picks one (tern report)")]
             out += [[("  " + rows[0], P(P.grey, bold=True))]] + ["  " + l for l in rows[1:]]
         out += ["", head("GO LIVE", "   all three are needed")]
         out.append(f"  [{'x' if st.get('keys') else ' '}] Kalshi key present ({cfgmod.KEYFILE_ENV})")
@@ -2006,6 +2026,7 @@ class Screen:
             self.put(0, 0, f"tern needs at least 100x30 (now {W}x{H})", self.P(RED, bold=True)); self.s.refresh(); return
         self.header(H, W)
         self.rects = {}
+        self.page_spots: list[tuple[int, int, int, int]] = []   # (y, x0, x1, page) of the page names on the border
         boxes = self.layout(H, W)
         names = [b[0] for b in boxes if b[0] in SCROLLS]
         if names and self.focus not in names:          # the focused box went off screen (page, hiding, size)
@@ -2126,8 +2147,13 @@ class Screen:
                                      curses.KEY_PPAGE: -10, curses.KEY_NPAGE: 10}[ch])
         elif ch in (curses.KEY_LEFT, curses.KEY_RIGHT):
             self.move_focus(-1 if ch == curses.KEY_LEFT else 1)
-        elif ch in (10, 13, curses.KEY_ENTER):
-            self.view_profile() if self.in_profiles() else self.use_variant()
+        elif ch in (10, 13, curses.KEY_ENTER):         # the focused box's: view a profile, or use a variant
+            if self.focus == "profiles" and self.in_profiles():
+                self.view_profile()
+            elif self.focus == "variants" or not self.shown("variants") and not self.in_profiles():
+                self.use_variant()
+            else:
+                self.say("enter: ←→ to focus variants or profiles, then enter")
         elif ch == ord(" ") and self.in_profiles():
             self.profile_enable()
         elif ch == ord("n") and self.in_profiles():
