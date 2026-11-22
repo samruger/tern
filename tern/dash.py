@@ -1850,7 +1850,10 @@ class Screen:
             self.set_sub = min(self.set_sub, len(choices) - 1)
             if step:
                 self.set_sub = max(0, min(len(choices) - 1, self.set_sub + step)); return
-            cur = list(self.set_value(row.key) or [])
+            cur = self.set_value(row.key)
+            if cur is None:
+                self.say("no value from the engine yet"); return
+            cur = list(cur)
             c = choices[self.set_sub]
             want = [x for x in choices if (x in cur) != (x == c)]
             if not want:
@@ -1859,6 +1862,8 @@ class Screen:
         elif row.kind == "variant" and (step or ch in (10, 13, curses.KEY_ENTER, ord(" "))):
             order = list(shadowmod.ORDER)
             cur = self.set_value(row.key)
+            if cur is None:
+                self.say("no value from the engine yet"); return
             i = order.index(cur) if cur in order else 0
             self.send_setting(row, order[(i + (step or 1)) % len(order)])
         elif row.kind in ("bool", "choice") and (step or ch in (10, 13, curses.KEY_ENTER, ord(" "))):
@@ -2040,9 +2045,15 @@ class Screen:
             self.sel = None; self.write_view(); self.save_prefs(); self.say(f"viewing {cfgmod.SERIES[self.series]}")
         elif ch == ord("r"):
             if self.profile:                         # this profile's coins
-                have = list((self.st.get("settings") or {}).get("strategy.series") or [])
+                have = self.set_value("strategy.series")
+                if not have:
+                    self.say("no value from the engine yet"); return True
+                have = list(have)
                 want = [c for c in have if c != self.series] if self.series in have else have + [self.series]
+                if not want:
+                    self.say("at least one of the coins stays on"); return True
                 self.send(op="profile_set", profile=self.profile, key="strategy.series", value=want)
+                self.set_sent["strategy.series"] = (want, time.time())
             else:
                 self.send(op="series", series=self.series)
         elif ch in (ord("t"), ord("T")):

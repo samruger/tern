@@ -1353,6 +1353,66 @@ class EngineProfiles(unittest.TestCase):
             self.assertEqual({r.get("sv") for r in k.shadow.rows}, {4})
 
 
+class ProfileReviewFixes(unittest.TestCase):
+    """Findings from the final review: a broken profile must never stop or mislead profile 1 or itself."""
+    T, desk, profile = EngineProfiles.T, EngineProfiles.desk, EngineProfiles.profile
+
+    def test_unreadable_profile_config_is_skipped_not_defaulted(self):
+        from tern import profiles
+        with tempfile.TemporaryDirectory() as d:
+            k = self.desk(d)
+            p = self.profile(k, band_lo=0.82, band_hi=0.90)
+            with open(os.path.join(p.dir, "config.json"), "w") as fh:
+                fh.write("{oops")
+            self.assertEqual(profiles.load_all(d, 0.07), [])                   # skipped on a restart, not run on defaults
+            self.assertIn(p.id, profiles.load_errors)
+
+    def test_bad_view_profile_does_not_stop_the_step(self):
+        import json
+        with tempfile.TemporaryDirectory() as d:
+            k = self.desk(d)
+            self.profile(k)
+            with open(os.path.join(k.fast, "view.json"), "w") as fh:
+                json.dump({"series": "KXBTCD", "ticker": None, "profile": []}, fh)
+            k._read_view()
+            self.assertNotIn("profile", k.view)
+            with open(os.path.join(k.fast, "view-web.json"), "w") as fh:
+                json.dump({"series": [], "tickers": [], "profiles": [[], {}]}, fh)
+            k._read_view()
+            self.assertEqual(k.web["profiles"], [])
+
+    def test_bad_profile_rows_do_not_stop_the_engine(self):
+        import json
+        from tern.engine import Desk
+        with tempfile.TemporaryDirectory() as d:
+            k = self.desk(d)
+            p = self.profile(k)
+            with open(os.path.join(p.dir, "shadow.json"), "w") as fh:
+                json.dump({"rows": [{"v": "base"}], "slots": {}}, fh)
+            k2 = Desk(d)                                                       # starts
+            self.assertEqual(next(x for x in k2.profiles if x.id == p.id).shadow.rows, [])
+            k2.events = k.events; k2.meta = k.meta
+            k2._shadow(); k2._status()
+
+    def test_status_does_not_redo_profile_summaries_every_step(self):
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as d:
+            k = self.desk(d)
+            a = self.profile(k, "a")
+            k._status()
+            with mock.patch.object(a.shadow, "summary", wraps=a.shadow.summary) as spy:
+                k._status(); k._status()
+                self.assertEqual(spy.call_count, 0)                            # nothing changed: cached
+                k._shadow()                                                    # a new entry: recomputed once
+                k._status(); k._status()
+                self.assertEqual(spy.call_count, 1)
+            import json
+            with open(os.path.join(k.fast, "status.json")) as fh:
+                st = json.load(fh)
+            row = next(r for r in st["profiles"] if r["id"] == "a")
+            self.assertTrue(all("curve" not in v for v in row["variants"]))   # no one is viewing it
+
+
 class ProfileCommands(unittest.TestCase):
     """The screen's profile commands, and what status.json tells it."""
     T, desk, profile = EngineProfiles.T, EngineProfiles.desk, EngineProfiles.profile
@@ -1522,6 +1582,23 @@ class ScreenProfiles(unittest.TestCase):
             self.assertEqual([(x["op"], x["profile"]) for x in self.cmds()], [("profile_delete", p.id)])
             self.press(self.curses.KEY_UP, "D", *"delete", 10)
             self.assertEqual(self.cmds(), [])                                  # profile 1 has no delete
+
+    def test_no_setting_change_before_the_profile_settings_arrive(self):
+        with tempfile.TemporaryDirectory() as d:
+            k, p, scr = self.setup(d)
+            self.press("3", "3", self.curses.KEY_DOWN)
+            scr.key(10)                                                        # view it; the engine hasn't answered yet
+            self.assertTrue(scr.st.get("profile_wait"))
+            self.cmds()
+            for key in ("r",):
+                scr.key(ord(key))
+            scr.key(ord("e"))
+            rows = [r.key for r in scr.set_rows()]
+            for key, ch in (("strategy.minutes", ord(" ")), ("strategy.series", ord(" ")), ("strategy.variant", self.curses.KEY_RIGHT)):
+                scr.set_sel = rows.index(key)
+                scr.key(ch)
+            self.assertEqual(self.cmds(), [])
+            self.assertIn("no value", scr.flash)
 
     def test_live_keys_refuse_on_profiles(self):
         with tempfile.TemporaryDirectory() as d:

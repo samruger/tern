@@ -114,6 +114,7 @@ class Shadow:
         self.recent: dict[str, deque] = {}         # variant -> its last settled rows, for the screen's watch view
         self.fees: dict[str, float] = {}           # variant -> entry fees paid on settled rows
         self.dirty = False
+        self.changes = 0                           # goes up whenever rows are added or settled: summaries cache on it
         try:
             with open(self.open_path) as fh:
                 d = json.load(fh)
@@ -155,6 +156,7 @@ class Shadow:
         self.fees[r["v"]] = self.fees.get(r["v"], 0.0) + (r.get("fee") or 0.0)
 
     def _close(self, r: dict, pnl: float, **extra) -> None:
+        self.changes += 1
         r.update(pnl=round(pnl, 4), **extra)
         self._count(r)
         with open(self.done_path, "a") as fh:
@@ -182,7 +184,7 @@ class Shadow:
         slot = due_slot(close - now, S.minutes, set(done))
         if slot is None:
             return []
-        done.append(slot); self.dirty = True
+        done.append(slot); self.dirty = True; self.changes += 1
         series = event.split("-", 1)[0]
         for name in VARIANTS:
             lo, hi, cap, mins, spread, coins, mvol = params(name, S)

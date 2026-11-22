@@ -66,6 +66,7 @@ PROFILE_SETTINGS = [
 ]
 PSET = {r.key: r for r in PROFILE_SETTINGS}
 
+ROW_KEYS = ("v", "ts", "event", "close", "ticker", "side", "n", "cost", "fee", "slot")   # an open row needs every one
 load_errors: dict[str, str] = {}                 # folder -> why it would not load, from the last load_all()
 
 
@@ -162,10 +163,17 @@ class Profile:
             meta = json.load(fh)
         if not isinstance(meta, dict) or not isinstance(meta.get("name"), str):
             raise ValueError("profile.json has no name")
-        if not os.path.exists(os.path.join(dir, "config.json")):
-            raise ValueError("no config.json")
-        cfg = cfgmod.load(dir)
-        return cls(dir, meta["name"][:NAME_MAX], bool(meta.get("enabled", True)), float(meta.get("created") or 0), cfg, fee)
+        # strict: a profile whose settings can't be read is skipped (and the error logged), never run on defaults
+        try:
+            with open(os.path.join(dir, "config.json")) as fh:
+                cfg = Config.from_dict(json.load(fh))
+        except (OSError, ValueError, TypeError, AttributeError) as ex:
+            raise ValueError(f"config.json unreadable: {ex}") from None
+        p = cls(dir, meta["name"][:NAME_MAX], bool(meta.get("enabled", True)), float(meta.get("created") or 0), cfg, fee)
+        rows = p.shadow.rows
+        p.shadow.rows = [r for r in rows if isinstance(r, dict) and all(k in r for k in ROW_KEYS)]
+        p.shadow.dirty = p.shadow.dirty or len(p.shadow.rows) != len(rows)
+        return p
 
     def save_meta(self) -> None:
         path = os.path.join(self.dir, "profile.json")

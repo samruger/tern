@@ -170,9 +170,12 @@ class Desk:
         self.slog = profmod.SettingsLog(os.path.join(runtime, "settings-log.jsonl"))
         self.profiles: list[profmod.Profile] = []
         self._profiles_reload(force=True)
-        for sh in [self.shadow] + [p.shadow for p in self.profiles]:
-            for ev, close in sh.pending(time.time()).items():
-                self.closed[ev] = {"series": ev.split("-", 1)[0], "close": close}
+        for ev, close in self.shadow.pending(time.time()).items():
+            self.closed[ev] = {"series": ev.split("-", 1)[0], "close": close}
+        def owed(p):
+            for ev, close in p.shadow.pending(time.time()).items():
+                self.closed.setdefault(ev, {"series": ev.split("-", 1)[0], "close": close})
+        self._each_profile(owed, "load")
 
     # ------------------------------------------------------------ profiles (profiles.py)
     def _profiles_reload(self, now: float | None = None, force: bool = False) -> None:
@@ -825,8 +828,7 @@ class Desk:
     def _needs(self, ev: str) -> set[str]:
         """The strikes of an event that profile 1 or any profile still holds open rows on."""
         out = set(self.shadow.needs(ev))
-        for p in self.profiles:
-            out |= p.shadow.needs(ev)
+        self._each_profile(lambda p: out.update(p.shadow.needs(ev)), "settle")
         return out
 
     # ------------------------------------------------------------ settlement
@@ -1009,8 +1011,17 @@ class Desk:
             return f"{p.name}: {profmod.label(key)} {profmod.show(key, was)} → {profmod.show(key, now)} (settings {p.log.sv})"
         return f"unknown command {op!r}"
 
-    def _profile_rows(self, variants: list[dict]) -> list[dict]:
-        """One row per profile for the screen's profiles box, profile 1 first."""
+    def _summary(self, p: "profmod.Profile") -> list[dict]:
+        """A profile's variant summaries, recomputed only when its records change (status is written every step)."""
+        key = (p.shadow.changes, p.variant)
+        if getattr(p, "_sum", (None,))[0] != key:
+            p._sum = (key, [{**r, "desc": shadowmod.DESC.get(r["name"], ""), "active": r["name"] == p.variant}
+                            for r in p.shadow.summary()])
+        return p._sum[1]
+
+    def _profile_rows(self, variants: list[dict], looked: set | None = None) -> list[dict]:
+        """One row per profile for the screen's profiles box, profile 1 first. Only a profile someone is
+        looking at carries its variants' curves."""
         def rule(cfg) -> dict:
             S = cfg.strategy
             return {"band_lo": S.band_lo, "band_hi": S.band_hi, "minutes": S.minutes, "max_spread": S.max_spread,
@@ -1018,16 +1029,18 @@ class Desk:
                     "paper_capital": cfg.paper_capital}
         out = [{"id": "1", "name": "profile 1", "enabled": True, "variant": self.variant(), "sv": self.slog.sv,
                 "created": 0, "variants": variants, "rule": rule(self.cfg)}]
-        for p in self.profiles:
+        def one(p):
+            rows = self._summary(p)
+            if p.id not in (looked or set()):
+                rows = [{k: v for k, v in r.items() if k != "curve"} for r in rows]
             out.append({"id": p.id, "name": p.name, "enabled": p.enabled, "variant": p.variant, "sv": p.log.sv,
-                        "created": p.created, "rule": rule(p.cfg),
-                        "variants": [{**r, "desc": shadowmod.DESC.get(r["name"], ""), "active": r["name"] == p.variant}
-                                     for r in p.shadow.summary()]})
+                        "created": p.created, "rule": rule(p.cfg), "variants": rows})
+        self._each_profile(one, "status")
         return out
 
     def _pview(self, p: "profmod.Profile", mids: dict, strikes: dict) -> dict:
         """What the screen needs to show one profile: every variant as a book on its paper start, its settings."""
-        rows = {r["name"]: r for r in p.shadow.summary()}
+        rows = {r["name"]: r for r in self._summary(p)}
         return {"views": {n: {**p.shadow.view(n, r, mids, strikes, p.cfg.paper_capital),
                               "strategy": self._strat(n, p.cfg.strategy)} for n, r in rows.items()},
                 "strategy": self._strat(p.variant, p.cfg.strategy),
@@ -1110,8 +1123,9 @@ class Desk:
               "strategy": strategy, "views": views, "live_cfg": self.cfg.live.__dict__,
               "settings": {r.key: cfgmod.get_setting(self.cfg, r.key) for r in cfgmod.SETTINGS},
               "logs": [list(x) for x in list(self.logs)[-200:]], "results": self.results,
-              "auto_live": self._live_rule_on(gate), "profiles": self._profile_rows(variants), "pviews": {}}
+              "auto_live": self._live_rule_on(gate), "pviews": {}}
         looked = {self.view.get("profile")} | set(self.web.get("profiles", []))
+        st["profiles"] = self._profile_rows(variants, looked)
         for p in self.profiles:
             if p.id in looked:
                 try:
@@ -1132,7 +1146,8 @@ class Desk:
         except (OSError, json.JSONDecodeError):
             pass
         ids = {p.id for p in self.profiles}
-        if "profile" in self.view and self.view["profile"] not in ids:   # one since deleted: back to profile 1
+        if "profile" in self.view and (not isinstance(self.view["profile"], str) or self.view["profile"] not in ids):
+            # one since deleted (or not a name at all): back to profile 1
             self.view = {k: v for k, v in self.view.items() if k != "profile"}
         self.web = {"series": [], "tickers": [], "profiles": []}
         try:                                        # tern web: the coins and strikes its viewers have on screen
@@ -1142,7 +1157,7 @@ class Desk:
                     v = json.load(fh)
                 self.web = {"series": [s for s in v.get("series", []) if s in cfgmod.SERIES][:len(cfgmod.SERIES)],
                             "tickers": [t for t in v.get("tickers", []) if isinstance(t, str)][:WEB_TICKERS],
-                            "profiles": [x for x in v.get("profiles", []) if x in ids][:profmod.MAX_PROFILES]}
+                            "profiles": [x for x in v.get("profiles", []) if isinstance(x, str) and x in ids][:profmod.MAX_PROFILES]}
         except (OSError, json.JSONDecodeError, AttributeError, TypeError):
             pass
 
