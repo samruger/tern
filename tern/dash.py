@@ -633,8 +633,9 @@ class Screen:
         """How to get to a box that isn't on screen: un-zoom, or flip to page 2."""
         H, W = self.s.getmaxyx()
         here = view_boxes(self.view(H, W))
-        if self.zoomed(H, W) and "variants" in here:     # un-zooming shows it only where this view has it
-            return f"{here.index(self.zoom) + 1} un-zooms, {what}"
+        z = self.zoomed(H, W)
+        if z and "variants" in here:                      # un-zooming shows it only where this view has it
+            return f"{here.index(z) + 1} un-zooms, {what}"
         return f"p for page 2, {what}"
 
     def flip_page(self) -> None:
@@ -693,8 +694,9 @@ class Screen:
         """(panel, y, x, h, w) for every box shown on this view. A row's survivor takes the full width; a pair
         too narrow for both stacks into two rows."""
         view = self.view(H, W)
-        if self.zoomed(H, W):
-            return [(self.zoom, 0, 0, H - 1, W)]
+        z = self.zoomed(H, W)
+        if z:
+            return [(z, 0, 0, H - 1, W)]
         rows: list[tuple[str, ...]] = []
         for row in PAGES[view]:
             if len(row) == 2 and sum(LEFT_MIN.get(n, 30) for n in row) > W:   # not even at their smallest
@@ -1664,8 +1666,9 @@ class Screen:
         P = self.P
         flashing = bool(self.flash) and time.time() - self.flash_at < 8
         view = self.view(H, W)
-        if self.zoomed(H, W):                                   # ─3 back─: the zoomed box's number restores
-            page_seg = (str(view_boxes(view).index(self.zoom) + 1), " back")
+        z = self.zoomed(H, W)
+        if z:                                                   # ─3 back─: the zoomed box's number restores
+            page_seg = (str(view_boxes(view).index(z) + 1), " back")
         else:
             page_seg = ("p", "age ", str(self.page), "/2") if view != "merged" else ()   # ─page 1/2─
         paged = not flashing and bool(page_seg)
