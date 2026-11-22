@@ -197,7 +197,7 @@ restores the page, and `p` restores it and flips.
 | ¹ variants (page 2) | each variant's record and gate progress, ● on the one in use, and the highlighted one's P&L by hour |
 | ² profiles (page 2) | profile 1 and the profiles you made (see Profiles) |
 
-Keys: `p` page 1 / page 2 · `↑↓` / `PgUp PgDn` move in the focused box · `←→` focus · `1`–`6` (page 1) or `1`–`4` (page 2) zoom a box to the whole screen, the same number goes back · `enter` use the highlighted variant or view the highlighted profile (whichever box has focus) · `w` watch a variant (view only) · `tab` next coin · `r` rule trades this coin ·
+Keys: `p` page 1 / page 2 · `↑↓` / `PgUp PgDn` move in the focused box · `←→` focus · `1`–`6` (page 1), `1`–`4` (page 2) or `1`–`8` (one big screen) zoom a box to the whole screen, the same number goes back · `enter` use the highlighted variant or view the highlighted profile (whichever box has focus) · `w` watch a variant (view only) · `tab` next coin · `r` rule trades this coin ·
 `c` chart range · `v` book · `L` arm/disarm live · `g` gate · `R` reset paper ·
 `s` start the engine · `?` help · `q` close (the engine keeps running).
 

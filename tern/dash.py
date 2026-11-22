@@ -641,7 +641,9 @@ class Screen:
     def flip_page(self) -> None:
         H, W = self.s.getmaxyx()
         if self.view(H, W) == "merged":
-            self.say("both pages fit on this screen: every box is shown"); return
+            z = self.zoomed(H, W)
+            self.say(f"both pages fit on this screen: {view_boxes('merged').index(z) + 1} back shows every box"
+                     if z else "both pages fit on this screen: every box is shown"); return
         self.page = 2 if self.page == 1 else 1
         self.zoom = None                             # the numbers mean other boxes on the other page
         self.save_prefs()
@@ -1647,7 +1649,10 @@ class Screen:
     def move_focus(self, d: int) -> None:
         names = self.focusable()
         if not names:
-            self.say("no scrolling box is shown here · its number brings one back (see the bottom row)"); return
+            H, W = self.s.getmaxyx()
+            z = self.zoomed(H, W)
+            n = view_boxes(self.view(H, W)).index(z) + 1 if z else 0
+            self.say(f"{z} doesn't scroll · {n} back shows the others" if z else "no scrolling box is shown here"); return
         i = names.index(self.focus) if self.focus in names else -1 if d > 0 else 0
         self.focus = names[(i + d) % len(names)]
         self.say(f"focus: {self.focus}")

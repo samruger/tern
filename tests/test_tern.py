@@ -1693,6 +1693,13 @@ class Pages(unittest.TestCase):
                     self.assertIn("base", self.text())
                     self.press(key)
 
+    def test_focus_keys_while_zoomed_on_a_chart(self):
+        with tempfile.TemporaryDirectory() as d:
+            k, p, scr = self.setup(d)
+            self.press("5", 261)                                                # equity zoomed, then →
+            self.assertIn("5 back", scr.flash)
+            self.assertNotIn("brings one back", scr.flash)
+
     def test_p_while_zoomed_restores_and_flips(self):
         with tempfile.TemporaryDirectory() as d:
             k, p, scr = self.setup(d)
@@ -1752,6 +1759,10 @@ class Pages(unittest.TestCase):
             self.assertEqual(set(r), {"spot", "contract", "ladder", "book", "variants", "profiles", "equity", "log"})
             self.press("p")
             self.assertIn("both pages fit", scr.flash)
+            self.press("1", "p")                                                # zoomed: p can't flip, but 1 goes back
+            self.assertIn("1 back", scr.flash)
+            self.assertNotIn("every box is shown", scr.flash)
+            self.press("1")
             self.press("8")
             self.assertEqual(scr.layout(50, 150), [("log", 0, 0, 49, 150)])
             self.size(33, 111)                                                  # log is on page 1 too: still zoomed

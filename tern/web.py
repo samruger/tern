@@ -229,7 +229,7 @@ class WebScreen(dash.Screen):
         keep = {"⏎"} if self.drawing == "profiles" else set()
         segs = [s for s in segs if isinstance(s, str) or s[0] not in CONTROL_HINTS - keep]
         key = key or self.panel_key
-        if key in dash.SUPER:                    # the box number: a click shows / hides it, as 1-8 do
+        if key in dash.SUPER:                    # the box number: a click zooms / restores it, as 1-8 do
             self.hits.append((y, x + 3, x + 3 + len(key), str(dash.SUPER.index(key) + 1)))
         super().box(y, x, h, w, title, color, key, segs)
 
