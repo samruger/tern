@@ -1201,6 +1201,122 @@ class Profiles(unittest.TestCase):
                     profiles.delete(d, bad)
 
 
+class EngineProfiles(unittest.TestCase):
+    """The engine runs every enabled profile beside profile 1, on the same snapshot, each isolated."""
+    T = "KXBTCD-E1-T100"
+
+    def desk(self, d, bid="0.80", ask="0.81", close=600.0):
+        import time
+        from tern.engine import Desk
+        k = Desk(d)
+        now = time.time()
+        m = {"ticker": self.T, "floor_strike": 100.0, "yes_bid_dollars": bid, "yes_ask_dollars": ask,
+             "yes_bid_size_fp": "50", "yes_ask_size_fp": "50", "status": "active"}
+        k.events["KXBTCD"] = {"event": "KXBTCD-E1", "title": "", "close": now + close, "markets": [m], "fetched": now}
+        k.meta[self.T] = {"event": "KXBTCD-E1", "strike": 100.0, "close": now + close, "series": "KXBTCD"}
+        return k
+
+    def profile(self, k, name="profile 2", **strat):
+        from tern import profiles
+        p = profiles.create(k.runtime, name, k.cfg, k.cfg.taker_fee)
+        for key, v in strat.items():
+            p.set("strategy." + key, v)
+        k._profiles_reload(force=True)
+        return next(x for x in k.profiles if x.id == p.id)
+
+    def test_profile_trades_same_snapshot_with_its_own_settings(self):
+        with tempfile.TemporaryDirectory() as d:
+            k = self.desk(d, bid="0.58", ask="0.60")
+            p = self.profile(k, band_lo=0.55, band_hi=0.65)
+            k._shadow()
+            mine = [r for r in p.shadow.rows if r["v"] == "base"]
+            self.assertEqual(len(mine), 1)
+            self.assertEqual(mine[0]["sv"], p.log.sv)
+            self.assertEqual([r for r in k.shadow.rows if r["v"] == "base"], [])   # 59c is outside 75-95
+
+    def test_profile1_records_untouched_by_profiles(self):
+        def run(d, with_profile):
+            k = self.desk(d)
+            if with_profile:
+                self.profile(k, band_lo=0.55, band_hi=0.65)
+            k._shadow(); k._auto()
+            return k, sorted((r["v"], r["ticker"], r["slot"], r["n"], r["cost"]) for r in k.shadow.rows)
+        with tempfile.TemporaryDirectory() as a, tempfile.TemporaryDirectory() as b:
+            ka, ra = run(a, False)
+            kb, rb = run(b, True)
+            self.assertTrue(ra)
+            self.assertEqual(ra, rb)
+            self.assertEqual(ka.paper.pos.keys(), kb.paper.pos.keys())
+            self.assertEqual(set(os.listdir(b)) - set(os.listdir(a)), {"profiles"})
+
+    def test_broken_profile_does_not_stop_the_step(self):
+        with tempfile.TemporaryDirectory() as d:
+            k = self.desk(d)
+            p = self.profile(k)
+            def boom(*a, **kw):
+                raise RuntimeError("boom")
+            p.step = boom
+            k._shadow(); k._shadow(); k._auto()
+            self.assertTrue(k.shadow.rows)                                     # profile 1 still recorded
+            self.assertTrue(k.paper.pos)                                       # and its paper book traded
+            errs = [m for _, lvl, m in [(x[0], x[1], x[2]) for x in k.logs] if "profile 2" in m and "boom" in m]
+            self.assertEqual(len(errs), 1)                                     # logged once, not every step
+
+    def test_settle_reaches_every_profile(self):
+        import time
+        with tempfile.TemporaryDirectory() as d:
+            k = self.desk(d)
+            p = self.profile(k)
+            k._shadow()
+            self.assertTrue(p.shadow.rows)
+            k.shadow.rows = []                                                 # profile 1 has nothing left to settle
+            k.closed["KXBTCD-E1"] = {"series": "KXBTCD", "close": time.time() - 120}
+            k.pub.event_markets = lambda e: [{"ticker": self.T, "result": "", "status": "active"}]
+            k._shadow()
+            self.assertIn("KXBTCD-E1", k.closed)                              # profile 2 still needs it
+            k.closed["KXBTCD-E1"]["tried"] = 0
+            k.pub.event_markets = lambda e: [{"ticker": self.T, "result": "yes", "status": "finalized", "floor_strike": 100.0}]
+            k._shadow()
+            self.assertEqual(p.shadow.rows, [])
+            self.assertEqual(p.shadow.summary(["base"])[0]["entries"], 1)
+            self.assertNotIn("KXBTCD-E1", k.closed)
+
+    def test_profile_coins_join_the_fetch(self):
+        from unittest import mock
+        from tern import shadow
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(shadow, "all_coins", lambda S: list(S.series)):
+            k = self.desk(d)                                                   # (multi makes every coin wanted today)
+            self.assertNotIn("KXETHD", k._wanted())
+            p = self.profile(k, series=["KXETHD"])
+            self.assertIn("KXETHD", k._wanted())
+            p.set("enabled", False)
+            self.assertNotIn("KXETHD", k._wanted())                           # a profile that is off fetches nothing
+
+    def test_profile1_settings_are_logged(self):
+        import json
+        with tempfile.TemporaryDirectory() as d:
+            k = self.desk(d)
+            self.assertEqual(k.slog.sv, 1)
+            k._command({"op": "set", "key": "strategy.contracts", "value": 7})
+            self.assertEqual(k.slog.sv, 2)
+            k._command({"op": "set", "key": "live.capital_usd", "value": 50})
+            self.assertEqual(k.slog.sv, 2)                                     # not a record field: logged only
+            k._command({"op": "series", "series": "KXETHD"})
+            self.assertEqual(k.slog.sv, 3)
+            path = os.path.join(d, "config.json")
+            with open(path) as fh:
+                c = json.load(fh)
+            c["strategy"]["band_lo"] = 0.80                                    # a hand edit
+            with open(path, "w") as fh:
+                json.dump(c, fh)
+            k._reload_cfg(force=True)
+            self.assertEqual(k.slog.sv, 4)
+            self.assertEqual([x["key"] for x in k.slog.lines()],
+                             ["strategy.contracts", "live.capital_usd", "strategy.series", "strategy.band_lo"])
+            k._shadow()
+            self.assertEqual({r.get("sv") for r in k.shadow.rows}, {4})
+
+
 class Net(unittest.TestCase):
     """The kept-open HTTPS connections, against a fake connection class."""
 

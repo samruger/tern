@@ -40,6 +40,7 @@ RECORD_KEYS = ("strategy.band_lo", "strategy.band_hi", "strategy.minutes", "stra
 
 def _paper(key: str) -> Setting:
     r = cfgmod.setting(key)
+    assert r is not None, key
     return Setting(r.sec, r.name, r.label, r.lo, r.hi, r.step, r.kind, 0, r.what, "PAPER" if key == "strategy.contracts" else "")
 
 

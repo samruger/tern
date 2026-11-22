@@ -20,6 +20,7 @@ from . import config as cfgmod
 from .book import Book, taker_fee
 from .kalshi import Kalshi, KalshiError, quote
 from .record import Recorder
+from . import profiles as profmod
 from . import shadow as shadowmod
 from .shadow import Shadow
 from .spot import coinbase, history
@@ -165,8 +166,73 @@ class Desk:
         self.shadow = Shadow(runtime, self.cfg.taker_fee)
         self.rec = Recorder(runtime)
         self.closed: dict[str, dict] = {}      # hourly events that have closed and still owe their results
-        for ev, close in self.shadow.pending(time.time()).items():
-            self.closed[ev] = {"series": ev.split("-", 1)[0], "close": close}
+        # profile 1's settings changes, from now on; a profile's are in its own folder (profiles.py)
+        self.slog = profmod.SettingsLog(os.path.join(runtime, "settings-log.jsonl"))
+        self.profiles: list[profmod.Profile] = []
+        self._profiles_reload(force=True)
+        for sh in [self.shadow] + [p.shadow for p in self.profiles]:
+            for ev, close in sh.pending(time.time()).items():
+                self.closed[ev] = {"series": ev.split("-", 1)[0], "close": close}
+
+    # ------------------------------------------------------------ profiles (profiles.py)
+    def _profiles_reload(self, now: float | None = None, force: bool = False) -> None:
+        """Pick up profile folders added or removed, and hand edits of their config.json, every 5 s.
+        A profile already loaded keeps its object (and its records in memory)."""
+        now = time.time() if now is None else now
+        if not force and now - self.last["profiles"] < 5:
+            return
+        self.last["profiles"] = now
+        have = {p.id: p for p in self.profiles}
+        out = []
+        for pid in profmod._ids(self.runtime):
+            p = have.get(pid)
+            try:
+                if p is None:
+                    p = profmod.Profile.load(os.path.join(self.runtime, profmod.PROFILES_DIR, pid), self.cfg.taker_fee)
+                else:
+                    for key, was, to in p.reload_cfg():
+                        self.log(f"profile {p.name}: {key} {was} → {to} by hand (settings {p.log.sv})")
+                out.append(p)
+            except Exception as ex:              # a broken folder is skipped, never the desk
+                if p is not None:
+                    out.append(p)
+                if now - self.last["perr" + pid] >= 60:
+                    self.last["perr" + pid] = now
+                    self.log(f"profile folder {pid}: {ex}", "error")
+        self.profiles = sorted(out, key=lambda p: (p.created, p.id))
+
+    def _each_profile(self, fn, what: str) -> None:
+        """fn(p) for every profile, each on its own: an error is logged (once a minute a profile) and skipped,
+        so profile 1 and live never wait on a profile."""
+        for p in list(self.profiles):
+            try:
+                fn(p)
+            except Exception as ex:
+                now = time.time()
+                if now - self.last["perr" + p.id] >= 60:
+                    self.last["perr" + p.id] = now
+                    self.log(f"profile {p.name}: {what}: {ex}", "error")
+
+    def _wanted(self) -> set[str]:
+        """The coins to fetch: profile 1's, what the screen and web viewers look at, and enabled profiles'."""
+        out = set(shadowmod.all_coins(self.cfg.strategy)) | {self.view["series"]} | set(self.web["series"])
+        for p in self.profiles:
+            if p.enabled:
+                out |= set(shadowmod.all_coins(p.cfg.strategy))
+        return out
+
+    def _reload_cfg(self, now: float | None = None, force: bool = False) -> None:
+        """Re-read config.json every 5 s. A record field changed by hand is logged and bumps the settings version."""
+        now = time.time() if now is None else now
+        if not force and now - self.last["cfg"] < 5:
+            return
+        self.last["cfg"] = now
+        old = self.cfg
+        self.cfg = cfgmod.load(self.runtime, self.cfg)
+        if self.cfg is not old:
+            for key, was, to in profmod.diff_record(old.strategy, self.cfg.strategy):
+                self.slog.append(key, was, to, bump=True)
+                self.log(f"config: {key} {was} → {to} (settings {self.slog.sv})")
 
     # ------------------------------------------------------------ state
     def _load_state(self) -> None:
@@ -721,9 +787,11 @@ class Desk:
             e = self.events.get(series)
             if e and e["markets"] and now - e["fetched"] <= 10 and e["close"] > now and e.get("shadowed") != e["fetched"]:
                 e["shadowed"] = e["fetched"]
+                v = self.vol(series, now)
                 for note in self.shadow.step(e["event"], e["close"], e["markets"], self.cfg.strategy, now,
-                                             vol=self.vol(series, now)):
+                                             vol=v, sv=self.slog.sv):
                     self.log(note)
+                self._each_profile(lambda p: p.step(e["event"], e["close"], e["markets"], now, v), "step")
         for ev, c in list(self.closed.items()):
             late = now > c["close"] + 1800
             if now < c["close"] + 45 or now - c.get("tried", 0) < (300 if late else 20):
@@ -734,22 +802,32 @@ class Desk:
             except KalshiError:
                 continue
             res = {m["ticker"]: m["result"] == "yes" for m in ms if m.get("result") in ("yes", "no")}
-            if not late and (not res or len(res) < len(ms) or not self.shadow.needs(ev) <= set(res)):
+            if not late and (not res or len(res) < len(ms) or not self._needs(ev) <= set(res)):
                 continue
+            voided = {m["ticker"] for m in ms if m.get("status") in ("finalized", "settled")
+                      and m.get("result") not in ("yes", "no", None, "")}
             n = self.shadow.settle(res)
             # finalized without yes/no: voided. Those rows would otherwise stay open for good.
-            n += self.shadow.void({m["ticker"] for m in ms if m.get("status") in ("finalized", "settled")
-                                   and m.get("result") not in ("yes", "no", None, "")})
+            n += self.shadow.void(voided)
+            self._each_profile(lambda p: (p.shadow.settle(res), p.shadow.void(voided)), "settle")
             if not c.get("recorded") and res:
                 c["recorded"] = True
                 self.rec.results(c["series"], c["close"], [(m["floor_strike"], m["result"]) for m in ms
                                                             if m["ticker"] in res and m.get("floor_strike") is not None])
-            if not self.shadow.needs(ev):            # rows Kalshi has not decided yet are asked about again:
+            if not self._needs(ev):                  # rows Kalshi has not decided yet are asked about again:
                 del self.closed[ev]                  # dropping the event would leave them open until a restart
             if n:
                 self.log("shadow: " + ev + " settled · " + " · ".join(
                     f"{r['name']} {r['pnl']:+.2f}" for r in self.shadow.summary() if r["entries"]))
         self.shadow.save()
+        self._each_profile(lambda p: p.shadow.save(), "save")
+
+    def _needs(self, ev: str) -> set[str]:
+        """The strikes of an event that profile 1 or any profile still holds open rows on."""
+        out = set(self.shadow.needs(ev))
+        for p in self.profiles:
+            out |= p.shadow.needs(ev)
+        return out
 
     # ------------------------------------------------------------ settlement
     def _settle(self) -> None:
@@ -840,8 +918,10 @@ class Desk:
             if s not in cfgmod.SERIES:
                 return f"unknown series {s!r} (known: {', '.join(cfgmod.SERIES)})"
             lst = list(self.cfg.strategy.series)
+            was = list(lst)
             lst = [x for x in lst if x != s] if s in lst else lst + [s]
             self.cfg.strategy.series = lst; cfgmod.save(self.cfg, self.runtime)
+            self.slog.append("strategy.series", was, lst, bump=True)
             if shadowmod.VARIANTS.get(self.variant(), (None,) * 7)[5]:
                 return f"rule coins set to {', '.join(lst) or 'nothing'}, but {self.variant()} trades its own coins until you switch back"
             return f"rule trades: {', '.join(lst) or 'nothing'}"
@@ -869,6 +949,8 @@ class Desk:
             except ValueError as ex:
                 return f"not set: {ex}"
             cfgmod.save(self.cfg, self.runtime)
+            if was != v:
+                self.slog.append(key, was, v, bump=key in profmod.RECORD_KEYS)
             r = cfgmod.setting(key)
             label = {"live": "live ", "gate": "gate ", "strategy": "paper " if r.name == "contracts" else ""}.get(r.sec, "") + r.label
             show = (lambda x: "on" if x else "off") if r.kind == "bool" else (lambda x: f"{x:g}")
@@ -982,11 +1064,10 @@ class Desk:
 
     def step(self) -> None:
         now = time.time()
-        if now - self.last["cfg"] >= 5:
-            self.last["cfg"] = now
-            self.cfg = cfgmod.load(self.runtime, self.cfg)
+        self._reload_cfg(now)
+        self._profiles_reload(now)
         self._read_view()
-        wanted = set(shadowmod.all_coins(self.cfg.strategy)) | {self.view["series"]} | set(self.web["series"])
+        wanted = self._wanted()
         unknown = sorted(wanted - set(cfgmod.SERIES))
         if unknown and now - self.last["badseries"] > 60:
             self.last["badseries"] = now
