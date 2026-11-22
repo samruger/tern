@@ -1339,19 +1339,19 @@ class ProfileCommands(unittest.TestCase):
             msg = k._command({"op": "profile_new", "name": "try 80"})
             self.assertIn("try 80", msg)
             p = next(x for x in k.profiles if x.name == "try 80")
-            self.assertIn("off", k._command({"op": "profile_enable", "id": p.id, "on": False}))
+            self.assertIn("off", k._command({"op": "profile_enable", "profile": p.id, "on": False}))
             self.assertFalse(p.enabled)
             self.assertEqual(p.log.sv, 1)                                      # on/off is not a settings period
-            msg = k._command({"op": "profile_set", "id": p.id, "key": "strategy.band_lo", "value": 0.82})
+            msg = k._command({"op": "profile_set", "profile": p.id, "key": "strategy.band_lo", "value": 0.82})
             self.assertIn("settings 2", msg)
             self.assertEqual(p.cfg.strategy.band_lo, 0.82)
-            self.assertIn("not set", k._command({"op": "profile_set", "id": p.id, "key": "strategy.band_lo", "value": 0.99}))
-            for c in ({"op": "profile_set", "id": "1", "key": "strategy.band_lo", "value": 0.8},
-                      {"op": "profile_enable", "id": "1", "on": False}, {"op": "profile_delete", "id": "1"}):
+            self.assertIn("not set", k._command({"op": "profile_set", "profile": p.id, "key": "strategy.band_lo", "value": 0.99}))
+            for c in ({"op": "profile_set", "profile": "1", "key": "strategy.band_lo", "value": 0.8},
+                      {"op": "profile_enable", "profile": "1", "on": False}, {"op": "profile_delete", "profile": "1"}):
                 self.assertIn("profile 1", k._command(c))
             self.assertEqual(k.cfg.strategy.band_lo, 0.75)                     # profile 1 untouched
-            self.assertIn("no profile", k._command({"op": "profile_set", "id": "nope", "key": "enabled", "value": True}))
-            msg = k._command({"op": "profile_delete", "id": p.id})
+            self.assertIn("no profile", k._command({"op": "profile_set", "profile": "nope", "key": "enabled", "value": True}))
+            msg = k._command({"op": "profile_delete", "profile": p.id})
             self.assertIn("profiles-deleted", msg)
             self.assertEqual(k.profiles, [])
             self.assertTrue(os.listdir(os.path.join(d, "profiles-deleted")))
@@ -1365,6 +1365,8 @@ class ProfileCommands(unittest.TestCase):
             st = self.status(k)
             self.assertEqual([p["id"] for p in st["profiles"]], ["1", "a", "b"])
             self.assertEqual(st["profiles"][0]["name"], "profile 1")
+            self.assertEqual(st["profiles"][1]["rule"]["band_lo"], 0.80)               # the profiles box's rule line
+            self.assertEqual(st["profiles"][0]["rule"]["band_lo"], 0.75)
             self.assertEqual(list(st["pviews"]), ["a"])
             pv = st["pviews"]["a"]
             self.assertEqual(pv["settings"]["strategy.band_lo"], 0.80)
@@ -1379,10 +1381,130 @@ class ProfileCommands(unittest.TestCase):
             a = self.profile(k, "a")
             self.view(k, profile=a.id)
             self.assertEqual(k.view["profile"], a.id)
-            k._command({"op": "profile_delete", "id": a.id})
+            k._command({"op": "profile_delete", "profile": a.id})
             self.view(k, profile=a.id)
             self.assertIsNone(k.view.get("profile"))
             self.assertEqual(self.status(k)["pviews"], {})
+
+
+class ScreenProfiles(unittest.TestCase):
+    """The terminal screen's profiles box, viewing a profile, and its settings, against a real engine's status."""
+    T, desk, profile = EngineProfiles.T, EngineProfiles.desk, EngineProfiles.profile
+
+    def setup(self, d):
+        import curses
+        from unittest import mock
+        from tern import dash, web
+        k = self.desk(d, bid="0.58", ask="0.60")
+        k.seeded.add(self.T)                                                   # no network for its history
+        p = self.profile(k, "profile 2", band_lo=0.55, band_hi=0.65)
+        k._shadow()
+        with mock.patch.object(dash, "Pal", web.WebPal):
+            scr = dash.Screen(web.VTerm(40, 120), d)
+        self.k, self.p, self.scr, self.curses = k, p, scr, curses
+        self.sync()
+        return k, p, scr
+
+    def sync(self):
+        self.k._read_view(); self.k._status(); self.scr.read(); self.scr.draw()
+
+    def text(self):
+        return "\n".join("".join(r) for r in self.scr.s.ch)
+
+    def press(self, *keys):
+        for c in keys:
+            self.scr.key(ord(c) if isinstance(c, str) else c)
+        self.sync()
+
+    def cmds(self):
+        import json
+        out = []
+        for n in sorted(os.listdir(self.scr.cmd_dir)):
+            with open(os.path.join(self.scr.cmd_dir, n)) as fh:
+                out.append(json.load(fh))
+            os.remove(os.path.join(self.scr.cmd_dir, n))
+        return out
+
+    def view2(self):
+        c = self.curses
+        self.press("3", "3")
+        self.assertEqual(self.scr.slot3, "profiles")
+        self.press(c.KEY_DOWN, 10)
+
+    def test_profiles_box_and_view(self):
+        with tempfile.TemporaryDirectory() as d:
+            k, p, scr = self.setup(d)
+            self.press("3", "3")
+            self.assertIn("profiles", self.text())
+            self.assertIn("profile 1", self.text())
+            self.assertIn("profile 2", self.text())
+            self.press(self.curses.KEY_DOWN, 10)
+            self.assertEqual(scr.profile, p.id)
+            self.assertEqual(k.view.get("profile"), p.id)                     # view.json told the engine
+            self.assertEqual(scr.st["profile_name"], "profile 2")
+            self.assertEqual([x["t"] for x in scr.st["paper"]["pos"]], [self.T])   # its base record as a book
+            self.assertEqual(scr.st["strategy"]["band_lo"], 0.55)
+            self.assertIn("profile 2", "".join(scr.s.ch[39]))                  # the status line says so
+            self.press(10)                                                     # enter on profile 1's row? no: still on 2
+            self.press(self.curses.KEY_UP, 10)
+            self.assertIsNone(scr.profile)
+            self.assertNotIn("profile_name", scr.st)
+
+    def test_profile_settings_send_profile_set(self):
+        with tempfile.TemporaryDirectory() as d:
+            k, p, scr = self.setup(d)
+            self.view2(); self.cmds()
+            self.press("e")
+            self.assertIn("band low", self.text())
+            self.assertNotIn("most at risk", self.text())                      # no live rows on a profile
+            rows = [r.key for r in scr.set_rows()]
+            scr.set_sel = rows.index("strategy.band_lo")
+            self.press(self.curses.KEY_RIGHT)
+            c = self.cmds()
+            self.assertEqual([(x["op"], x["profile"], x["key"]) for x in c], [("profile_set", p.id, "strategy.band_lo")])
+            self.assertAlmostEqual(c[0]["value"], 0.56)
+            scr.set_sel = rows.index("strategy.minutes")
+            self.press(" ")                                                    # the first slot (30) turns on
+            c = self.cmds()
+            self.assertEqual(c[0]["key"], "strategy.minutes")
+            self.assertEqual(c[0]["value"], [30, 25, 20, 15, 10])
+            scr.set_sel = rows.index("strategy.variant")
+            self.press(self.curses.KEY_RIGHT)
+            self.assertEqual(self.cmds()[0]["value"], "band90")
+
+    def test_profile_box_keys(self):
+        with tempfile.TemporaryDirectory() as d:
+            k, p, scr = self.setup(d)
+            self.press("3", "3", self.curses.KEY_DOWN); self.cmds()
+            self.press(" ")
+            self.assertEqual([(x["op"], x["profile"], x["on"]) for x in self.cmds()], [("profile_enable", p.id, False)])
+            self.press("n", "t", "r", "y", 10)
+            self.assertEqual([(x["op"], x["name"]) for x in self.cmds()], [("profile_new", "try")])
+            self.press("D", "n", "o", 10)
+            self.assertEqual(self.cmds(), [])                                  # not typed exactly: kept
+            self.press("D", *"delete", 10)
+            self.assertEqual([(x["op"], x["profile"]) for x in self.cmds()], [("profile_delete", p.id)])
+            self.press(self.curses.KEY_UP, "D", *"delete", 10)
+            self.assertEqual(self.cmds(), [])                                  # profile 1 has no delete
+
+    def test_live_keys_refuse_on_profiles(self):
+        with tempfile.TemporaryDirectory() as d:
+            k, p, scr = self.setup(d)
+            self.view2(); self.cmds()
+            for key in ("L", "R"):
+                self.press(key)
+                self.assertIsNone(scr.modal)
+                self.assertIn("paper only", scr.flash)
+            self.assertEqual(self.cmds(), [])
+
+    def test_viewed_profile_gone_falls_back(self):
+        with tempfile.TemporaryDirectory() as d:
+            k, p, scr = self.setup(d)
+            self.view2()
+            k._command({"op": "profile_delete", "profile": p.id})
+            self.sync()
+            self.assertIsNone(scr.profile)
+            self.assertIn("profile 1", scr.flash)
 
 
 class Net(unittest.TestCase):

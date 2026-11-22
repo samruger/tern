@@ -975,7 +975,7 @@ class Desk:
         return next((p for p in self.profiles if p.id == pid), None)
 
     def _profile_command(self, op: str, c: dict) -> str:
-        pid = c.get("id")
+        pid = c.get("profile")                   # ("id" is the command's own, for its result)
         if op == "profile_new":
             name = c.get("name") if isinstance(c.get("name"), str) else ""
             try:
@@ -1022,11 +1022,16 @@ class Desk:
 
     def _profile_rows(self, variants: list[dict]) -> list[dict]:
         """One row per profile for the screen's profiles box, profile 1 first."""
+        def rule(cfg) -> dict:
+            S = cfg.strategy
+            return {"band_lo": S.band_lo, "band_hi": S.band_hi, "minutes": S.minutes, "max_spread": S.max_spread,
+                    "series": S.series, "contracts": S.contracts, "max_hour_cost": S.max_hour_cost,
+                    "paper_capital": cfg.paper_capital}
         out = [{"id": "1", "name": "profile 1", "enabled": True, "variant": self.variant(), "sv": self.slog.sv,
-                "created": 0, "variants": variants}]
+                "created": 0, "variants": variants, "rule": rule(self.cfg)}]
         for p in self.profiles:
             out.append({"id": p.id, "name": p.name, "enabled": p.enabled, "variant": p.variant, "sv": p.log.sv,
-                        "created": p.created,
+                        "created": p.created, "rule": rule(p.cfg),
                         "variants": [{**r, "desc": shadowmod.DESC.get(r["name"], ""), "active": r["name"] == p.variant}
                                      for r in p.shadow.summary()]})
         return out
