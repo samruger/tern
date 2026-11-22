@@ -1719,6 +1719,37 @@ class Web(unittest.TestCase):
             f = hub.handle({"w": 120, "h": 40, "prefs": {"log_filter": "trades"}})   # a reload brings it back
             self.assertEqual(f["prefs"]["log_filter"], "trades")
 
+    def test_web_views_a_profile_and_changes_nothing(self):
+        import json
+        from tern.web import Hub
+        with tempfile.TemporaryDirectory() as d:
+            k = EngineProfiles.desk(self, d, bid="0.58", ask="0.60")
+            k.seeded.add(self.T)
+            p = EngineProfiles.profile(self, k, "profile 2", band_lo=0.55, band_hi=0.65)
+            k._shadow(); k._status()
+            hub = Hub(d)
+            sid = hub.handle({"w": 120, "h": 40})["sid"]
+            go = lambda key: hub.handle({"sid": sid, "w": 120, "h": 40, "key": key})
+            for key in ("3", "3", "ArrowDown", "Enter"):
+                f = go(key)
+            self.assertEqual(f["prefs"]["profile"], p.id)
+            hub.publish(force=True)
+            with open(os.path.join(k.fast, "view-web.json")) as fh:
+                self.assertEqual(json.load(fh)["profiles"], [p.id])
+            k._read_view(); k._status()
+            hub.checked = 0                                                    # reread the status now, not in 0.2 s
+            f = go("ArrowUp")
+            self.assertIn("profile 2", "".join(t for t, _ in f["rows"][39]))     # status line: the profile shown
+            for key in (" ", "n", "D"):
+                f = go(key)
+                self.assertIn("view only", "".join(t for t, _ in f["rows"][38]), key)
+            go("e"); go("ArrowDown"); go("ArrowDown")
+            f = go("ArrowRight")                                               # band low, one step up
+            self.assertIn("view only", "".join(t for t, _ in f["rows"][38]))
+            self.assertEqual(os.listdir(os.path.join(d, "cmd")), [])          # nothing reached the engine
+            f = hub.handle({"w": 120, "h": 40, "prefs": {"profile": p.id, "slot3": "profiles"}})   # a reload keeps it
+            self.assertEqual(f["prefs"]["profile"], p.id)
+
     def test_engine_sends_history_for_strikes_web_viewers_picked(self):
         import collections, json, time
         from tern.engine import Desk
