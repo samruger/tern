@@ -352,6 +352,8 @@ OVERLAY_TOKENS = re.compile(
     r"|(?P<keyhint>^(?:y|any key|any other key)\b|\besc\b|·\s(?:any (?:other )?key)\b)"
     r"|(?P<path>~/\S+|\bKALSHI_KEY_(?:ID|FILE)\b|\blive\.\w+)")
 SHADOW_LINE = re.compile(r"^(shadow: \S+ settled) · (.+)$")   # the engine's line after an hour settles
+LOG_GRID_IN = len("shadow: ")                    # the grid starts under the text after "shadow:"
+LOG_GRID_COLS = 4                                # variants a row at most, however wide the screen
 SHADOW_CELL = re.compile(r"^(\S+) ([+-]\d[\d,]*\.\d\d)$")
 RULE_LINE = "\0rule"                              # placeholder text: draw_overlay turns it into a divider
 
@@ -1576,7 +1578,7 @@ class Screen:
             yy = y + 1 + j
             age = (len(shown) - 1 - j) / max(1, rows - 1)          # 0 for the bottom (newest) line
             if sub:                                                # a shadow line's grid: name and P&L columns
-                cx = x + 13
+                cx = x + 11 + LOG_GRID_IN                          # lined up after "shadow: "
                 for name, pnl in msg:
                     self.put(yy, cx, name, P(P.c("variant"), bold=True))
                     self.put(yy, cx + len(name), pnl, P(GREEN if pnl.lstrip()[0] == "+" else RED, bold=True))
@@ -1649,7 +1651,7 @@ class Screen:
     def log_rows(self, logs: list, w: int) -> list[tuple]:
         """The log box's screen rows, (ts, level, text, sub). A shadow settlement line ("shadow: EV settled ·
         base +1.20 · band90 -0.40 ...") becomes its first part, then rows of (name, P&L) columns as many as
-        fit the box (sub 1, 2...: text is the row's cells); every other line is one row, sub 0."""
+        fit the box, 4 at most, starting under the text after "shadow: " (sub 1, 2...: text is the row's cells); every other line is one row, sub 0."""
         out = []
         for ts, lvl, msg in logs:
             m = SHADOW_LINE.match(msg)
@@ -1660,7 +1662,7 @@ class Screen:
             names = [self.vn(c.group(1)) for c in cells]
             pnls = [c.group(2) for c in cells]
             nw, pw = max(map(len, names)) + 1, max(map(len, pnls))
-            per = max(1, (w - 15 + 3) // (nw + pw + 3))           # columns that fit, 3 spaces between
+            per = max(1, min(LOG_GRID_COLS, (w - 13 - LOG_GRID_IN + 3) // (nw + pw + 3)))   # 3 spaces between
             grid = [(f"{n:<{nw}}", f"{v:>{pw}}") for n, v in zip(names, pnls)]
             for k in range(0, len(grid), per):
                 out.append((ts, lvl, grid[k:k + per], k // per + 1))
