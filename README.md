@@ -1,27 +1,11 @@
-<img width="1364" height="682" alt="screenshot-2026-11-21_17-46-09-tern" src="https://github.com/user-attachments/assets/9814d2f4-8def-486d-ad7b-99a3412f14e1" />
-
-<img width="1364" height="682" alt="screenshot-2026-11-21_17-46-22-tern" src="https://github.com/user-attachments/assets/b7378d7a-d73a-44a6-8ee0-a264e34c64da" />
-
-<img width="1364" height="682" alt="screenshot-2026-11-21_17-46-50-tern" src="https://github.com/user-attachments/assets/ee8ac357-4425-492f-91d3-d9fdeb5d1415" />
-
-<img width="1364" height="682" alt="screenshot-2026-11-21_17-47-02-tern" src="https://github.com/user-attachments/assets/b8b0be7f-77f2-40b1-a825-020223802583" />
-
-<img width="1364" height="682" alt="screenshot-2026-11-21_17-47-55-tern" src="https://github.com/user-attachments/assets/ede6700a-221c-4e0f-9b6e-87c2758cb057" />
-
-<img width="1364" height="682" alt="screenshot-2026-11-21_17-48-09-tern" src="https://github.com/user-attachments/assets/cbb7bd30-6a45-4c50-9b88-612ebf1c984e" />
-
-<img width="1364" height="682" alt="screenshot-2026-11-21_17-48-45-tern" src="https://github.com/user-attachments/assets/41fada51-6dc4-4381-9249-3ed672e7d72d" />
-
-<img width="1364" height="682" alt="screenshot-2026-11-21_17-49-07-tern" src="https://github.com/user-attachments/assets/e3c5f332-30ae-41ac-bae7-a796b2ad9275" />
-
-<img width="1364" height="682" alt="screenshot-2026-11-21_17-49-26-tern" src="https://github.com/user-attachments/assets/e5b7f060-8be7-4843-ab2b-88077bc40738" />
-
 # tern
 
 A desk for Kalshi's hourly crypto above-or-below markets (BTC, ETH, SOL, XRP, BNB, HYPE), with a btop-style
 screen: braille charts, a strike ladder, and paper and live books.
 Every trade comes from the rule; there are no manual orders.
 It paper trades from the start and sends no real order until you arm live.
+
+<img width="1364" height="682" alt="screenshot-2026-11-21_17-46-09-tern" src="https://github.com/user-attachments/assets/9814d2f4-8def-486d-ad7b-99a3412f14e1" />
 
 Python 3.11+, standard library only. Kalshi request signing (Ed25519 and RSA-PSS)
 is written in pure Python and checked against openssl in the tests.
@@ -35,6 +19,8 @@ python3 -m tern live-check    # test your Kalshi key (balance, positions; no ord
 python3 -m tern service       # a systemd user service so the engine keeps running
 python3 -m unittest tests.test_tern
 ```
+
+<img width="1364" height="682" alt="screenshot-2026-11-21_17-46-22-tern" src="https://github.com/user-attachments/assets/b7378d7a-d73a-44a6-8ee0-a264e34c64da" />
 
 ## Is there an edge?
 
@@ -54,6 +40,8 @@ Barely. The full write-up is [research/RESEARCH.md](research/RESEARCH.md). In sh
   default size, and single losses of about $4 when a favorite fails.
 - **Resting bids lose.** You get filled when price moves against you.
 
+<img width="1364" height="682" alt="screenshot-2026-11-21_17-46-50-tern" src="https://github.com/user-attachments/assets/ee8ac357-4425-492f-91d3-d9fdeb5d1415" />
+
 ## The rule
 
 At **25, 20, 15 and 10 minutes before each hourly close**, for every strike whose
@@ -64,6 +52,8 @@ one hour. All of this is under `strategy` in `runtime/config.json`, re-read
 every 5 seconds. It trades BTC only by default. `r` on another coin's view adds
 that coin, but ETH was only tested on 14 days and SOL, XRP, BNB and HYPE not at
 all; those four are there to watch.
+
+<img width="1364" height="682" alt="screenshot-2026-11-21_17-47-02-tern" src="https://github.com/user-attachments/assets/b8b0be7f-77f2-40b1-a825-020223802583" />
 
 ## Paper and live
 
@@ -92,6 +82,8 @@ once it has. Press `L` again to return to paper. Once live:
   seconds. Each order carries a unique `client_order_id`. If the reply is lost,
   the engine looks the order up by that id instead of sending it again.
 
+<img width="1364" height="682" alt="screenshot-2026-11-21_17-47-55-tern" src="https://github.com/user-attachments/assets/ede6700a-221c-4e0f-9b6e-87c2758cb057" />
+
 ## Looking for a better edge
 
 The engine also runs these on paper, side by side, each with its own record
@@ -107,6 +99,8 @@ To look at a variant without trading it, highlight it and press `w`. The book,
 equity, ladder and band then show that variant's shadow record as if it traded
 (on a $1,000 paper start), and the status line says `watching X · trading Y`.
 Nothing about what trades changes. `w` again or `v` goes back to the real book.
+
+<img width="1364" height="682" alt="screenshot-2026-11-21_17-48-09-tern" src="https://github.com/user-attachments/assets/cbb7bd30-6a45-4c50-9b88-612ebf1c984e" />
 
 | Variant | What it does |
 |---|---|
@@ -129,6 +123,8 @@ It also records what it sees to `runtime/ticks/`: every 5 seconds, each
 near-the-money strike's bid, ask and sizes with spot, plus each hour's results
 (about 2 MB a day, gzipped). Kalshi keeps only minute candles, so this is the
 data for testing ideas the first research could not.
+
+<img width="1364" height="682" alt="screenshot-2026-11-21_17-48-45-tern" src="https://github.com/user-attachments/assets/41fada51-6dc4-4381-9249-3ed672e7d72d" />
 
 ## Keys
 
@@ -162,6 +158,8 @@ Keys: `↑↓` / `PgUp PgDn` move in the focused box · `←→` focus · `1`–
 `c` chart range · `v` book · `L` arm/disarm live · `g` gate · `R` reset paper ·
 `s` start the engine · `?` help · `q` close (the engine keeps running).
 
+<img width="1364" height="682" alt="screenshot-2026-11-21_17-49-07-tern" src="https://github.com/user-attachments/assets/e3c5f332-30ae-41ac-bae7-a796b2ad9275" />
+
 ## Files
 
 `runtime/` (gitignored) holds `config.json`, `state.json` (the books as they
@@ -185,6 +183,8 @@ because they are rewritten every second.
 | `record.py` | writes quotes and results to `runtime/ticks/` |
 | `dash.py` | the curses screen |
 | `research/` | the scripts and data behind the numbers above |
+
+<img width="1364" height="682" alt="screenshot-2026-11-21_17-49-26-tern" src="https://github.com/user-attachments/assets/e5b7f060-8be7-4843-ab2b-88077bc40738" />
 
 ## Limits
 
