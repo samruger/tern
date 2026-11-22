@@ -132,8 +132,6 @@ def clean_prefs(d) -> dict:
     out = {}
     if not isinstance(d, dict):
         return out
-    if isinstance(d.get("hidden"), (list, dict)):    # a list is from before pages: it was page 1's
-        out["hidden"] = {v: sorted(b) for v, b in dash.clean_hidden(d["hidden"]).items()}
     if type(d.get("page")) is int and d["page"] in dash.PAGE_NAMES:
         out["page"] = d["page"]
     for k, ok in (("series", cfgmod.SERIES), ("chart", dash.CHARTS)):
@@ -169,8 +167,6 @@ class WebScreen(dash.Screen):
     # ------------------------------------------------------------ no writes, shared reads
     def apply_prefs(self, d: dict) -> None:
         d = clean_prefs(d)
-        if "hidden" in d:
-            self.hidden = dash.clean_hidden(d["hidden"])
         if "series" in d:
             self.series, self.sel = d["series"], None
         if "chart" in d:
@@ -188,7 +184,7 @@ class WebScreen(dash.Screen):
             self.profile = d["profile"]
 
     def current_prefs(self) -> dict:
-        return {"page": self.page, "hidden": {v: sorted(b) for v, b in self.hidden.items()},
+        return {"page": self.page,
                 "series": self.series, "chart": self.chart, "theme": self.P.name,
                 "watch": self.watch, "log_filter": self.log_filter,
                 "profile": self.profile}
@@ -248,7 +244,7 @@ class WebScreen(dash.Screen):
         with _PAL_SWAP:                          # one tab at a time swaps the module's table
             real = dash.PANEL_KEYS
             dash.PANEL_KEYS = {n: (lambda fn: lambda s: [g for g in fn(s) if g[0] not in CONTROL_HINTS])(fn)
-                               for n, fn in real.items()}   # hidden boxes' hints, without the control ones
+                               for n, fn in real.items()}   # off-screen boxes' hints, without the control ones
             try:
                 super().footer(H, W)
             finally:

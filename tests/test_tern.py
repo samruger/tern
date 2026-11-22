@@ -1623,7 +1623,7 @@ class ScreenProfiles(unittest.TestCase):
 
 
 class Pages(unittest.TestCase):
-    """Two fixed pages (p flips them) fitted to the screen, merged when it is big; boxes hidden per page."""
+    """Two fixed pages (p flips them) fitted to the screen, merged when it is big; a box's number zooms it."""
     T, desk, profile = EngineProfiles.T, EngineProfiles.desk, EngineProfiles.profile
     setup, sync, text, press, cmds = (ScreenProfiles.setup, ScreenProfiles.sync, ScreenProfiles.text,
                                       ScreenProfiles.press, ScreenProfiles.cmds)
@@ -1642,17 +1642,22 @@ class Pages(unittest.TestCase):
             cells |= mine
         return r
 
-    def test_number_keys_hide_on_this_page_only(self):
+    def test_number_zooms_and_same_number_restores(self):
         with tempfile.TemporaryDirectory() as d:
             k, p, scr = self.setup(d)
-            self.assertEqual(scr.page, 1)
-            self.press("5")
-            self.assertNotIn("equity", scr.rects)
-            self.press("p")
-            self.assertEqual(scr.page, 2)
-            self.assertIn("equity", scr.rects)
-            self.press("3")                                                     # equity is page 2's third box
-            self.assertEqual(scr.hidden, {"page1": {"equity"}, "page2": {"equity"}, "merged": set()})
+            H, W = scr.s.getmaxyx()
+            scr.focus = "book"
+            self.press("3")
+            self.assertEqual(scr.layout(H, W), [("ladder", 0, 0, H - 1, W)])
+            self.assertEqual(set(self.rects_ok(H, W)), {"ladder"})
+            self.assertEqual(scr.focus, "ladder")
+            self.assertIn("³ladder", self.text())                              # it keeps its number
+            self.press("4")                                                     # another number: that box instead
+            self.assertEqual(set(scr.rects), {"book"})
+            self.press("4")
+            self.assertEqual(set(scr.rects), {"spot", "contract", "ladder", "book", "equity", "log"})
+            self.assertIsNone(scr.zoom)
+            self.assertFalse(hasattr(scr, "hidden"))
 
     def test_numbers_follow_each_page(self):
         with tempfile.TemporaryDirectory() as d:
@@ -1661,17 +1666,49 @@ class Pages(unittest.TestCase):
             for n, name in zip("¹²³⁴⁵⁶", ("spot", "contract", "ladder", "book", "equity", "log")):
                 self.assertTrue(n in text and name in text, name)
             self.press("7")
-            self.assertEqual(scr.hidden["page1"], set())
+            self.assertIsNone(scr.zoom)
             self.assertIn("1-6", scr.flash)
             self.press("p")
             text = self.text()
             for n, name in zip("¹²³⁴", ("variants", "profiles", "equity", "log")):
                 self.assertIn(n + name, text)
-            self.press("1", "2")
-            self.assertEqual(scr.hidden["page2"], {"variants", "profiles"})
+            for key, name in zip("1234", ("variants", "profiles", "equity", "log")):
+                self.press(key)
+                self.assertEqual(set(scr.rects), {name})
+                self.press(key)
             self.press("5")
             self.assertIn("1-4", scr.flash)
-            self.assertEqual(scr.hidden["page2"], {"variants", "profiles"})
+            self.assertIsNone(scr.zoom)
+
+    def test_zoomed_lists_stay_in_their_box(self):
+        with tempfile.TemporaryDirectory() as d:
+            k, p, scr = self.setup(d)
+            self.profile(k, "profile 3"); k._shadow()
+            self.press("p")
+            for H, W in ((30, 100), (33, 111)):
+                self.size(H, W)
+                for key in "12":
+                    self.press(key)
+                    self.rects_ok(H, W)
+                    self.assertIn("base", self.text())
+                    self.press(key)
+
+    def test_p_while_zoomed_restores_and_flips(self):
+        with tempfile.TemporaryDirectory() as d:
+            k, p, scr = self.setup(d)
+            self.press("5", "p")
+            self.assertEqual((scr.page, scr.zoom), (2, None))
+            self.assertEqual(set(scr.rects), {"variants", "profiles", "equity", "log"})
+
+    def test_zoom_cleared_when_off_view(self):
+        with tempfile.TemporaryDirectory() as d:
+            k, p, scr = self.setup(d)
+            self.size(50, 150)
+            self.press("5")                                                     # merged: 5 is variants
+            self.assertEqual(set(scr.rects), {"variants"})
+            self.size(33, 111)                                                  # page 1 has no variants box
+            self.assertIsNone(scr.zoom)
+            self.assertEqual(len(self.rects_ok(33, 111)), 6)
 
     def test_page2_fits_small_screens(self):
         with tempfile.TemporaryDirectory() as d:
@@ -1715,12 +1752,11 @@ class Pages(unittest.TestCase):
             self.assertEqual(set(r), {"spot", "contract", "ladder", "book", "variants", "profiles", "equity", "log"})
             self.press("p")
             self.assertIn("both pages fit", scr.flash)
-            self.press("2")
-            self.assertEqual(scr.hidden["merged"], {"contract"})
-            self.assertEqual(scr.hidden["page1"], set())
-            self.size(33, 111)
+            self.press("8")
+            self.assertEqual(scr.layout(50, 150), [("log", 0, 0, 49, 150)])
+            self.size(33, 111)                                                  # log is on page 1 too: still zoomed
             self.assertEqual(scr.view(33, 111), "page1")
-            self.assertIn("contract", scr.rects)
+            self.assertEqual(set(scr.rects), {"log"})
 
     def test_old_prefs_load(self):
         import json
@@ -1732,17 +1768,20 @@ class Pages(unittest.TestCase):
                     json.dump(prefs, fh)
                 with mock.patch.object(dash, "Pal", web.WebPal):
                     return dash.Screen(web.VTerm(33, 111), d)
-            s = screen({"hidden": ["contract", "nope"], "slot3": "variants"})
-            self.assertEqual((s.page, s.hidden["page1"], s.hidden["page2"]), (1, {"contract"}, set()))
-            s = screen({"page": 2, "hidden": {"page2": ["log", "spot"], "merged": "junk"}})
-            self.assertEqual((s.page, s.hidden["page2"], s.hidden["merged"]), (2, {"log"}, set()))
+            s = screen({"hidden": ["contract", "nope"], "slot3": "variants"})      # hiding is gone: all shown
+            s.draw()
+            self.assertEqual((s.page, s.zoom, len(s.rects)), (1, None, 6))
+            s = screen({"page": 2, "hidden": {"page2": ["log", "spot"], "merged": "junk"}, "zoom": "log"})
+            s.draw()
+            self.assertEqual((s.page, s.zoom, len(s.rects)), (2, None, 4))      # the zoom is never loaded
             s = screen({"page": 7, "hidden": 5})
             self.assertEqual(s.page, 1)
             s.save_prefs()
             with open(os.path.join(d, "dash.json")) as fh:
                 saved = json.load(fh)
             self.assertEqual(saved["page"], 1)
-            self.assertEqual(saved["hidden"], {"page1": [], "page2": [], "merged": []})
+            self.assertNotIn("hidden", saved)
+            self.assertNotIn("zoom", saved)
             self.assertNotIn("slot3", saved)
 
     def test_no_key_cycles(self):
@@ -1751,8 +1790,8 @@ class Pages(unittest.TestCase):
             seen = []
             for _ in range(3):
                 self.press("3")
-                seen.append(("ladder" in scr.rects, "variants" in scr.rects, "profiles" in scr.rects))
-            self.assertEqual(seen, [(False, False, False), (True, False, False), (False, False, False)])
+                seen.append(sorted(scr.rects))
+            self.assertEqual(seen, [["ladder"], sorted(["spot", "contract", "ladder", "book", "equity", "log"]), ["ladder"]])
 
     def test_enter_acts_on_focused_box(self):
         with tempfile.TemporaryDirectory() as d:
@@ -1790,13 +1829,27 @@ class Pages(unittest.TestCase):
             self.size(50, 150); scr.flash = ""; self.sync()
             self.assertNotIn("page ", "".join(scr.s.ch[48]))                  # one merged screen: no pages
 
+    def test_zoom_hint_on_bottom_border(self):
+        with tempfile.TemporaryDirectory() as d:
+            k, p, scr = self.setup(d)
+            H, W = scr.s.getmaxyx()
+            self.press("3"); scr.flash = ""; self.sync()
+            row = "".join(scr.s.ch[H - 2])
+            self.assertIn("─3 back─", row)
+            self.assertNotIn("page 1/2", row)
+            self.assertIn("tab next coin", row)                                 # the other boxes' hints moved here
+            scr.say("hello"); self.sync()
+            self.assertNotIn("3 back", "".join(scr.s.ch[H - 2]))               # a flash takes its place
+            self.size(50, 150); self.press("8"); scr.flash = ""; self.sync()
+            self.assertIn("─8 back─", "".join(scr.s.ch[48]))
+
     def test_watch_without_variants_box_says_page2(self):
         with tempfile.TemporaryDirectory() as d:
             k, p, scr = self.setup(d)
             self.press("w")
             self.assertIn("page 2", scr.flash)
-            self.press("p", "1", "w")
-            self.assertIn("page 2", scr.flash)
+            self.press("p", "2", "w")                                           # profiles zoomed: no variants box
+            self.assertIn("variants", scr.flash)
 
     def test_status_line_fits_every_width(self):
         import time
@@ -2035,7 +2088,14 @@ class Web(unittest.TestCase):
             self.assertEqual(f["prefs"]["watch"], "band90")                    # ↓ then w: watching, trading unchanged
             self.assertNotEqual(f["prefs"]["theme"], "classic")
             self.assertEqual(f["prefs"]["chart"], "1h")
-            self.assertEqual(f["prefs"]["hidden"], {"page1": [], "page2": ["log"], "merged": []})
+            self.assertNotIn("hidden", f["prefs"])
+            self.assertNotIn("zoom", f["prefs"])
+            self.assertEqual(hub.sessions[sid][0].zoom, "log")                   # page 2's 4: zoomed in this tab only
+            hub.sessions[sid][0].flash = ""
+            f = hub.handle({"sid": sid, "w": 120, "h": 40, "key": "ArrowUp"})
+            row = "".join(t for t, _ in f["rows"][38])
+            f = hub.handle({"sid": sid, "w": 120, "h": 40, "click": {"y": 38, "x": row.index("4 back")}})
+            self.assertIsNone(hub.sessions[sid][0].zoom)                         # clicking "4 back" restores
             self.assertEqual(len(f["rows"]), 40)
 
     def test_web_pages_prefs(self):
@@ -2043,10 +2103,13 @@ class Web(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             self.status(d)
             hub = Hub(d)
-            f = hub.handle({"w": 111, "h": 33, "prefs": {"page": 2, "hidden": {"page2": ["log"]}}})
-            self.assertEqual((f["prefs"]["page"], f["prefs"]["hidden"]["page2"]), (2, ["log"]))
+            f = hub.handle({"w": 111, "h": 33, "prefs": {"page": 2, "hidden": {"page2": ["log"]}, "zoom": "log"}})
+            self.assertEqual(f["prefs"]["page"], 2)
+            self.assertNotIn("hidden", f["prefs"])
+            self.assertIsNone(hub.sessions[f["sid"]][0].zoom)
             old = hub.handle({"w": 111, "h": 33, "prefs": {"hidden": ["contract"], "slot3": "variants"}})
-            self.assertEqual((old["prefs"]["page"], old["prefs"]["hidden"]["page1"]), (1, ["contract"]))
+            self.assertEqual(old["prefs"]["page"], 1)
+            self.assertNotIn("hidden", old["prefs"])
             self.assertNotIn("slot3", old["prefs"])
             sid = f["sid"]
             go = lambda **req: hub.handle({"sid": sid, "w": 111, "h": 33, **req})

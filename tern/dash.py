@@ -336,7 +336,8 @@ HELP_BOXES = [
     ("", "", "  every variant under its own settings, paper only; ● is the one shown"),
     ("", "pages", "(p) flips page 1 (boxes 1-6) and page 2 (1 variants, 2 profiles, 3 equity,"),
     ("", "", "  4 log); \"page 1/2\" on the bottom border says which. A screen big enough"),
-    ("", "", "  for every box shows them all as one, numbered 1-8"),
+    ("", "", "  for every box shows them all as one, numbered 1-8. A box's number zooms it"),
+    ("", "", "  to the whole screen; \"3 back\" on the bottom border: the same number restores"),
     ("", "status", "bottom row: PAPER or LIVE, the coin's price and 1h change, the hourly event"),
     ("", "", "  and time to its close, rule ON/off with the next slot (+live when live"),
     ("", "", "  trades), stale data warnings (usually Wi-Fi), engine ok / stale / down"),
@@ -361,10 +362,10 @@ HELP_KEYS = [
                ("mouse wheel", "scroll the box under the pointer"),
                ("tab S-tab", "next / previous coin")]),
      ("look", [("p", "page 1 / page 2"),
-               ("1-6", "page 1: show / hide spot, contract,"),
-               ("", "ladder, book, equity, log"),
+               ("1-6", "page 1: zoom spot, contract, ladder,"),
+               ("", "book, equity or log to the whole screen"),
                ("1-4", "page 2: variants, profiles, equity, log"),
-               ("", "(hidden on that page only)"),
+               ("", "(the same number again goes back)"),
                ("c", "spot chart span: 5m 15m 1h 24h"),
                ("v", "book and equity: paper / live"),
                ("w", "watch the highlighted variant: book,"),
@@ -418,7 +419,7 @@ CHARTS = {"5m": 300, "15m": 900, "1h": 3600, "24h": 86400}
 BOXES = ["spot", "contract", "ladder", "book", "equity", "log", "variants", "profiles"]
 PANELS = BOXES                                   # older name, kept for the web and tests
 # each view's rows of boxes, top to bottom; p flips page1 / page2, and a screen big enough for every box at its
-# smallest shows them all as one (merged). Each view keeps its own hidden boxes.
+# smallest shows them all as one (merged). A box's number zooms it to the whole screen; the same number restores.
 PAGES = {"page1": [("spot", "contract"), ("ladder", "book"), ("equity", "log")],
          "page2": [("variants",), ("profiles", "equity"), ("log",)],
          "merged": [("spot", "contract"), ("ladder", "book"), ("variants", "profiles"), ("equity", "log")]}
@@ -430,7 +431,7 @@ WANT_W = {"ladder": 56, "variants": 80, "profiles": 70}   # the width a box need
 SUPER = "¹²³⁴⁵⁶⁷⁸⁹"
 LEFT_MIN = {"ladder": 56, "variants": 56, "profiles": 56}   # the ladder's columns need this much before its bar has any room
 SCROLLS = ["ladder", "variants", "profiles", "book", "log"]   # the boxes ←→ focus and ↑↓ scroll
-ORPHAN_DROP = ["t", "c", "R", "L", "v", "r", "", "h", "s", "g", "q", "tab"]   # hidden boxes' hints, first dropped first
+ORPHAN_DROP = ["t", "c", "R", "L", "v", "r", "", "h", "s", "g", "q", "tab"]   # off-screen boxes' hints, first dropped first
 COMFY_H = {"spot": 10, "contract": 10, "ladder": 12, "book": 12, "equity": 8, "log": 8}   # sizes the merged view needs
 
 
@@ -438,18 +439,7 @@ def view_boxes(view: str) -> list[str]:
     return [n for row in PAGES[view] for n in row]
 
 
-def clean_hidden(hd) -> dict[str, set[str]]:
-    """Each view's hidden boxes from saved prefs. The old shape, one list, was page 1's (then the only page)."""
-    out = {v: set() for v in PAGES}
-    if isinstance(hd, list):
-        hd = {"page1": hd}
-    if isinstance(hd, dict):
-        for v in PAGES:
-            if isinstance(hd.get(v), list):
-                out[v] = {x for x in hd[v] if isinstance(x, str)} & set(view_boxes(v))
-    return out
-
-# key hints drawn on each box's top border (btop style); a hidden box's hints move to the bottom row
+# key hints drawn on each box's top border (btop style); an off-screen box's hints move to the bottom row
 PANEL_KEYS = {
     "spot": lambda s: [("tab", " next coin"), ("r", "ule on/off", "") if s.rule_on() is None
                        else ("r", "ule ", "on", "/off") if s.rule_on() else ("r", "ule on/", "off"),   # pink: the state now
@@ -519,7 +509,7 @@ class Screen:
         self.log_anchor: float | None = None   # ts of the bottom log line while scrolled back; None follows new lines
         self.pos_off = 0                       # first line shown under the book's totals
         self.prefs_path = os.path.join(runtime, "dash.json")
-        self.hidden = clean_hidden(None)       # each view's boxes turned off with 1-8
+        self.zoom: str | None = None           # the box a number key blew up to the whole screen (never saved)
         self.page = 1                          # p flips page 1 (trade) / page 2 (compare)
         self.panel_key = ""                    # the number drawn in the title of the box being drawn
         self.drawing = ""                      # the box being drawn, so box() can mark the focused one
@@ -534,7 +524,6 @@ class Screen:
         try:
             with open(self.prefs_path) as fh:
                 d = json.load(fh)
-            self.hidden = clean_hidden(d.get("hidden"))
             if type(d.get("page")) is int and d["page"] in PAGE_NAMES:
                 self.page = d["page"]
                 self.focus = "ladder" if self.page == 1 else "variants"
@@ -596,7 +585,7 @@ class Screen:
     def save_prefs(self) -> None:
         try:
             with open(self.prefs_path + ".tmp", "w") as fh:
-                json.dump({"page": self.page, "hidden": {v: sorted(b) for v, b in self.hidden.items()},
+                json.dump({"page": self.page,
                            "series": self.series, "chart": self.chart, "theme": self.P.name,
                            "watch": self.watch, "log_filter": self.log_filter,
                            "profile": self.profile}, fh)
@@ -621,7 +610,7 @@ class Screen:
         return n + 6, 7
 
     def toggle(self, i: int) -> None:
-        """1-8: show / hide this view's i-th box (its number on its border)."""
+        """1-8: zoom this view's i-th box (its number on its border) to the whole screen; its number again restores."""
         H, W = self.s.getmaxyx()
         v = self.view(H, W)
         here = view_boxes(v)
@@ -629,16 +618,30 @@ class Screen:
             where = f"page {self.page}" if v != "merged" else "this screen"
             self.say(f"{where} has boxes 1-{len(here)}"); return
         name = here[i]
-        self.hidden[v] ^= {name}
-        self.save_prefs()
-        self.say(f"{name} {'hidden' if name in self.hidden[v] else 'shown'}"
-                 + (f" · every box here is hidden: 1-{len(here)} bring them back" if self.hidden[v] >= set(here) else ""))
+        self.zoom = None if self.zoom == name else name
+        if self.zoom in SCROLLS:
+            self.focus = self.zoom
+        self.flash = ""                              # the bottom border says how to go back
+
+    def zoomed(self, H: int, W: int) -> str | None:
+        """The zoomed box, if it is on this view (a resize can take it off: then it's dropped)."""
+        if self.zoom and self.zoom not in view_boxes(self.view(H, W)):
+            self.zoom = None
+        return self.zoom
+
+    def back_to(self, what: str) -> str:
+        """How to get to a box that isn't on screen: un-zoom, or flip to page 2."""
+        H, W = self.s.getmaxyx()
+        if self.zoomed(H, W):
+            return f"{view_boxes(self.view(H, W)).index(self.zoom) + 1} un-zooms, {what}"
+        return f"p for page 2, {what}"
 
     def flip_page(self) -> None:
         H, W = self.s.getmaxyx()
         if self.view(H, W) == "merged":
             self.say("both pages fit on this screen: every box is shown"); return
         self.page = 2 if self.page == 1 else 1
+        self.zoom = None                             # the numbers mean other boxes on the other page
         self.save_prefs()
         self.flash = ""                              # the page names on the bottom border show which page it is
 
@@ -689,15 +692,14 @@ class Screen:
         """(panel, y, x, h, w) for every box shown on this view. A row's survivor takes the full width; a pair
         too narrow for both stacks into two rows."""
         view = self.view(H, W)
+        if self.zoomed(H, W):
+            return [(self.zoom, 0, 0, H - 1, W)]
         rows: list[tuple[str, ...]] = []
         for row in PAGES[view]:
-            shown = tuple(n for n in row if n not in self.hidden[view])
-            if len(shown) == 2 and sum(LEFT_MIN.get(n, 30) for n in shown) > W:   # not even at their smallest
-                rows += [(shown[0],), (shown[1],)]
-            elif shown:
-                rows.append(shown)
-        if not rows:
-            return []
+            if len(row) == 2 and sum(LEFT_MIN.get(n, 30) for n in row) > W:   # not even at their smallest
+                rows += [(row[0],), (row[1],)]
+            else:
+                rows.append(row)
         out, y = [], 0
         for row, h in zip(rows, self.fit(rows, H - 1)):   # the status line takes the last row
             if len(row) == 2:
@@ -1246,7 +1248,7 @@ class Screen:
             name, self.watch = self.watch, None
             self.save_prefs(); self.say(f"stopped watching {name}: back to the {self.active()} paper book"); return
         if not self.shown("variants"):
-            self.say("w watches a variant: p for page 2, highlight one in variants, then w"); return
+            self.say("w watches a variant: " + self.back_to("highlight one in variants, then w")); return
         name = self.var_sel
         if not name or name == self.active():
             self.say(f"{name} is what trades: the paper book already shows it"); return
@@ -1257,7 +1259,7 @@ class Screen:
         """Enter in the variants box: trade the picked variant. Paper switches at once; while live is
         on or armed it asks for "live" first, as arming does."""
         if not self.shown("variants"):
-            self.say("enter picks a variant: p for page 2, where the variants box is"); return
+            self.say("enter picks a variant: " + self.back_to("where the variants box is")); return
         vs = self.st.get("variants") or []
         cur = next((v for v in vs if v["name"] == self.var_sel), None)
         active = next((v["name"] for v in vs if v.get("active")), None)
@@ -1656,13 +1658,17 @@ class Screen:
         self.write_view()
 
     def footer(self, H: int, W: int) -> None:
-        """Row H-2 is the bottom border of the lowest boxes. It carries the hints of any hidden
-        box (so tab, ?, q... never go missing) at its right end, and a flash message at its left."""
+        """Row H-2 is the bottom border of the lowest boxes. It carries the hints of any box not on
+        screen (so tab, ?, q... never go missing) at its right end, and a flash message at its left."""
         P = self.P
         flashing = bool(self.flash) and time.time() - self.flash_at < 8
-        paged = not flashing and self.view(H, W) != "merged"
-        page_seg = ("p", "age ", str(self.page), "/2")           # ─page 1/2─ at the row's left end
-        lo = 2 + sum(map(len, page_seg)) + 3 if paged else 1   # the hidden boxes' hints stay right of it
+        view = self.view(H, W)
+        if self.zoomed(H, W):                                   # ─3 back─: the zoomed box's number restores
+            page_seg = (str(view_boxes(view).index(self.zoom) + 1), " back")
+        else:
+            page_seg = ("p", "age ", str(self.page), "/2") if view != "merged" else ()   # ─page 1/2─
+        paged = not flashing and bool(page_seg)
+        lo = 2 + sum(map(len, page_seg)) + 3 if paged else 1   # the moved hints stay right of it
         orphans = [k for name, fn in PANEL_KEYS.items() if name not in self.rects for k in fn(self)]
         width = lambda segs: sum(sum(map(len, seg)) + 3 for seg in segs) - 1
         for key in ORPHAN_DROP:                       # too many for the row: the least needed go first, tab last
@@ -2054,7 +2060,7 @@ class Screen:
         view = self.view(H, W)
         here = view_boxes(view)
         names = [b[0] for b in boxes if b[0] in SCROLLS]
-        if names and self.focus not in names:          # the focused box went off screen (page, hiding, size)
+        if names and self.focus not in names:          # the focused box went off screen (page, zoom, size)
             self.focus = names[0]
         for name, y, x, h, w in boxes:
             self.rects[name] = (y, x, h, w)
@@ -2065,10 +2071,6 @@ class Screen:
         self.clip = None
         self.panel_key = ""
         self.drawing = ""
-        if not boxes:
-            msg = "every box here is hidden · press " + ", ".join(f"{i} {n}" for i, n in enumerate(here, 1)) \
-                + (" · p flips the page" if view != "merged" else "")
-            self.put(H // 2, max(0, (W - len(msg)) // 2), msg, self.P(self.P.grey))
         self.footer(H, W)
         if self.overlay == "settings":
             self.draw_overlay(self.settings_lines(), "settings", self.P.border("contract"),

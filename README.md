@@ -181,8 +181,9 @@ The boxes sit on two pages, and `p` flips between them. Page 1 · trade has spot
 equity and log. Page 2 · compare has variants across the full width, then profiles and equity, then log. Each
 page fits itself to the terminal: tables keep all their rows and the charts give up height first. A screen big
 enough for every box (about 150×45) shows them all as one page. Each page numbers its boxes in reading order
-(page 1: 1–6; page 2: 1 variants, 2 profiles, 3 equity, 4 log), `page 1/2` on the bottom border says which
-page it is, and hiding a box hides it on that page only.
+(page 1: 1–6; page 2: 1 variants, 2 profiles, 3 equity, 4 log), and `page 1/2` on the bottom border says which
+page it is. A box's number zooms it to the whole screen; the same number again (the bottom border says `3 back`)
+restores the page, and `p` restores it and flips.
 
 | Box | What it shows |
 |---|---|
@@ -196,7 +197,7 @@ page it is, and hiding a box hides it on that page only.
 | ¹ variants (page 2) | each variant's record and gate progress, ● on the one in use, and the highlighted one's P&L by hour |
 | ² profiles (page 2) | profile 1 and the profiles you made (see Profiles) |
 
-Keys: `p` page 1 / page 2 · `↑↓` / `PgUp PgDn` move in the focused box · `←→` focus · `1`–`6` (page 1) or `1`–`4` (page 2) show/hide a box on that page · `enter` use the highlighted variant or view the highlighted profile (whichever box has focus) · `w` watch a variant (view only) · `tab` next coin · `r` rule trades this coin ·
+Keys: `p` page 1 / page 2 · `↑↓` / `PgUp PgDn` move in the focused box · `←→` focus · `1`–`6` (page 1) or `1`–`4` (page 2) zoom a box to the whole screen, the same number goes back · `enter` use the highlighted variant or view the highlighted profile (whichever box has focus) · `w` watch a variant (view only) · `tab` next coin · `r` rule trades this coin ·
 `c` chart range · `v` book · `L` arm/disarm live · `g` gate · `R` reset paper ·
 `s` start the engine · `?` help · `q` close (the engine keeps running).
 
