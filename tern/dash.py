@@ -429,6 +429,7 @@ WANT_W = {"ladder": 56, "variants": 80, "profiles": 70}   # the width a box need
 SUPER = "¹²³⁴⁵⁶⁷⁸⁹"
 LEFT_MIN = {"ladder": 56, "variants": 56, "profiles": 56}   # the ladder's columns need this much before its bar has any room
 SCROLLS = ["ladder", "variants", "profiles", "book", "log"]   # the boxes ←→ focus and ↑↓ scroll
+ORPHAN_DROP = ["t", "c", "R", "L", "v", "r", "", "h", "s", "g", "q", "tab"]   # hidden boxes' hints, first dropped first
 COMFY_H = {"spot": 10, "contract": 10, "ladder": 12, "book": 12, "equity": 8, "log": 8}   # sizes the merged view needs
 
 
@@ -534,7 +535,7 @@ class Screen:
             with open(self.prefs_path) as fh:
                 d = json.load(fh)
             self.hidden = clean_hidden(d.get("hidden"))
-            if d.get("page") in PAGE_NAMES:
+            if type(d.get("page")) is int and d["page"] in PAGE_NAMES:
                 self.page = d["page"]
                 self.focus = "ladder" if self.page == 1 else "variants"
             if d.get("series") in cfgmod.SERIES:
@@ -640,7 +641,7 @@ class Screen:
             self.say("both pages fit on this screen: every box is shown"); return
         self.page = 2 if self.page == 1 else 1
         self.save_prefs()
-        self.say(f"page {self.page}: {PAGE_NAMES[self.page]}")
+        self.flash = ""                              # the page names on the bottom border show which page it is
 
     def shown(self, name: str) -> bool:
         if self.rects:
@@ -1659,19 +1660,31 @@ class Screen:
         """Row H-2 is the bottom border of the lowest boxes. It carries the hints of any hidden
         box (so tab, ?, q... never go missing) at its right end, and a flash message at its left."""
         P = self.P
+        flashing = bool(self.flash) and time.time() - self.flash_at < 8
+        lo = 1 if flashing or self.view(H, W) == "merged" else 2 + self.page_hint_w() + 1   # left of it: the page names
         orphans = [k for name, fn in PANEL_KEYS.items() if name not in self.rects for k in fn(self)]
+        width = lambda segs: sum(sum(map(len, seg)) + 3 for seg in segs) - 1
+        for key in ORPHAN_DROP:                       # too many for the row: the least needed go first, tab last
+            if width(orphans) <= W - 3 - lo:
+                break
+            orphans = [seg for seg in orphans if isinstance(seg, str) or seg[0] != key]
         if orphans:
             border = P(P.grey)
-            need = sum(sum(map(len, seg)) + 3 for seg in orphans) - 1
-            rx = W - 3 - need if self.rects else max(1, (W - need) // 2)
+            need = width(orphans)
+            rx = W - 3 - need if self.rects else max(lo, (W - need) // 2)
             for seg in orphans:
-                if rx >= 1:
+                if rx >= lo:
                     self.hint(H - 2, rx, seg, border)
                 rx += sum(map(len, seg)) + 3
-        self.page_hint(H, W)
-        if self.flash and time.time() - self.flash_at < 8:
+        if not flashing:                              # a flash takes the row's left end (and would leave pieces of it)
+            self.page_hint(H, W)
+        if flashing:
             msg = f" {self.flash} "[:max(0, W - 4)]
             self.put(H - 2, 2, msg, P(YELLOW, bold=True) | curses.A_REVERSE)
+
+    @staticmethod
+    def page_hint_w() -> int:
+        return 6 + sum(len(n) + 3 for n in PAGE_NAMES.values())
 
     def page_hint(self, H: int, W: int) -> None:
         """─page  trade  compare─ at the left of the bottom border, the page shown highlighted. Not drawn when
@@ -2183,12 +2196,13 @@ class Screen:
                 self.use_variant()
             else:
                 self.say("enter: ←→ to focus variants or profiles, then enter")
-        elif ch == ord(" ") and self.in_profiles():
-            self.profile_enable()
-        elif ch == ord("n") and self.in_profiles():
-            self.profile_ask("pname")
-        elif ch == ord("D") and self.in_profiles():
-            self.profile_ask("pdelete")
+        elif ch in (ord(" "), ord("n"), ord("D")) and self.in_profiles():
+            if self.focus != "profiles":                 # like enter, they act on the focused box only
+                self.say("space, n and D are the profiles box's: ←→ to focus profiles first")
+            elif ch == ord(" "):
+                self.profile_enable()
+            else:
+                self.profile_ask("pname" if ch == ord("n") else "pdelete")
         elif ord("1") <= ch <= ord(str(len(BOXES))):
             self.toggle(ch - ord("1"))
         elif ch == ord("p"):

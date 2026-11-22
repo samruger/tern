@@ -134,7 +134,9 @@ def clean_prefs(d) -> dict:
         return out
     if isinstance(d.get("hidden"), (list, dict)):    # a list is from before pages: it was page 1's
         out["hidden"] = {v: sorted(b) for v, b in dash.clean_hidden(d["hidden"]).items()}
-    for k, ok in (("series", cfgmod.SERIES), ("chart", dash.CHARTS), ("page", dash.PAGE_NAMES)):
+    if type(d.get("page")) is int and d["page"] in dash.PAGE_NAMES:
+        out["page"] = d["page"]
+    for k, ok in (("series", cfgmod.SERIES), ("chart", dash.CHARTS)):
         if d.get(k) in ok:
             out[k] = d[k]
     if isinstance(d.get("theme"), str) and d["theme"] in dash.themes.THEMES:
@@ -231,7 +233,7 @@ class WebScreen(dash.Screen):
         keep = {"⏎"} if self.drawing == "profiles" else set()
         segs = [s for s in segs if isinstance(s, str) or s[0] not in CONTROL_HINTS - keep]
         key = key or self.panel_key
-        if key in dash.SUPER:                    # the box number: a click shows / hides it, as 1-6 do
+        if key in dash.SUPER:                    # the box number: a click shows / hides it, as 1-8 do
             self.hits.append((y, x + 3, x + 3 + len(key), str(dash.SUPER.index(key) + 1)))
         super().box(y, x, h, w, title, color, key, segs)
 
@@ -306,6 +308,9 @@ class WebScreen(dash.Screen):
                 return
         for y, x0, x1, k in self.hits:
             if y == cy and x0 <= cx < x1:
+                for name, (by, bx, bh, bw) in self.rects.items():   # a box's own hint acts on that box
+                    if by <= cy < by + bh and bx <= cx < bx + bw and name in dash.SCROLLS:
+                        self.focus = name
                 self.press(k); return
         if self.overlay:
             self.overlay = None; return

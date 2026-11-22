@@ -1804,6 +1804,57 @@ class Pages(unittest.TestCase):
                     self.assertIn("in ", row)                                   # when the next slot is
                     self.assertIn("closes", row)
 
+    def test_page_hint_leaves_moved_hints_whole(self):
+        from tern import themes
+        with tempfile.TemporaryDirectory() as d:
+            k, p, scr = self.setup(d)
+            scr.P.set_theme(max(themes.THEMES, key=len))                        # the longest hint the bottom row moves
+            self.press("p")
+            for H, W in ((30, 100), (33, 111)):
+                scr.flash = ""; self.size(H, W)
+                row = "".join(scr.s.ch[H - 2])
+                self.assertIn("compare", row)
+                self.assertNotRegex(row, r"compare ─[^─ ]", (W, row))           # nothing drawn over the page names
+                self.assertIn("tab next coin", row, (W, row))                   # the moved hints keep tab, whole
+
+    def test_flash_hides_the_page_hint(self):
+        with tempfile.TemporaryDirectory() as d:
+            k, p, scr = self.setup(d)
+            self.press("p")
+            scr.say("page 2: compare"); self.sync()
+            H, W = scr.s.getmaxyx()
+            row = "".join(scr.s.ch[H - 2])
+            self.assertEqual(row.count("compare"), 1, row)
+            self.assertNotIn("trade", row)
+            self.assertEqual(scr.page_spots, [])
+
+    def test_profile_keys_follow_the_focus(self):
+        with tempfile.TemporaryDirectory() as d:
+            k, p, scr = self.setup(d)
+            self.press("p"); self.cmds()
+            scr.focus, scr.prof_sel = "variants", p.id
+            self.press(" ", "n")
+            self.assertEqual(self.cmds(), [])
+            self.assertIsNone(scr.modal)
+            self.assertIn("focus profiles", scr.flash)
+            scr.focus = "profiles"
+            self.press(" ")
+            self.assertEqual([c["op"] for c in self.cmds()], ["profile_enable"])
+
+    def test_page_must_be_a_plain_number(self):
+        import json
+        from unittest import mock
+        from tern import dash, web
+        with tempfile.TemporaryDirectory() as d:
+            for bad in (True, 1.0, 2.0, [], "2"):
+                with open(os.path.join(d, "dash.json"), "w") as fh:
+                    json.dump({"page": bad}, fh)
+                with mock.patch.object(dash, "Pal", web.WebPal):
+                    s = dash.Screen(web.VTerm(33, 111), d)
+                s.draw()
+                self.assertEqual(s.page, 1, bad)
+                self.assertNotIn("page", web.clean_prefs({"page": bad}), bad)
+
 
 class Net(unittest.TestCase):
     """The kept-open HTTPS connections, against a fake connection class."""
@@ -2010,6 +2061,24 @@ class Web(unittest.TestCase):
             self.assertEqual(f["prefs"]["page"], 2)
             self.assertEqual(os.listdir(os.path.join(d, "cmd")), [])
             self.assertFalse(os.path.exists(os.path.join(d, "dash.json")))
+
+    def test_web_profiles_hint_click_views_without_focusing_first(self):
+        from tern.web import Hub
+        with tempfile.TemporaryDirectory() as d:
+            k = EngineProfiles.desk(self, d, bid="0.58", ask="0.60")
+            k.seeded.add(self.T)
+            p = EngineProfiles.profile(self, k, "profile 2", band_lo=0.55, band_hi=0.65)
+            k._shadow(); k._status()
+            hub = Hub(d)
+            f = hub.handle({"w": 111, "h": 33, "prefs": {"page": 2}})
+            sid = f["sid"]
+            go = lambda **req: hub.handle({"sid": sid, "w": 111, "h": 33, **req})
+            f = go(key="ArrowRight"); f = go(key="ArrowDown"); f = go(key="ArrowLeft")   # pick profile 2, focus back on variants
+            rows = ["".join(t for t, _ in r) for r in f["rows"]]
+            y = next(i for i, r in enumerate(rows) if "profiles" in r and "view" in r)
+            f = go(click={"y": y, "x": rows[y].index("⏎")})
+            self.assertEqual(f["prefs"]["profile"], p.id)
+            self.assertEqual(os.listdir(os.path.join(d, "cmd")), [])
 
     def test_settings_box_opens_but_changes_nothing(self):
         from tern.web import Hub
