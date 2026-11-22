@@ -425,7 +425,7 @@ PAGE_NAMES = {1: "trade", 2: "compare"}
 SHARE = {"spot": 0.36, "contract": 0.36, "ladder": 0.44, "book": 0.44, "equity": 0.28, "log": 0.28}   # flexible rows' height shares
 LEFT_SHARE = {"spot": 0.6, "ladder": 0.52, "equity": 0.4, "variants": 0.6, "profiles": 0.6}         # a pair's left width share
 MIN_H = {"spot": 6, "contract": 8, "ladder": 8, "book": 9, "equity": 6, "log": 4}   # a flexible box's smallest height
-WANT_W = {"ladder": 56, "variants": 80, "profiles": 50}   # the width a box needs to show all its columns (others 40)
+WANT_W = {"ladder": 56, "variants": 80, "profiles": 70}   # the width a box needs to show all its columns (others 40)
 SUPER = "¹²³⁴⁵⁶⁷⁸⁹"
 LEFT_MIN = {"ladder": 56, "variants": 56, "profiles": 56}   # the ladder's columns need this much before its bar has any room
 SCROLLS = ["ladder", "variants", "profiles", "book", "log"]   # the boxes ←→ focus and ↑↓ scroll
@@ -692,7 +692,7 @@ class Screen:
         rows: list[tuple[str, ...]] = []
         for row in PAGES[view]:
             shown = tuple(n for n in row if n not in self.hidden[view])
-            if len(shown) == 2 and sum(WANT_W.get(n, 40) for n in shown) > W:
+            if len(shown) == 2 and sum(LEFT_MIN.get(n, 30) for n in shown) > W:   # not even at their smallest
                 rows += [(shown[0],), (shown[1],)]
             elif shown:
                 rows.append(shown)
@@ -702,7 +702,8 @@ class Screen:
         for row, h in zip(rows, self.fit(rows, H - 1)):   # the status line takes the last row
             if len(row) == 2:
                 l, r = row
-                lw = min(W - 30, max(int(W * LEFT_SHARE.get(l, 0.5)), LEFT_MIN.get(l, 0)))
+                lw = max(int(W * LEFT_SHARE.get(l, 0.5)), LEFT_MIN.get(l, 0), WANT_W.get(l, 0))
+                lw = min(lw, W - LEFT_MIN.get(r, 30))     # the right box keeps at least its smallest
                 out += [(l, y, 0, h, lw), (r, y, lw, h, W - lw)]
             else:
                 out.append((row[0], y, 0, h, W))
@@ -835,8 +836,29 @@ class Screen:
 
     # ------------------------------------------------------------ panels
     def header(self, H: int, W: int) -> None:
-        """The status line, on the screen's last row (btop keeps its boxes up top)."""
-        hy = H - 1
+        """The status line, on the screen's last row (btop keeps its boxes up top). It is drawn in the fullest
+        wording that fits the width, then in shorter ones, so no part runs into the next or off the screen."""
+        need = lambda: sum(len(t) for _, seg in left for t, _ in seg) + 2 * len(left) + sum(len(t) for t, _ in right)
+        for lvl in range(4):
+            left, right = self.status_parts(lvl)
+            if need() <= W:
+                break
+        for drop in ("watch", "price"):               # still too long: the book box says watching; then the price
+            if need() > W:
+                left = [(tag, seg) for tag, seg in left if tag != drop]
+        hy, x = H - 1, 0
+        for _, seg in left:
+            for text, attr in seg:
+                self.put(hy, x, text[:max(0, W - x)], attr); x += len(text)
+            x += 1 if seg[0][1] & curses.A_REVERSE else 2   # pills carry their own padding
+        rw = sum(len(t) for t, _ in right)
+        rx = max(x, W - rw)
+        for text, attr in right:
+            self.put(hy, rx, text[:max(0, W - rx)], attr); rx += len(text)
+
+    def status_parts(self, lvl: int) -> tuple[list, list]:
+        """The status line's segments at wording level lvl (0 fullest, 3 shortest): (left segments, right
+        pieces). A segment is (tag, list of (text, attr)); the tag says what header may drop."""
         P, st = self.P, self.st
         now = time.time()
         hb = st.get("heartbeat") or 0
@@ -844,43 +866,37 @@ class Screen:
         # no process holding the lock is "down", however it ended; a live one that stopped polling is "stale"
         down = not ok and not self.alive
         mode = st.get("mode", "?")
-        x = 0
-        self.put(hy, x, " tern ", P(CYAN, bold=True) | curses.A_REVERSE); x += 7
+        grey = self.P.grey
+        left: list = [("tern", [(" tern ", P(CYAN, bold=True) | curses.A_REVERSE)])]
         if mode == "live":
-            self.put(hy, x, " ● LIVE ", P(RED, bold=True) | curses.A_REVERSE); x += 9
+            left.append(("mode", [(" ● LIVE " if lvl < 2 else " LIVE ", P(RED, bold=True) | curses.A_REVERSE)]))
         else:
-            armed = " (live armed: " + (st.get("live_error") or "authenticating") + ")" if st.get("live_enabled") else ""
-            self.put(hy, x, " ● PAPER ", P(GREEN, bold=True) | curses.A_REVERSE); x += 10
+            left.append(("mode", [(" ● PAPER " if lvl < 2 else " PAPER ", P(GREEN, bold=True) | curses.A_REVERSE)]))
             if st.get("profile_name"):
-                pill = f" {st['profile_name']} "
-                self.put(hy, x, pill, P(P.c("variant"), bold=True) | curses.A_REVERSE); x += len(pill) + 1
-            if armed:
-                self.put(hy, x, armed[:60], P(YELLOW)); x += min(60, len(armed)) + 1
+                name = st["profile_name"] if lvl < 2 else st["profile_name"][:12]
+                left.append(("profile", [(f" {name} ", P(P.c("variant"), bold=True) | curses.A_REVERSE)]))
+            if st.get("live_enabled"):
+                armed = "(live armed: " + (st.get("live_error") or "authenticating") + ")"
+                left.append(("armed", [(armed[:60] if lvl < 2 else "(live armed)", P(YELLOW))]))
         prod = cfgmod.SERIES[self.series]
         sp = (st.get("spot") or {}).get(prod) or {}
         p = sp.get("now")
         mins = sp.get("min") or []
-        chg = None
-        if p and len(mins) > 60:
-            chg = p / mins[-61][1] - 1
-        many, grey = P.many, P.grey
-        # each segment is (text, attr) pieces; segments are set apart by color and a gap, not a bar
-        def span(pieces):
-            nonlocal x
-            for text, attr in pieces:
-                self.put(hy, x, text, attr); x += len(text)
-            x += 2
-        x += 1
-        price = [(prod.split('-')[0] + " ", P(P.c("sym"), bold=True)), (money(p), P(WHITE, bold=True))]
+        chg = p / mins[-61][1] - 1 if p and len(mins) > 60 else None
+        sym = prod.split('-')[0]
+        price = [(sym + " ", P(P.c("sym"), bold=True)),
+                 (money(p) if lvl < 2 or p is None else f"${p:,.0f}" if p >= 1000 else money(p), P(WHITE, bold=True))]
         if chg is not None:
             price.append((f" {'▲' if chg >= 0 else '▼'}{chg:+.2%}", P(GREEN if chg >= 0 else RED, bold=True)))
-            price.append((" 1h", P(P.c("unit"))))
-        span(price)
+            if lvl < 1:
+                price.append((" 1h", P(P.c("unit"))))
+        left.append(("price", price))
         ev = (st.get("events") or {}).get(self.series)
         if ev:
             tau = ev["close"] - now
-            span([(ev['event'], P(P.c("event"), bold=True)), (" closes ", P(P.c("word_a"))),
-                  (clock(tau), P(YELLOW if tau < 600 else WHITE, bold=True))])
+            seg = [(ev['event'], P(P.c("event"), bold=True)), (" closes ", P(P.c("word_a")))] if lvl < 1 else \
+                [("closes ", P(P.c("word_a")))]
+            left.append(("event", seg + [(clock(tau), P(YELLOW if tau < 600 else WHITE, bold=True))]))
         S = self.strat() or {}
         if S:
             on = self.series in (S.get("series") or [])
@@ -889,28 +905,35 @@ class Screen:
                 tau = ev["close"] - now
                 ahead = [m for m in S.get("minutes", []) if m * 60 < tau]
                 if ahead:
-                    seg += [(" next ", P(P.c("word_c"))), (f"{max(ahead)}m", P(P.c("key"), bold=True)),
-                            (" slot in ", P(P.c("word_c"))), (clock(tau - max(ahead) * 60), P(WHITE))]
+                    seg += ([(" next ", P(P.c("word_c"))), (f"{max(ahead)}m", P(P.c("key"), bold=True)),
+                             (" slot in ", P(P.c("word_c")))] if lvl < 2 else
+                            [(" · ", P(grey)), (f"{max(ahead)}m", P(P.c("key"), bold=True)), (" in ", P(P.c("word_c")))]) \
+                           + [(clock(tau - max(ahead) * 60), P(WHITE))]
             if st.get('auto_live') and on and not self.wview():
                 seg.append((" +live", P(RED, bold=True)))
-            if self.wview():
+            if self.wview() and lvl < 2:
                 seg[1:2] = [(f"ule ({self.watch}) ", P(P.c("word_b")))]
-            span(seg)
+            left.append(("rule", seg))
         if self.wview():
-            span([("watching ", P(YELLOW)), (self.watch, P(YELLOW, bold=True)),
-                  (" · trading ", P(self.P.grey)), (self.active() or "?", P(GREEN, bold=True)), (" (w)", P(self.P.grey))])
+            left.append(("watch", [("watching ", P(YELLOW)), (self.watch, P(YELLOW, bold=True))]
+                        + ([(" · trading ", P(grey)), (self.active() or "?", P(GREEN, bold=True)), (" (w)", P(grey))]
+                           if lvl < 2 else [])))
         # the engine can be up while its feeds are not (Wi-Fi drops): say how old the data is
         stale = []
         sec = sp.get("sec") or []
         if ok and sec and now - sec[-1][0] > 10:
-            stale.append(f"spot {ago(now - sec[-1][0])} old")
+            stale.append(f"spot {ago(now - sec[-1][0])}" + (" old" if lvl < 2 else ""))
         if ok and ev and ev.get("age", 0) > 30:
-            stale.append(f"ladder {ago(ev['age'])} old")
-        right = f" {'●' if ok else '○'} engine {'ok' if ok else ('down — s starts it' if down else 'starting' if st.get('stopped') or not hb else 'stale')}  {time.strftime('%H:%M:%S')} "
+            stale.append(f"ladder {ago(ev['age'])}" + (" old" if lvl < 2 else ""))
         if stale:
-            seg = " · ".join(stale) + " "
-            self.put(hy, x, seg[:max(0, W - x - len(right))], P(YELLOW, bold=True))
-        self.put(hy, W - len(right), right, P(GREEN if ok else RED))
+            left.append(("stale", [(" · ".join(stale) + ("" if lvl < 2 else " old"), P(YELLOW, bold=True))]))
+        state = "ok" if ok else ("down — s starts it" if down else "starting" if st.get("stopped") or not hb else "stale")
+        if lvl >= 2 and down:
+            state = "down (s)"
+        word = "engine " if lvl < 3 else ""
+        clk = time.strftime("%H:%M:%S") if lvl < 1 else time.strftime("%H:%M") if lvl < 3 else ""
+        right = [(f" {'●' if ok else '○'} {word}{state}" + (f"  {clk} " if clk else " "), P(GREEN if ok else RED))]
+        return left, right
 
     def spot_panel(self, y, x, h, w) -> None:
         P, st = self.P, self.st
@@ -1301,7 +1324,7 @@ class Screen:
             t = f"{rec['t']:+.2f}" if rec.get("t") is not None else "-"
             self.put(yy, x + 54, f"{pc:>6} {t:>6}", row)
         yy = y + 3 + min(room, len(rows))
-        if cur.get("rule") and yy < y + h - 1:
+        if cur.get("rule") and yy < y + h - 2:       # not on the tip line's row
             self.put(yy, x + 2, f"{cur['name']}: ", P(P.c("variant"), bold=True))
             self.put(yy, x + 4 + len(cur["name"]), rule_text(cur["rule"])[:w - 8 - len(cur["name"])], P(WHITE))
         tip = "● shown · viewing changes nothing that trades · judge by entries and t, not P&L" \
@@ -1396,8 +1419,13 @@ class Screen:
                 lines[0] = ("equity", money(eq) + "  on a paper start", val)
             if g:
                 wr = f"{g['win']:.0%}" if g.get("win") is not None else "-"
-                lines.append(("rule", f"{g['entries']} settled · {g['open']} open · {money(g['pnl'], True)} · win {wr} · "
-                                      f"{g['per_contract']*100:+.2f}¢/ct", GREEN if g["pnl"] >= 0 else RED))
+                c = GREEN if g["pnl"] >= 0 else RED
+                a1 = f"{g['entries']} settled · {g['open']} open · {money(g['pnl'], True)}"
+                a2 = f"win {wr} · {g['per_contract']*100:+.2f}¢/ct"
+                if len(a1) + len(a2) + 3 <= w - 13:
+                    lines.append(("rule", f"{a1} · {a2}", c))
+                else:                                    # a narrow book: two lines, not one cut short
+                    lines += [("rule", a1, c), ("", a2, c)]
             body += [[(f"{k:<8} ", ROW), (val, P(c, bold=k == "equity"))] for k, val, c in lines]
             body += [[("", 0)]] + self.book_lines(b)
         yy = y + 1
@@ -1425,45 +1453,45 @@ class Screen:
 
         def strike(ticker):
             m = re.search(r"-[TB]([0-9.]+)$", ticker or "")
-            return f"{strike_label(float(m.group(1))) if m else '?':>9} "
+            return f"{strike_label(float(m.group(1))) if m else '?':>8} "
 
         out: list[list[tuple[str, int]]] = []
         pos = b.get("pos") or []
-        out.append([(f"{'open':<4} {'strike':>9} {'side':<4} {'qty':>6} {'avg':>5} {'mark':>5} {'P&L':>8} {'closes':>7}", head)])
+        out.append([(f"{'open':<4} {'strike':>8} {'side':<4} {'qty':>4} {'avg':>5} {'mark':>5} {'P&L':>8} {'closes':>6}", head)])
         for p in pos:
             pl = p.get("pnl")
-            out.append([(f"{'':<5}{strike_label(p.get('k')):>9} ", white), *side(p["q"]),
-                        (f" {abs(p['q']):>6g} {cents(p['avg']):>5} {cents(p.get('mark')):>5} ", white),
+            out.append([(f"{'':<5}{strike_label(p.get('k')):>8} ", white), *side(p["q"]),
+                        (f" {abs(p['q']):>4g} {cents(p['avg']):>5} {cents(p.get('mark')):>5} ", white),
                         (f"{money(pl, True):>8}", P(GREEN if (pl or 0) >= 0 else RED)),
-                        (f" {clock((p.get('close') or now) - now):>7}", grey)])
+                        (f" {clock((p.get('close') or now) - now):>6}", grey)])
         if not pos:
             out.append([("     no open positions", grey)])
 
         trades = list(reversed(b.get("trades") or []))
         settled = [t for t in trades if t.get("kind") == "settle"]
         out.append([("", 0)])
-        out.append([(f"{'settled':<8}{'strike':>6} {'side':<4} {'qty':>6} {'won':>11} {'P&L':>8} {'ago':>7}", head)])
+        out.append([(f"{'settled':<8}{'strike':>6} {'side':<4} {'qty':>4} {'won':>5} {'P&L':>8} {'ago':>6}", head)])
         for t in settled:
             q = -t["delta"]
             won = (t.get("result") == "yes") == (q > 0)
             word, wc = ("void", grey) if t.get("result") == "void" else ("won", P(GREEN)) if won else ("lost", P(RED))
             out.append([(f"{'':<5}{strike(t['ticker'])}", white), *side(q),
-                        (f" {abs(q):>6g} ", white), (f"{word:>11} ", wc),
+                        (f" {abs(q):>4g} ", white), (f"{word:>5} ", wc),
                         (f"{money(t['realized'], True):>8}", P(GREEN if t["realized"] >= 0 else RED)),
-                        (f" {ago(now - t['ts']):>7}", grey)])
+                        (f" {ago(now - t['ts']):>6}", grey)])
         if not settled:
             out.append([("     none yet", grey)])
 
         fills = [t for t in trades if t.get("kind") == "fill"]
         out.append([("", 0)])
-        out.append([(f"{'fills':<8}{'strike':>6} {'side':<4} {'qty':>6} {'at':>5} {'fee':>5} {'P&L':>8} {'ago':>7}", head)])
+        out.append([(f"{'fills':<8}{'strike':>6} {'side':<4} {'qty':>4} {'at':>5} {'fee':>5} {'P&L':>8} {'ago':>6}", head)])
         for t in fills:
             q = t["delta"]                                   # + bought YES, - bought NO at 1 - price
             at = t["price"] if q > 0 else 1 - t["price"]
             out.append([(f"{'':<5}{strike(t['ticker'])}", white), *side(q),
-                        (f" {abs(q):>6g} {cents(at):>5} {money(t['fee']):>5} ", white),
+                        (f" {abs(q):>4g} {cents(at):>5} {money(t['fee']):>5} ", white),
                         (f"{money(t['realized'], True):>8}", P(GREEN if t["realized"] >= 0 else RED)),
-                        (f" {ago(now - t['ts']):>7}", grey)])
+                        (f" {ago(now - t['ts']):>6}", grey)])
         if not fills:
             out.append([("     none yet", grey)])
         return out

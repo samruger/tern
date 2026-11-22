@@ -1676,6 +1676,8 @@ class Pages(unittest.TestCase):
                 self.assertGreaterEqual(r["variants"][2], n + 3, (H, W))
                 self.assertEqual(r["variants"][3], W)
                 self.assertGreaterEqual(r["profiles"][2], 3 + 6, (H, W))
+                self.assertEqual(r["profiles"][0], r["equity"][0], (H, W))           # side by side, not stacked
+                self.assertGreaterEqual(r["profiles"][3], 70, (H, W))               # every column of the profiles table
                 for name in ("calm", "band75", "base"):
                     self.assertIn(name, self.text())
 
@@ -1686,13 +1688,19 @@ class Pages(unittest.TestCase):
                 self.size(H, W)
                 r = self.rects_ok(H, W)
                 self.assertEqual(set(r), {"spot", "contract", "ladder", "book", "equity", "log"})
+                if W < 111:
+                    continue                                                # 100 wide: the book is 44, its tables cut
+                y, x, h, w = r["book"]
+                book = ["".join(scr.s.ch[yy][x:x + w]) for yy in range(y, y + h)]
+                self.assertTrue(any("P&L closes│" in l for l in book), (W, book))  # the positions table's last column, whole
+                self.assertFalse(any("¢/c│" in l or "win 8│" in l for l in book))
 
     def test_merged_when_big(self):
         with tempfile.TemporaryDirectory() as d:
             k, p, scr = self.setup(d)
-            self.size(50, 140)
-            self.assertEqual(scr.view(50, 140), "merged")
-            r = self.rects_ok(50, 140)
+            self.size(50, 150)
+            self.assertEqual(scr.view(50, 150), "merged")
+            r = self.rects_ok(50, 150)
             self.assertEqual(set(r), {"spot", "contract", "ladder", "book", "variants", "profiles", "equity", "log"})
             self.press("p")
             self.assertIn("both pages fit", scr.flash)
@@ -1767,7 +1775,7 @@ class Pages(unittest.TestCase):
             self.assertEqual((word("trade"), word("compare")), (True, False))
             self.press("p"); scr.flash = ""; self.sync()
             self.assertEqual((word("trade"), word("compare")), (False, True))
-            self.size(50, 140); scr.flash = ""; self.sync()
+            self.size(50, 150); scr.flash = ""; self.sync()
             self.assertNotIn("compare", "".join(scr.s.ch[48]))
 
     def test_watch_without_variants_box_says_page2(self):
@@ -1777,6 +1785,24 @@ class Pages(unittest.TestCase):
             self.assertIn("page 2", scr.flash)
             self.press("p", "7", "w")
             self.assertIn("page 2", scr.flash)
+
+    def test_status_line_fits_every_width(self):
+        import time
+        with tempfile.TemporaryDirectory() as d:
+            k, p, scr = self.setup(d)
+            ev = k.events["KXBTCD"]
+            ev["close"] = time.time() + 1400; ev["fetched"] = time.time() - 120     # a slot ahead, a stale ladder
+            for prof in (None, p.id):
+                scr.profile, scr.watch = prof, "band90"
+                scr.write_view(); self.sync()
+                for H, W in ((30, 100), (33, 111), (37, 151)):
+                    self.size(H, W)
+                    row = "".join(scr.s.ch[H - 1])
+                    self.assertRegex(row, r"\S  +● (engine )?ok( +\d\d:\d\d(:\d\d)?)? *$")   # the engine's state, whole, at the end
+                    self.assertIn("ladder 2m", row)                                  # stale data is never dropped
+                    self.assertIn("rule", row)
+                    self.assertIn("in ", row)                                   # when the next slot is
+                    self.assertIn("closes", row)
 
 
 class Net(unittest.TestCase):
