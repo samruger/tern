@@ -1849,7 +1849,10 @@ class Pages(unittest.TestCase):
             self.press("w")
             self.assertIn("page 2", scr.flash)
             self.press("p", "2", "w")                                           # profiles zoomed: no variants box
-            self.assertIn("variants", scr.flash)
+            self.assertIn("2 un-zooms", scr.flash)
+            self.press("p", "1", "w")                                           # zoomed on page 1: un-zooming won't help
+            self.assertIn("p for page 2", scr.flash)
+            self.assertNotIn("un-zooms", scr.flash)
 
     def test_status_line_fits_every_width(self):
         import time

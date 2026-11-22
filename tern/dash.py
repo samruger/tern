@@ -632,8 +632,9 @@ class Screen:
     def back_to(self, what: str) -> str:
         """How to get to a box that isn't on screen: un-zoom, or flip to page 2."""
         H, W = self.s.getmaxyx()
-        if self.zoomed(H, W):
-            return f"{view_boxes(self.view(H, W)).index(self.zoom) + 1} un-zooms, {what}"
+        here = view_boxes(self.view(H, W))
+        if self.zoomed(H, W) and "variants" in here:     # un-zooming shows it only where this view has it
+            return f"{here.index(self.zoom) + 1} un-zooms, {what}"
         return f"p for page 2, {what}"
 
     def flip_page(self) -> None:
