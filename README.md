@@ -138,13 +138,20 @@ desk, so a difference between two profiles comes from their settings, not
 from timing.
 
 - **Profile 1 is the desk:** the paper book, live and the gate, with its files
-  where they always were. Only profile 1 ever trades live.
+  where they always were. Live trades profile 1's rule unless `d` picks another profile.
 - **Make one** in the profiles box (`p`, page 2; `←→` to focus it), then `n`. It starts
   with profile 1's settings and empty records. `enter` views it: the book,
   equity, variants box and settings box then show that profile. Viewing changes
   nothing about what trades. `space` turns one off (no new entries, open ones
   still settle) and on. `D` deletes it after you type `delete`; its folder moves
   to `runtime/profiles-deleted/`, nothing is erased. At most 8 besides profile 1.
+- **Pick what goes live** with `d`: live then trades the highlighted profile's rule (its variant, band,
+  slots, spread, coins and hourly budget) and its row is marked `L`. Live's own size and caps stay as they
+  are. The gate is judged on that profile's own record of its variant, so a new pick starts its own
+  clock. A live profile that is off or gone enters nothing, even with `live.auto_needs_gate` off: live
+  never falls back to profile 1 by itself. While live is armed, `d` and any change to the live profile's
+  variant or settings ask you to type `live`. The live profile can't be deleted (`d` another one first).
+  Profile 1's paper book keeps trading profile 1's rule. It is `live.profile` in `config.json`.
 - **Rename** with `N`: in the profiles box it renames the highlighted profile
   (profile 1 too; an empty name gives "profile 1" back), in the variants box it
   gives the highlighted variant a display name (up to 12 characters; empty gives

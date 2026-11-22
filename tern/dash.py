@@ -384,6 +384,8 @@ HELP_KEYS = [
      ("profiles", [("enter", "view the highlighted profile (page 2)"),
                    ("space", "turn it on / off"),
                    ("n", "new profile: profile 1's settings, empty"),
+                   ("d", "live trades its rule (L), past its own"),
+                   ("", "gate; asks \"live\" while live is armed"),
                    ("D", "delete it (type delete); kept on disk"),
                    ("N", "rename the highlighted profile, or (in the"),
                    ("", "variants box) a variant: its record keeps"),
@@ -431,6 +433,7 @@ PAGES = {"page1": [("spot", "contract"), ("ladder", "book"), ("log",)],         
          "merged": [("spot", "contract"), ("ladder", "book"), ("variants", "profiles"), ("equity", "log")]}
 PAGE_NAMES = {1: "trade", 2: "compare"}
 SHARE = {"spot": 0.36, "contract": 0.36, "ladder": 0.44, "book": 0.44, "equity": 0.28, "log": 0.28}   # flexible rows' height shares
+DROP_FIRST = ("↑↓", "space")                     # border hints that go before the others when a box is narrow
 LEFT_SHARE = {"spot": 0.6, "ladder": 0.52, "equity": 0.4, "variants": 0.6, "profiles": 0.6}         # a pair's left width share
 MIN_H = {"spot": 6, "contract": 8, "ladder": 8, "book": 9, "equity": 6, "log": 4}   # a flexible box's smallest height
 WANT_W = {"ladder": 56, "variants": 80, "profiles": 70}   # the width a box needs to show all its columns (others 40)
@@ -789,7 +792,13 @@ class Screen:
         segs = [right] if isinstance(right, str) else list(right)
         segs = [s for s in segs if s]
         lens = [len(s) if isinstance(s, str) else sum(map(len, s)) for s in segs]
-        while segs and cx + 2 + sum(n + 3 for n in lens) > x + w - 3:   # each segment: ┤..├ and a ─ before it
+        fits = lambda: cx + 2 + sum(n + 3 for n in lens) <= x + w - 3   # each segment: ┤..├ and a ─ before it
+        for spare in DROP_FIRST:                         # the least needed go first: ↑↓, then space on/off
+            if not fits():
+                i = next((j for j, g in enumerate(segs) if g == spare or isinstance(g, tuple) and g[0] == spare), None)
+                if i is not None:
+                    segs.pop(i); lens.pop(i)
+        while segs and not fits():
             segs.pop(0); lens.pop(0)
         rx = x + w - 3 - sum(n + 3 for n in lens) + 1        # keep the corner free for a scroll ▲
         for seg, n in zip(segs, lens):
@@ -1253,6 +1262,9 @@ class Screen:
             if cur["name"] == active and st.get("profile_name"):
                 tip = f"● {self.vn(active)} is {st['profile_name']}'s book (paper only) · every variant keeps running"
                 self.put(y + h - 2, x + 2, tip[:w - 4], P(GREEN, bold=True))
+            elif cur["name"] == active and self.live_pid() != "1":
+                lp = next((p["name"] for p in self.prof_rows() if p.get("live")), "?")
+                tip = f"● {self.vn(active)} is in use on paper · live trades {lp}'s rule (L in profiles)"
             elif cur["name"] == active:
                 tip = f"● {self.vn(active)} is in use: paper now, live " + ("too" if (cur.get("gate") or {}).get("passed")
                                                                   else "once it passes the gate")
@@ -1285,8 +1297,8 @@ class Screen:
             return
         if cur["name"] == active:
             self.say(f"{self.vn(active)} is already in use"); return
-        if self.profile:                             # a profile's book: paper only, nothing to confirm
-            self.send(op="profile_set", profile=self.profile, key="strategy.variant", value=cur["name"]); return
+        if self.profile:                             # a profile's book: asks only if it is the live profile, armed
+            self.profile_set("strategy.variant", cur["name"], f"its variant {self.vn(active)} → {self.vn(cur['name'])}"); return
         if self.st.get("mode") == "live" or self.st.get("live_enabled"):
             g = cur.get("gate") or {}
             self.modal = {"type": "variant", "title": "SWITCH LIVE VARIANT", "color": RED, "buf": "",
@@ -1303,6 +1315,50 @@ class Screen:
     def in_profiles(self) -> bool:
         return self.shown("profiles")
 
+    def armed(self) -> bool:
+        return bool(self.raw.get("live_enabled") or self.raw.get("mode") == "live")
+
+    def live_name(self) -> str:
+        return next((p["name"] for p in self.prof_rows() if p.get("live")), "profile 1")
+
+    def live_pid(self) -> str:
+        """The profile live trades (d picks it); "1" until the engine says otherwise."""
+        return next((p["id"] for p in self.prof_rows() if p.get("live")), "1")
+
+    def profile_set(self, key: str, value, what: str) -> None:
+        """Change a setting of the profile shown. On the live profile while live is armed that changes what
+        real money trades, so it asks for "live" first, as arming does."""
+        cmd = {"op": "profile_set", "profile": self.profile, "key": key, "value": value}
+        if self.armed() and self.profile == self.live_pid():
+            self.modal = {"type": "livecmd", "title": "LIVE PROFILE", "color": RED, "buf": "", "cmd": cmd,
+                          "sent": (key, value), "kept": f"{what} kept",
+                          "lines": [f"{self.pname()} is the live profile and live is armed:",
+                                    f"{what} changes what real money trades from the next slot.",
+                                    "", "type live and press enter (esc cancels):", "> "]}
+            return
+        self.send(**cmd)
+        self.set_sent[key] = (value, time.time())
+
+    def profile_live(self) -> None:
+        """d: live trades the highlighted profile's rule, once its own record of its variant passes the gate."""
+        cur = self.prof_cur()
+        if cur is None:
+            return
+        if cur.get("live"):
+            self.say(f"{cur['name']} is already the live profile"); return
+        cmd = {"op": "live_profile", "profile": cur["id"]}
+        if not self.armed():
+            self.send(**cmd); return
+        gate = "Its variant has passed the gate on its own record." if cur.get("gate_passed") else \
+            "Its variant has not passed the gate on its own record: live waits until it does."
+        was = next((p["name"] for p in self.prof_rows() if p.get("live")), "profile 1")
+        self.modal = {"type": "livecmd", "title": "SWITCH LIVE PROFILE", "color": RED, "buf": "", "cmd": cmd,
+                      "kept": f"live kept on {was}",
+                      "lines": [f"Live is on: real money would trade {cur['name']}'s rule ({self.vn(cur.get('variant'))})",
+                                f"instead of {was}'s.", gate,
+                                "Open live positions ride to settlement. Live's caps and size stay as they are.",
+                                "", "type live and press enter (esc cancels):", "> "]}
+
     def prof_rows(self) -> list[dict]:
         return self.raw.get("profiles") or []
 
@@ -1316,14 +1372,14 @@ class Screen:
     def profiles_panel(self, y, x, h, w) -> None:
         P = self.P
         self.box(y, x, h, w, "profiles", self.P.border("ladder"), "",
-                 [("⏎", " view"), ("space", " on/off"), ("n", "ew"), ("", "re", "N", "ame"), ("D", "elete"), "↑↓"])
+                 [("⏎", " view"), ("space", " on/off"), ("n", "ew/re", "N", "ame"), ("d", "efault"), ("D", "elete"), "↑↓"])
         rows = self.prof_rows()
         cur = self.prof_cur()
         if not rows or cur is None:
             self.put(y + 2, x + 3, "waiting for the engine…", P(P.grey)); return
         shown = self.profile or "1"
         head = P(P.c("head"), bold=True)
-        self.put(y + 1, x + 2, f"  {'profile':<14} {'':<3} {'book':<8} {'set':>3} {'entries':>7} {'P&L':>9} {'¢/ct':>6} {'t':>6}"[:w - 4], head)
+        self.put(y + 1, x + 2, f"   {'profile':<13} {'':<3} {'book':<8} {'set':>3} {'entries':>7} {'P&L':>9} {'¢/ct':>6} {'t':>6}"[:w - 4], head)
         room = max(1, h - 6)
         si = [p["id"] for p in rows].index(cur["id"])
         top = max(0, si - room + 1)
@@ -1333,7 +1389,9 @@ class Screen:
             base = curses.A_REVERSE if sel else 0
             self.put(yy, x + 1, " " * (w - 2), base)
             self.put(yy, x + 2, "●" if pr["id"] == shown else " ", P(GREEN, bold=True) | base)
-            self.put(yy, x + 4, f"{pr['name'][:14]:<14} ", P(P.c("variant"), bold=True) | base)
+            if pr.get("live"):                           # d: the profile live trades
+                self.put(yy, x + 3, "L", P(RED, bold=True) | base)
+            self.put(yy, x + 5, f"{pr['name'][:13]:<13} ", P(P.c("variant"), bold=True) | base)
             self.put(yy, x + 19, "on " if pr.get("enabled") else "off", P(GREEN if pr.get("enabled") else RED, bold=True) | base)
             rec = next((v for v in pr.get("variants") or [] if v["name"] == pr.get("variant")), {})
             row = P(P.pick("rows", j / max(1, len(rows) - 1))) | base
@@ -1347,8 +1405,14 @@ class Screen:
         if cur.get("rule") and yy < y + h - 2:       # not on the tip line's row
             self.put(yy, x + 2, f"{cur['name']}: ", P(P.c("variant"), bold=True))
             self.put(yy, x + 4 + len(cur["name"]), rule_text(cur["rule"])[:w - 8 - len(cur["name"])], P(WHITE))
-        tip = "● shown · viewing changes nothing that trades · judge by entries and t, not P&L" \
-            if cur["id"] != "1" or self.profile else "profile 1 is the desk: paper, live, the gate · n makes a profile"
+        live = next((p for p in rows if p.get("live")), None)
+        if cur.get("live") and cur["id"] != "1":
+            tip = "L live trades this profile's rule, past its own gate · d on another moves it"
+        elif cur["id"] != "1" or self.profile:
+            tip = "● shown · viewing changes nothing that trades · judge by entries and t, not P&L"
+        else:
+            tip = "profile 1 is the desk: paper, the gate · " + \
+                (f"live trades {live['name']} (L)" if live and live["id"] != "1" else "n makes a profile, d picks what live trades")
         self.put(y + h - 2, x + 2, tip[:w - 4], P(P.grey))
 
     def view_profile(self) -> None:
@@ -1383,7 +1447,7 @@ class Screen:
             n = len(self.prof_rows()) + 1
             self.modal = {"type": "pname", "title": "new profile", "color": CYAN, "buf": "",
                           "lines": ["A new profile starts with profile 1's settings and empty records;",
-                                    "change them with e while viewing it. It trades paper only.",
+                                    "change them with e while viewing it. It trades paper only until d makes it live.",
                                     "", f"name (enter for \"profile {n}\", esc cancels):", "> "]}
 
     def rename_ask(self) -> None:
@@ -1928,8 +1992,11 @@ class Screen:
 
         def head(text, note=""):
             return [(text, P(P.c("head"), bold=True))] + ([(note, P(P.grey))] if note else [])
-        out: list = [head("PAPER CHECKS", f"   {g.get('variant', 'the rule')} trades live only when every one passes"),
-                     "  (unless live.auto_needs_gate is false)"]
+        who = f"{g['profile_name']}'s " if g.get("profile") not in (None, "1") else ""
+        out: list = [head("PAPER CHECKS", f"   {who}{self.vn(g.get('variant')) if g.get('variant') else 'the rule'}"
+                                          " trades live only when every one passes"),
+                     "  (unless live.auto_needs_gate is false)" + ("" if not who else
+                                                                  f"; d in the profiles box picks the live profile")]
         for c in g.get("checks", []):
             out.append(f"  [{'x' if c['ok'] else ' '}] {c['name']}  ({c['detail']})")
         if st.get("shadow"):
@@ -2057,8 +2124,7 @@ class Screen:
                 value = float(int(value))
             if value == self.set_value(key):
                 return
-            self.send(op="profile_set", profile=self.profile, key=key, value=value)
-            self.set_sent[key] = (value, time.time())
+            self.profile_set(key, value, f"{row.label} {self.set_fmt(row, self.set_value(key))} → {self.set_fmt(row, value)}")
             return
         if row.kind in ("usd", "n"):
             if not row.lo <= value <= row.hi:
@@ -2236,9 +2302,10 @@ class Screen:
                 m["lines"][-1] = "> " + m["buf"]
                 self.modal = m
                 return True
-            if m.get("type") in ("arm", "variant", "setlive"):
+            if m.get("type") in ("arm", "variant", "setlive", "livecmd"):
                 arm = m["type"] == "arm"
-                kept = "not armed" if arm else "cap kept" if m["type"] == "setlive" else f"kept {self.vn(m.get('was'))}"
+                kept = m["kept"] if m["type"] == "livecmd" else "not armed" if arm else \
+                    "cap kept" if m["type"] == "setlive" else f"kept {self.vn(m.get('was'))}"
                 if ch in (10, 13, curses.KEY_ENTER):
                     if m["buf"].strip().lower() == "live":
                         if arm:
@@ -2246,6 +2313,10 @@ class Screen:
                         elif m["type"] == "setlive":
                             self.send(op="set", key=m["key"], value=m["value"])
                             self.set_sent[m["key"]] = (m["value"], time.time())
+                        elif m["type"] == "livecmd":
+                            self.send(**m["cmd"])
+                            if m.get("sent"):
+                                self.set_sent[m["sent"][0]] = (m["sent"][1], time.time())
                         else:
                             self.send(op="variant", name=m["name"])
                     else:
@@ -2300,11 +2371,13 @@ class Screen:
                 self.use_variant()
             else:
                 self.say("enter: ←→ to focus variants or profiles, then enter")
-        elif ch in (ord(" "), ord("n"), ord("D")) and self.in_profiles():
+        elif ch in (ord(" "), ord("n"), ord("D"), ord("d")) and self.in_profiles():
             if self.focus != "profiles":                 # like enter, they act on the focused box only
-                self.say("space, n and D are the profiles box's: ←→ to focus profiles first")
+                self.say("space, n, d and D are the profiles box's: ←→ to focus profiles first")
             elif ch == ord(" "):
                 self.profile_enable()
+            elif ch == ord("d"):
+                self.profile_live()
             else:
                 self.profile_ask("pname" if ch == ord("n") else "pdelete")
         elif ch == ord("N"):
@@ -2327,8 +2400,7 @@ class Screen:
                 want = [c for c in have if c != self.series] if self.series in have else have + [self.series]
                 if not want:
                     self.say("at least one of the coins stays on"); return True
-                self.send(op="profile_set", profile=self.profile, key="strategy.series", value=want)
-                self.set_sent["strategy.series"] = (want, time.time())
+                self.profile_set("strategy.series", want, "its coins " + " ".join(cfgmod.SERIES[c].split("-")[0] for c in want))
             else:
                 self.send(op="series", series=self.series)
         elif ch in (ord("t"), ord("T")):
@@ -2377,7 +2449,8 @@ class Screen:
                               "lines": ["Live trading uses real money on Kalshi.",
                                         f"Caps: ${L.get('capital_usd', 0):,.0f} at risk, ${L.get('max_order_usd', 0):,.0f} per order,",
                                         f"live turns itself off after -${L.get('max_daily_loss', 0):,.0f} in a day.",
-                                        "The rule trades live only past the gate (g).",
+                                        (f"Live trades {self.live_name()}'s rule, only past its gate (g)." if self.live_pid() != "1"
+                                         else "The rule trades live only past the gate (g)."),
                                         *([] if self.st.get("keys") else ["", f"No key found yet: live stays off until {cfgmod.KEYFILE_ENV} exists."]),
                                         "", "type live and press enter (esc cancels):", "> "]}
         return True

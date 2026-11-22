@@ -686,6 +686,61 @@ class Live(unittest.TestCase):
             self.assertAlmostEqual(k.live.pos[self.T]["q"], 2)
             self.assertAlmostEqual(k.paper.pos[self.T]["q"], 5)        # paper keeps strategy.contracts
 
+    def live_profile_desk(self, d):
+        """Profile 1's band (85-95¢) misses the 81¢ favorite; profile 2's (75-95¢) takes it."""
+        from tern import profiles
+        got = []
+        class Api:
+            def order(self, t, side, n, price, cid):
+                got.append(n)
+                return {"order_id": "o1", "fill_count": str(n), "average_fill_price": "0.82", "average_fee_paid": "0"}
+        k = self.desk(d, Api())
+        p = profiles.create(k.runtime, "wide", k.cfg, k.cfg.taker_fee)
+        k.cfg.strategy.band_lo = 0.85
+        k._profiles_reload(force=True)
+        return k, next(x for x in k.profiles if x.id == p.id), got
+
+    def test_live_trades_the_live_profiles_rule(self):
+        from tern import config
+        with tempfile.TemporaryDirectory() as d:
+            k, p, got = self.live_profile_desk(d)
+            self.assertEqual(k.live_target()["id"], "1")                       # profile 1 until d says otherwise
+            self.assertIn("no profile", k._command({"op": "live_profile", "profile": "nope"}))
+            self.assertIn("live profile profile 1 → wide (base)", k._command({"op": "live_profile", "profile": p.id}))
+            self.assertEqual(config.load(d).live.profile, p.id)
+            self.assertIn("already", k._command({"op": "live_profile", "profile": p.id}))
+            g = k.gate()
+            self.assertEqual((g["profile"], g["variant"], g["passed"]), (p.id, "base", False))
+            self.assertIn("wide's base", g["checks"][0]["name"])               # its own record, named as such
+            k._auto()
+            self.assertEqual(got, [])                                          # its record hasn't passed the gate
+            k.cfg.live.auto_needs_gate = False
+            k.slots.clear()
+            k._auto()
+            self.assertEqual(got, [5.0])                                       # live: the wide profile's band
+            self.assertNotIn(self.T, k.paper.pos)                              # paper: profile 1's, which missed it
+            self.assertTrue(any("live:" in m and "wide · base" in m for _, _, m in k.logs))
+            rows = {r["id"]: r["live"] for r in k._profile_rows([], set())}
+            self.assertEqual(rows, {"1": False, p.id: True})
+
+    def test_live_profile_off_or_gone_enters_nothing(self):
+        import shutil as sh
+        with tempfile.TemporaryDirectory() as d:
+            k, p, got = self.live_profile_desk(d)
+            k.cfg.live.auto_needs_gate = False                                 # even without the gate
+            k._command({"op": "live_profile", "profile": p.id})
+            self.assertIn("live enters nothing while it is off", k._command({"op": "profile_enable", "profile": p.id, "on": False}))
+            g = k.gate()
+            self.assertFalse(g["passed"]); self.assertIn("is off", g["checks"][0]["name"])
+            k._auto()
+            self.assertEqual(got, [])
+            self.assertIn("make another one live first", k._command({"op": "profile_delete", "profile": p.id}))
+            sh.rmtree(p.dir); k._profiles_reload(force=True)                   # gone some other way
+            self.assertIn("is gone", k.gate()["checks"][0]["name"])
+            k.slots.clear(); k._auto()
+            self.assertEqual(got, [])                                          # never falls back to profile 1 alone
+            self.assertIn("wide → profile 1", k._command({"op": "live_profile", "profile": "1"}).replace(p.id, "wide"))
+
     def test_reply_fields_are_read_as_documented(self):
         with tempfile.TemporaryDirectory() as d:
             k = self.desk(d, self.api(reply={"order_id": "o1", "fill_count": "5.00", "remaining_count": "0.00",
@@ -1712,6 +1767,35 @@ class ScreenProfiles(unittest.TestCase):
             [c] = [json.load(open(os.path.join(scr.cmd_dir, n))) for n in os.listdir(scr.cmd_dir)]
             self.assertEqual((c["op"], c["key"], c["value"]), ("set", "web.port", 8788))
 
+    def test_d_picks_the_live_profile_and_asks_while_armed(self):
+        with tempfile.TemporaryDirectory() as d:
+            k, p, scr = self.setup(d)
+            self.press("p"); self.cmds()
+            scr.focus = "profiles"
+            self.press(self.curses.KEY_DOWN, "d")
+            [c] = self.cmds()
+            self.assertEqual(c["op"], "live_profile"); self.assertEqual(c["profile"], p.id)   # not armed: no question
+            k._command(c); self.sync()
+            row = next(l for l in self.text().splitlines() if "profile 2" in l and " on " in l)
+            self.assertRegex(row, r"^│ [● ]L profile 2")                       # L marks the live profile
+            k.cfg.live.enabled = True; self.sync()                             # armed
+            self.press(self.curses.KEY_UP, "d")
+            self.assertIn("SWITCH LIVE PROFILE", self.text())
+            self.assertEqual(self.cmds(), [])
+            self.press(*"live", 10)
+            [c] = self.cmds()
+            self.assertEqual((c["op"], c["profile"]), ("live_profile", "1"))
+            k._command({"op": "live_profile", "profile": p.id}); self.sync()
+            self.press(self.curses.KEY_DOWN, 10)                               # view the live profile
+            self.assertEqual(scr.profile, p.id); self.cmds()
+            self.press(9, "r")                                                 # ETH into its coins: asks first
+            self.assertIn("LIVE PROFILE", self.text())
+            self.press(27)
+            self.assertEqual(self.cmds(), [])
+            self.press("r", *"live", 10)
+            [c] = self.cmds()
+            self.assertEqual((c["op"], c["key"]), ("profile_set", "strategy.series"))
+
     def test_profile_settings_send_profile_set(self):
         with tempfile.TemporaryDirectory() as d:
             k, p, scr = self.setup(d)
@@ -2417,7 +2501,7 @@ class Web(unittest.TestCase):
             hub.checked = 0                                                    # reread the status now, not in 0.2 s
             f = go("ArrowUp")
             self.assertIn("profile 2", "".join(t for t, _ in f["rows"][39]))     # status line: the profile shown
-            for key in (" ", "n", "D", "N"):
+            for key in (" ", "n", "d", "D", "N"):
                 f = go(key)
                 self.assertIn("view only", "".join(t for t, _ in f["rows"][38]), key)
             go("e"); go("ArrowDown"); go("ArrowDown")

@@ -684,7 +684,8 @@ class Desk:
 
     # ------------------------------------------------------------ the rule
     def _live_rule_on(self, gate: dict) -> bool:
-        return self.mode == "live" and (gate["passed"] or not self.cfg.live.auto_needs_gate)
+        # a live profile that is gone or off stops live entries even with auto_needs_gate off
+        return self.mode == "live" and gate.get("profile_ok", True) and (gate["passed"] or not self.cfg.live.auto_needs_gate)
 
     def vol(self, series: str, now: float) -> float | None:
         """The coin's realized volatility over the last hour (shadow.vol), from the spot feed."""
@@ -698,86 +699,121 @@ class Desk:
         v = self.cfg.strategy.variant
         return v if v in shadowmod.VARIANTS else "base"
 
+    def live_target(self) -> dict:
+        """The profile live trades (live.profile; d in the profiles box): its id, name, rule, variant and
+        records. ok is False, with why, when live must not enter for it: a profile that is gone or off.
+        Live never falls back to profile 1 on its own."""
+        pid = str(self.cfg.live.profile or "1")
+        if pid == "1":
+            return {"id": "1", "name": self.names.profile, "S": self.cfg.strategy, "variant": self.variant(),
+                    "shadow": self.shadow, "ok": True, "why": ""}
+        p = self._profile(pid)
+        if p is None:
+            return {"id": pid, "name": pid, "S": self.cfg.strategy, "variant": self.variant(), "shadow": None,
+                    "ok": False, "why": f"live profile {pid!r} is gone: pick one with d"}
+        return {"id": p.id, "name": p.name, "S": p.cfg.strategy, "variant": p.variant, "shadow": p.shadow,
+                "ok": p.enabled, "why": "" if p.enabled else f"{p.name} is off (space turns it on)"}
+
     def _auto(self, gate: dict | None = None) -> None:
-        S = self.cfg.strategy
-        lo, hi, cap, mins, spread, coins, mvol = shadowmod.params(self.variant(), S)
         gate = gate or self.gate()
-        books = [self.paper]
+        # each book trades its own profile's rule: paper profile 1's, live the live profile's (live_target)
+        jobs = [(self.paper, self.cfg.strategy, self.variant())]
         if self._live_rule_on(gate):
-            books.append(self.live)
+            t = self.live_target()
+            jobs.append((self.live, t["S"], t["variant"]))
         now = time.time()
+        for book, S, var in jobs:
+            self._auto_book(book, S, var, now)
+
+    def _auto_book(self, book, S, var: str, now: float) -> None:
+        lo, hi, cap, mins, spread, coins, mvol = shadowmod.params(var, S)
         for series in coins:
             e = self.events.get(series)
             if not e or not e["markets"] or now - e["fetched"] > 10:
                 continue
             tau = e["close"] - now
-            for book in books:
-                key = f"{book.name}|{e['event']}"
-                done = self.slots.setdefault(key, set())
-                slot = due_slot(tau, S.minutes, done)
-                if slot is None:
-                    continue
-                done.add(slot)
-                if slot not in mins:
-                    continue                         # the variant skips this slot
-                if shadowmod.too_wild(mvol, self.vol(series, now)):
-                    continue                         # the coin moved too hard this past hour (calm)
-                held = self.taken.setdefault(key, {})
-                sig = [s for s in signals(e["markets"], lo, hi, spread) if cap is None or held.get(s["ticker"], 0) < cap]
-                if book is self.live and sig:
-                    self._save_state()               # the slot is on disk before any order: a restart never repeats it
-                placed = 0
-                lost0 = self.lost_replies
-                for s in sig:
-                    if book is self.live and self.lost_replies > lost0:
-                        # Kalshi's order endpoint is failing: each lookup sleeps ~7s, and a run of them
-                        # would stall settling, the loss check and the screen while prices go stale.
-                        self.log("live rule stopped for this slot: an order reply was lost, the rest are skipped", "warn")
-                        break
-                    spent = self.hour_cost.get(key, 0.0)
-                    unit = s["price"] if s["delta_sign"] > 0 else 1 - s["price"]
-                    # whole contracts, no more than the quote shows: paper is sized exactly as the shadow record
-                    # sizes it; live has its own size (live.contracts)
-                    size = self.cfg.live.contracts if book is self.live else S.contracts
-                    n = float(int(min(size, s["size"], max(0.0, (S.max_hour_cost - spent) / max(unit, 1e-6)))))
-                    if n < 1:
-                        continue                     # a cheaper favorite further on may still fit (as in shadow)
-                    try:
-                        rec = self._exec(book, s["ticker"], s["delta_sign"] * n, s["price"], s["size"], "auto")
-                    except Unconfirmed as ex:        # count it as filled and stop: the budget must not be overspent
-                        self.hour_cost[key] = spent + n * unit + taker_fee(n, s["price"], self.cfg.taker_fee)
-                        held[s["ticker"]] = held.get(s["ticker"], 0) + 1
-                        self.log(f"{book.name} rule stopped for this slot: {ex}", "error"); break
-                    except KalshiError as ex:
-                        self.log(f"{book.name} rule order {s['ticker']} rejected: {ex}", "warn"); continue
-                    if not rec:
-                        continue
-                    self.hour_cost[key] = spent + abs(rec["delta"]) * unit + rec["fee"]
+            key = f"{book.name}|{e['event']}"
+            done = self.slots.setdefault(key, set())
+            slot = due_slot(tau, S.minutes, done)
+            if slot is None:
+                continue
+            done.add(slot)
+            if slot not in mins:
+                continue                         # the variant skips this slot
+            if shadowmod.too_wild(mvol, self.vol(series, now)):
+                continue                         # the coin moved too hard this past hour (calm)
+            held = self.taken.setdefault(key, {})
+            sig = [s for s in signals(e["markets"], lo, hi, spread) if cap is None or held.get(s["ticker"], 0) < cap]
+            if book is self.live and sig:
+                self._save_state()               # the slot is on disk before any order: a restart never repeats it
+            placed = 0
+            lost0 = self.lost_replies
+            for s in sig:
+                if book is self.live and self.lost_replies > lost0:
+                    # Kalshi's order endpoint is failing: each lookup sleeps ~7s, and a run of them
+                    # would stall settling, the loss check and the screen while prices go stale.
+                    self.log("live rule stopped for this slot: an order reply was lost, the rest are skipped", "warn")
+                    break
+                spent = self.hour_cost.get(key, 0.0)
+                unit = s["price"] if s["delta_sign"] > 0 else 1 - s["price"]
+                # whole contracts, no more than the quote shows: paper is sized exactly as the shadow record
+                # sizes it; live has its own size (live.contracts)
+                size = self.cfg.live.contracts if book is self.live else S.contracts
+                n = float(int(min(size, s["size"], max(0.0, (S.max_hour_cost - spent) / max(unit, 1e-6)))))
+                if n < 1:
+                    continue                     # a cheaper favorite further on may still fit (as in shadow)
+                try:
+                    rec = self._exec(book, s["ticker"], s["delta_sign"] * n, s["price"], s["size"], "auto")
+                except Unconfirmed as ex:        # count it as filled and stop: the budget must not be overspent
+                    self.hour_cost[key] = spent + n * unit + taker_fee(n, s["price"], self.cfg.taker_fee)
                     held[s["ticker"]] = held.get(s["ticker"], 0) + 1
-                    placed += 1
-                    if book is self.paper:
-                        self.auto.append({"ts": now, "ticker": s["ticker"], "side": s["side"], "n": abs(rec["delta"]),
-                                          "cost": unit, "fee": rec["fee"], "slot": slot, "pnl": None})
-                self.log(f"{book.name}: {slot}m slot on {e['event']} ({self.variant()}): {len(sig)} favorites in band, {placed} bought")
-                if book is self.live and sig:
-                    self._save_state()
+                    self.log(f"{book.name} rule stopped for this slot: {ex}", "error"); break
+                except KalshiError as ex:
+                    self.log(f"{book.name} rule order {s['ticker']} rejected: {ex}", "warn"); continue
+                if not rec:
+                    continue
+                self.hour_cost[key] = spent + abs(rec["delta"]) * unit + rec["fee"]
+                held[s["ticker"]] = held.get(s["ticker"], 0) + 1
+                placed += 1
+                if book is self.paper:
+                    self.auto.append({"ts": now, "ticker": s["ticker"], "side": s["side"], "n": abs(rec["delta"]),
+                                      "cost": unit, "fee": rec["fee"], "slot": slot, "pnl": None})
+            who = "" if book is self.paper or self.cfg.live.profile in ("1", "") else f"{self.live_target()['name']} · "
+            self.log(f"{book.name}: {slot}m slot on {e['event']} ({who}{self.names.variant(var)}): {len(sig)} favorites in band, {placed} bought")
+            if book is self.live and sig:
+                self._save_state()
 
     def gate(self, name: str | None = None, rec: dict | None = None) -> dict:
-        """The gate for a variant (the one in use by default), judged on that variant's own shadow
-        record, so switching variants never lets a short or losing record trade live. The paper
-        book's record of the rule rides along for the book box."""
+        """The live gate: the live profile's variant (live_target), judged on that profile's own shadow
+        record of it, so switching variants or profiles never lets a short or losing record trade live.
+        A live profile that is gone or off fails it. The paper book's record of the rule rides along
+        for the book box."""
         rows = [a for a in self.auto if a["pnl"] is not None]
         pnl = sum(a["pnl"] for a in rows)
         wins = sum(1 for a in rows if a["pnl"] > 0)
         per = sum(a["pnl"] / a["n"] for a in rows) / len(rows) if rows else 0.0
-        return {**self.checks(name or self.variant(), rec), "entries": len(rows), "open": len(self.auto) - len(rows),
+        if name is not None:
+            g = self.checks(name, rec)
+        else:
+            t = self.live_target()
+            sh = t["shadow"]
+            g = self.checks(t["variant"], sh.summary([t["variant"]])[0] if sh else
+                            {"hours": 0, "entries": 0, "pnl": 0.0}, who=t["name"] if t["id"] != "1" else "")
+            if not t["ok"]:
+                g["checks"] = [{"name": t["why"], "ok": False, "detail": "live enters nothing", "key": "profile",
+                                "have": 0, "need": 1}] + g["checks"]
+                g["passed"] = False
+            g["profile"], g["profile_name"], g["profile_ok"] = t["id"], t["name"], t["ok"]
+        return {**g, "entries": len(rows), "open": len(self.auto) - len(rows),
                 "pnl": pnl, "win": wins / len(rows) if rows else None, "per_contract": per}
 
-    def checks(self, name: str, rec: dict | None = None) -> dict:
-        """A variant's gate checks alone, on its shadow record (rec is its summary() row)."""
+    def checks(self, name: str, rec: dict | None = None, who: str = "") -> dict:
+        """A variant's gate checks alone, on its shadow record (rec is its summary() row; profile 1's by
+        default). who names a profile other than 1 in the check lines."""
         G = self.cfg.gate
         r = rec or self.shadow.summary([name])[0]
         days = r["hours"] / 24              # hours it actually traded, not time elapsed
+        var, name = name, f"{who}'s {name}" if who else name
         checks = [
             {"name": f"{name} on paper ≥ {G.min_days:g} days", "ok": days >= G.min_days, "detail": f"{days:.1f} days of hours traded",
              "key": "days", "have": days, "need": G.min_days},
@@ -786,7 +822,7 @@ class Desk:
             {"name": f"{name} P&L ≥ ${G.min_pnl:g}", "ok": r["entries"] > 0 and r["pnl"] >= G.min_pnl, "detail": f"{'-' if r['pnl'] < 0 else '+'}${abs(r['pnl']):,.2f}",
              "key": "pnl", "have": r["pnl"], "need": G.min_pnl},
         ]
-        return {"variant": name, "checks": checks, "passed": all(c["ok"] for c in checks)}
+        return {"variant": var, "checks": checks, "passed": all(c["ok"] for c in checks)}
 
     # ------------------------------------------------------------ shadow variants and the recorder
     def _shadow(self) -> None:
@@ -943,11 +979,13 @@ class Desk:
             g = self.checks(name)
             vn = self.names.variant
             msg = f"variant {vn(was)} → {vn(name)}: paper trades it from the next slot (open positions ride to settlement)"
-            if self.mode == "live" or self.cfg.live.enabled:
+            if (self.mode == "live" or self.cfg.live.enabled) and self.live_target()["id"] == "1":
                 msg += " · live trades it now" if g["passed"] or not self.cfg.live.auto_needs_gate else \
                        f" · live waits: {vn(name)} has not passed the gate"
             self.log(msg, "warn" if self.mode == "live" else "info")
             return msg
+        if op == "live_profile":
+            return self._live_profile(c.get("profile"))
         if op == "set":
             key, was = c.get("key"), None
             if cfgmod.setting(key) is not None:
@@ -986,6 +1024,28 @@ class Desk:
             self.taken = {k: v for k, v in self.taken.items() if not k.startswith("paper|")}
             return f"paper reset to ${self.cfg.paper_capital:,.2f}"
         return f"unknown command {op!r}"
+
+    def _live_profile(self, pid) -> str:
+        """d in the profiles box: the profile whose rule live trades from the next slot. Its variant needs its
+        own record past the gate; open live positions ride to settlement."""
+        pid = str(pid or "")
+        p = None if pid == "1" else self._profile(pid)
+        if pid != "1" and p is None:
+            return f"no profile {pid!r}"
+        if pid == str(self.cfg.live.profile or "1"):
+            return f"{self.names.profile if pid == '1' else p.name} is already the live profile"
+        was = self.live_target()["name"]
+        self.cfg.live.profile = pid; cfgmod.save(self.cfg, self.runtime)
+        t, g = self.live_target(), self.gate()
+        msg = f"live profile {was} → {t['name']} ({self.names.variant(t['variant'])}): live trades its rule from the next slot"
+        if not t["ok"]:
+            msg += f" · {t['why']}"
+        elif not g["passed"] and self.cfg.live.auto_needs_gate:
+            msg += f" · live waits: its {self.names.variant(t['variant'])} record has not passed the gate"
+        if self.mode == "live" or self.cfg.live.enabled:
+            msg += " · open live positions ride to settlement"
+        self.log(msg, "warn" if self.mode == "live" else "info")
+        return msg
 
     def _web_state(self, now: float) -> dict:
         """tern-web.service as the settings box shows it: whether it runs, and where to open it. Asked every
@@ -1050,6 +1110,8 @@ class Desk:
         if p is None:
             return f"no profile {pid!r}"
         if op == "profile_delete":
+            if str(self.cfg.live.profile) == p.id:
+                return f"{p.name} is the live profile: make another one live first (d), then delete it"
             to = profmod.delete(self.runtime, p.id)
             self.profiles = [x for x in self.profiles if x is not p]
             if self.view.get("profile") == p.id:
@@ -1057,14 +1119,18 @@ class Desk:
             return f"{p.name} deleted: kept in {os.path.relpath(to, self.runtime)}"
         if op == "profile_enable":
             p.set("enabled", bool(c.get("on")))
-            return f"{p.name} " + ("on: enters from the next slot" if p.enabled else "off: no new entries; open ones still settle")
+            live = " · it is the live profile: live enters nothing while it is off" \
+                if not p.enabled and str(self.cfg.live.profile) == p.id else ""
+            return f"{p.name} " + ("on: enters from the next slot" if p.enabled else "off: no new entries; open ones still settle") + live
         if op == "profile_set":
             key = c.get("key")
             try:
                 was, now = p.set(key, c.get("value"))
             except ValueError as ex:
                 return f"{p.name}: not set: {ex}"
-            return f"{p.name}: {profmod.label(key)} {profmod.show(key, was)} → {profmod.show(key, now)} (settings {p.log.sv})"
+            live = " · the live profile: live trades this from the next slot" \
+                if str(self.cfg.live.profile) == p.id and was != now and (self.mode == "live" or self.cfg.live.enabled) else ""
+            return f"{p.name}: {profmod.label(key)} {profmod.show(key, was)} → {profmod.show(key, now)} (settings {p.log.sv})" + live
         return f"unknown command {op!r}"
 
     def _summary(self, p: "profmod.Profile") -> list[dict]:
@@ -1083,14 +1149,18 @@ class Desk:
             return {"band_lo": S.band_lo, "band_hi": S.band_hi, "minutes": S.minutes, "max_spread": S.max_spread,
                     "series": S.series, "contracts": S.contracts, "max_hour_cost": S.max_hour_cost,
                     "paper_capital": cfg.paper_capital}
+        live = str(self.cfg.live.profile or "1")
         out = [{"id": "1", "name": self.names.profile, "enabled": True, "variant": self.variant(), "sv": self.slog.sv,
-                "created": 0, "variants": variants, "rule": rule(self.cfg)}]
+                "created": 0, "variants": variants, "rule": rule(self.cfg), "live": live == "1",
+                "gate_passed": next((v["gate"]["passed"] for v in variants if v.get("active") and v.get("gate")), False)}]
         def one(p):
             rows = self._summary(p)
+            rec = next((r for r in rows if r["name"] == p.variant), {"hours": 0, "entries": 0, "pnl": 0.0})
             if p.id not in (looked or set()):
                 rows = [{k: v for k, v in r.items() if k != "curve"} for r in rows]
             out.append({"id": p.id, "name": p.name, "enabled": p.enabled, "variant": p.variant, "sv": p.log.sv,
-                        "created": p.created, "rule": rule(p.cfg), "variants": rows})
+                        "created": p.created, "rule": rule(p.cfg), "variants": rows, "live": live == p.id,
+                        "gate_passed": self.checks(p.variant, rec)["passed"]})
         self._each_profile(one, "status")
         return out
 

@@ -7,7 +7,9 @@ under those settings (shadow.json, shadow-settled.jsonl, as runtime/ has), and a
 change (settings-log.jsonl). The engine runs every enabled profile's variants on the same snapshot it trades
 profile 1 on, so a difference between profiles comes from their settings, not from timing.
 
-A profile never sends an order. Its "book" is the record of the variant it picked, shown on its paper start.
+A profile never sends an order itself. Its "book" is the record of the variant it picked, shown on its paper
+start. When d makes it the live profile (config live.profile), the engine's live book trades its rule, once
+its own record of its variant passes the gate.
 
 Settings versions: each profile (profile 1 too) counts its settings, starting at 1. A change to a field that
 changes how records are made (RECORD_KEYS) bumps the version, and every new record row is stamped with it,
@@ -46,7 +48,8 @@ def _paper(key: str) -> Setting:
     return Setting(r.sec, r.name, r.label, r.lo, r.hi, r.step, r.kind, 0, r.what, "PAPER" if key == "strategy.contracts" else "")
 
 
-# The settings box's rows for profiles 2+. No live or gate rows: profiles never trade live.
+# The settings box's rows for profiles 2+. No live or gate rows: those are profile 1's, and live's caps and size
+# stay its own even when d makes a profile the live one (its rule is then what live trades).
 PROFILE_SETTINGS = [
     Setting("strategy", "variant", "book trades", kind="variant", group="PROFILE",
             what="the variant whose record this profile's book shows; every variant keeps running"),

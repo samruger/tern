@@ -50,7 +50,7 @@ VIEW_KEYS = set("12345678pjktTcvwgeh?") | {"ArrowUp", "ArrowDown", "ArrowLeft", 
 CONTROL_KEYS = {"q": "quit", "Q": "quit", "s": "engine start/stop", "R": "paper reset", "L": "live",
                 "r": "rule coins", "Enter": "picking a variant", "N": "renaming"}
 # border hints whose key changes something: not drawn on the web (the profiles box keeps ⏎: it only views)
-CONTROL_HINTS = {"r", "L", "R", "s", "q", "⏎", "space", "n", "D", "N"}
+CONTROL_HINTS = {"r", "L", "R", "s", "q", "⏎", "space", "n", "d", "D", "N"}
 # what a hint on a border sends when clicked
 HINT_KEY = {"tab": "Tab", "any key": "Escape", "esc": "Escape", "↑↓": None, "⏎": "Enter"}
 PROFILE_ONLY = "view only: profiles are made, changed and deleted from the screen in the terminal"
@@ -283,7 +283,7 @@ class WebScreen(dash.Screen):
             self.key(code); return
         if name == "Enter" and self.focus == "profiles" and self.in_profiles():
             self.key(code)                       # viewing a profile changes nothing: allowed
-        elif self.in_profiles() and name in (" ", "n", "D"):
+        elif self.in_profiles() and name in (" ", "n", "d", "D"):
             self.say(PROFILE_ONLY)
         elif name in VIEW_KEYS:
             self.key(code)

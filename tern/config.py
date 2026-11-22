@@ -43,6 +43,8 @@ class Live:
     max_daily_loss: float = 30.0   # live loss since local midnight that cancels everything and returns to paper
     auto_needs_gate: bool = True   # the rule trades live only after its paper record passes the gate
     contracts: float = 5.0         # contracts live buys per strike per slot (paper uses strategy.contracts)
+    profile: str = "1"             # the profile whose rule live trades (d in the screen's profiles box); "1" is the
+                                   # desk. Its variant must pass the gate on that profile's own record.
 
 
 @dataclass
