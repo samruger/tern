@@ -1,0 +1,203 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>tern</title>
+<style>
+  :root { --bg: #1a1b26; --fg: #a9b1d6; }
+  html, body { margin: 0; height: 100%; background: var(--bg); overflow: hidden; }
+  body { display: flex; align-items: flex-start; justify-content: flex-start; }
+  canvas { display: block; touch-action: none; outline: none; cursor: default; }
+  #lost { position: fixed; top: 8px; right: 8px; padding: 4px 10px; font: 13px monospace; display: none;
+          background: #f7768e; color: #1a1b26; border-radius: 4px; }
+</style>
+</head>
+<body>
+<canvas id="term" tabindex="0"></canvas>
+<div id="lost">no answer from tern web</div>
+<script>
+"use strict";
+(async function () {
+  const cv = document.getElementById("term"), ctx = cv.getContext("2d", { alpha: false });
+  const lost = document.getElementById("lost");
+  const lr = await fetch("/look");
+  if (lr.status === 401) { location.href = "/login"; return; }
+  const look = await lr.json();
+  document.documentElement.style.setProperty("--bg", look.bg);
+  document.documentElement.style.setProperty("--fg", look.fg);
+
+  // the font foot uses, served by tern web so a phone draws the same glyphs
+  let family = `"${look.font}", "JetBrainsMono Nerd Font", "JetBrains Mono", monospace`;
+  try {
+    const faces = [];
+    if (look.fonts.includes("regular")) faces.push(new FontFace("ternmono", "url(/font/regular)", { weight: "400" }));
+    if (look.fonts.includes("bold")) faces.push(new FontFace("ternmono", "url(/font/bold)", { weight: "700" }));
+    for (const f of faces) document.fonts.add(await f.load());
+    if (faces.length) family = `ternmono, ${family}`;
+  } catch (e) { /* the local font, or monospace */ }
+
+  // ------------------------------------------------------------ colors: foot's 16, then xterm's 256
+  const pal = look.base.slice();
+  const lv = [0, 95, 135, 175, 215, 255];
+  const hex = (r, g, b) => "#" + [r, g, b].map(v => v.toString(16).padStart(2, "0")).join("");
+  for (let i = 16; i < 232; i++) { const n = i - 16; pal.push(hex(lv[Math.floor(n / 36)], lv[Math.floor(n / 6) % 6], lv[n % 6])); }
+  for (let i = 0; i < 24; i++) { const v = 8 + 10 * i; pal.push(hex(v, v, v)); }
+  const rgb = c => [1, 3, 5].map(i => parseInt(c.substr(i, 2), 16));
+  const blend = (a, b, t) => { const x = rgb(a), y = rgb(b); return hex(...x.map((v, i) => Math.round(v * (1 - t) + y[i] * t))); };
+  const A = look.attr;
+
+  // ------------------------------------------------------------ sizing: foot's cell, at least 100x30
+  const MINC = 100, MINR = 30;
+  let cols = MINC, rows = MINR, cw = 9, ch = 19, fpx = 15, asc = 15, dpr = 1;
+  function measure(px) {
+    ctx.font = `400 ${px}px ${family}`;
+    const m = ctx.measureText("M");
+    return [m.width, px * 1.32];          // JetBrains Mono: 600/1000 advance, 1020+300 ascent+descent
+  }
+  function fit() {
+    dpr = window.devicePixelRatio || 1;
+    const vw = window.innerWidth, vh = window.innerHeight;
+    const pad = vw < 700 ? 2 : look.pad;
+    let px = look.size_pt * 96 / 72;
+    let [w, h] = measure(px);
+    const room = [vw - 2 * pad, vh - 2 * pad];
+    const scale = Math.min(1, room[0] / (MINC * w), room[1] / (MINR * h));
+    if (scale < 1) { px *= scale; [w, h] = measure(px); }
+    cw = Math.max(1, Math.round(w * dpr)); ch = Math.max(2, Math.round(h * dpr));
+    fpx = px * dpr; asc = Math.round(px * 1.02 * dpr);
+    cols = Math.max(MINC, Math.floor(room[0] * dpr / cw));
+    rows = Math.max(MINR, Math.floor(room[1] * dpr / ch));
+    cv.width = cols * cw; cv.height = rows * ch;
+    const fitk = Math.min(1, room[0] * dpr / cv.width, room[1] * dpr / cv.height);   // rounding to whole pixels can overshoot
+    cv.style.width = cv.width / dpr * fitk + "px"; cv.style.height = cv.height / dpr * fitk + "px";
+    cv.style.margin = pad + "px";
+    if (frame) paint(frame);
+  }
+
+  // ------------------------------------------------------------ painting
+  const BLOCK = { 0x2588: 8, 0x2589: 7, 0x258A: 6, 0x258B: 5, 0x258C: 4, 0x258D: 3, 0x258E: 2, 0x258F: 1 };
+  const BRAILLE = [[0, 0, 0x01], [0, 1, 0x02], [0, 2, 0x04], [1, 0, 0x08], [1, 1, 0x10], [1, 2, 0x20], [0, 3, 0x40], [1, 3, 0x80]];
+  function glyph(c, x, y, fg) {
+    const code = c.codePointAt(0);
+    ctx.fillStyle = fg; ctx.strokeStyle = fg;
+    if (code >= 0x2800 && code <= 0x28FF) {               // braille as dots, like foot
+      const bits = code - 0x2800, d = Math.max(1, Math.round(Math.min(cw / 3.2, ch / 6)));
+      for (const [cx, cy, b] of BRAILLE) if (bits & b)
+        ctx.fillRect(x + Math.round(cw * (cx ? 0.72 : 0.28) - d / 2), y + Math.round(ch * (0.14 + 0.24 * cy) - d / 2), d, d);
+      return;
+    }
+    if (BLOCK[code]) { ctx.fillRect(x, y, Math.round(cw * BLOCK[code] / 8), ch); return; }
+    const lw = Math.max(1, Math.round(dpr)), mx = x + Math.floor((cw - lw) / 2), my = y + Math.floor((ch - lw) / 2);
+    if (code === 0x2500) { ctx.fillRect(x, my, cw, lw); return; }
+    if (code === 0x2502) { ctx.fillRect(mx, y, lw, ch); return; }
+    if (code >= 0x256D && code <= 0x2570) {               // ╭ ╮ ╯ ╰
+      const r = Math.min(cw, ch) / 2, cx = mx + lw / 2, cy = my + lw / 2;
+      const right = code === 0x256D || code === 0x2570, down = code === 0x256D || code === 0x256E;
+      ctx.lineWidth = lw; ctx.beginPath();
+      ctx.moveTo(right ? x + cw : x, cy);
+      ctx.arcTo(cx, cy, cx, down ? y + ch : y, r);
+      ctx.lineTo(cx, down ? y + ch : y);
+      ctx.stroke(); return;
+    }
+    ctx.fillText(c, x, y + asc);
+  }
+  function colors(a) {
+    const n = (a & 0x1FF) - 1;
+    let fg = n >= 0 ? pal[n] : look.fg, bg = null;
+    if (a & A.dim) fg = blend(fg, look.bg, 0.45);
+    if (a & A.reverse) { bg = fg; fg = look.bg; }
+    return [fg, bg, !!(a & A.bold)];
+  }
+  let frame = null;
+  function paint(f) {
+    ctx.fillStyle = look.bg; ctx.fillRect(0, 0, cv.width, cv.height);
+    ctx.textBaseline = "alphabetic";
+    f.rows.forEach((row, r) => {
+      let col = 0;
+      for (const [text, a] of row) {
+        const [fg, bg, bold] = colors(a);
+        const chars = Array.from(text);
+        if (bg) { ctx.fillStyle = bg; ctx.fillRect(col * cw, r * ch, chars.length * cw, ch); }
+        ctx.font = `${bold ? 700 : 400} ${fpx}px ${family}`;
+        for (const c of chars) { if (c !== " ") glyph(c, col * cw, r * ch, fg); col++; }
+      }
+    });
+  }
+
+  // ------------------------------------------------------------ talking to tern web
+  let sid = sessionStorage.getItem("tern-sid");
+  const prefs = () => { try { return JSON.parse(localStorage.getItem("tern-prefs") || "null"); } catch (e) { return null; } };
+  const queue = []; let busy = false;
+  async function send(ev) {
+    if (ev) queue.push(ev);
+    if (busy) return;
+    busy = true;
+    try {
+      do {
+        const body = { sid, w: cols, h: rows, prefs: prefs(), ...(queue.shift() || {}) };
+        const res = await fetch("/frame", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+        if (res.status === 401) { location.href = "/login"; return; }
+        if (!res.ok) throw new Error(res.status);
+        frame = await res.json();
+        if (frame.sid !== sid) { sid = frame.sid; try { sessionStorage.setItem("tern-sid", sid); } catch (e) {} }
+        try { localStorage.setItem("tern-prefs", JSON.stringify(frame.prefs)); } catch (e) {}
+        lost.style.display = "none";
+        paint(frame);
+      } while (queue.length);
+    } catch (e) {
+      lost.style.display = "block";
+    } finally { busy = false; }
+  }
+
+  // ------------------------------------------------------------ input
+  const PASS = new Set(["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "PageUp", "PageDown", "Home", "End",
+                        "Tab", "Enter", "Escape", "Backspace"]);
+  window.addEventListener("keydown", e => {
+    if (e.ctrlKey || e.metaKey || e.altKey) return;        // the browser's own shortcuts
+    let k = e.key;
+    if (k === "Tab" && e.shiftKey) k = "BackTab";
+    if (!(PASS.has(k) || k === "BackTab" || k.length === 1)) return;
+    e.preventDefault();
+    send({ key: k });
+  });
+  function cell(cx, cy) {
+    const r = cv.getBoundingClientRect();
+    return { x: Math.floor((cx - r.left) / r.width * cols), y: Math.floor((cy - r.top) / r.height * rows) };
+  }
+  let wheelAcc = 0;
+  cv.addEventListener("wheel", e => {
+    e.preventDefault();
+    wheelAcc += e.deltaMode === 1 ? e.deltaY * 33 : e.deltaY;
+    if (Math.abs(wheelAcc) < 30) return;
+    const d = Math.sign(wheelAcc); wheelAcc = 0;
+    send({ wheel: { ...cell(e.clientX, e.clientY), d } });
+  }, { passive: false });
+  cv.addEventListener("mousedown", e => { if (e.button === 0) { cv.focus(); send({ click: cell(e.clientX, e.clientY) }); } });
+  let touch = null;                                       // a drag scrolls the box under the finger; a tap clicks
+  cv.addEventListener("touchstart", e => { const t = e.touches[0]; touch = { x: t.clientX, y: t.clientY, last: t.clientY, moved: false }; }, { passive: true });
+  cv.addEventListener("touchmove", e => {
+    e.preventDefault();
+    if (!touch) return;
+    const t = e.touches[0], step = ch / dpr * 1.2;
+    if (Math.abs(t.clientY - touch.y) > 8) touch.moved = true;
+    while (Math.abs(t.clientY - touch.last) >= step) {
+      const d = t.clientY < touch.last ? 1 : -1;
+      touch.last -= d * step;
+      send({ wheel: { ...cell(touch.x, touch.y), d } });
+    }
+  }, { passive: false });
+  cv.addEventListener("touchend", e => {
+    if (touch && !touch.moved) { e.preventDefault(); send({ click: cell(touch.x, touch.y) }); }
+    touch = null;
+  }, { passive: false });
+
+  window.addEventListener("resize", () => { fit(); send(); });
+  fit(); cv.focus();
+  await send();
+  setInterval(() => { if (!busy && !document.hidden) send(); }, 250);   // the screen redraws four times a second too
+  document.addEventListener("visibilitychange", () => { if (!document.hidden) send(); });
+})();
+</script>
+</body>
+</html>

@@ -5,7 +5,13 @@
   tern status           a plain-text summary
   tern report           the rule's variants side by side (shadow records, paper only)
   tern live-check       test the Kalshi key: balance and positions, no orders
+  tern web [--host H] [--port P]
+                        the screen in a browser, view only (default http://localhost:8787/)
   tern service          write a systemd user service that keeps the engine running
+  tern web-service [--host H]
+                        the same for tern web (tern-web.service, port 8787; --host 0.0.0.0 to open it up)
+  tern web-password     set tern web's login password (prints a generated one if you enter none)
+  tern web-cert         make tern web's self-signed HTTPS certificate
 """
 
 from __future__ import annotations
@@ -103,6 +109,74 @@ WantedBy=default.target
 """
 
 
+def _web_unit(root: str, runtime: str, python: str, host: str = "127.0.0.1") -> str:
+    # View only: it reads the status file the engine writes, so it needs no keys. Off localhost tern web
+    # refuses to start without its login and certificate.
+    return f"""[Unit]
+Description=tern web screen (view only)
+After=tern.service
+
+[Service]
+WorkingDirectory={root.replace("%", "%%")}
+Environment={_unit_quote("TERN_RUNTIME=" + runtime)}
+Environment=PYTHONUNBUFFERED=1
+ExecStartPre=/usr/bin/test -d {_unit_quote(runtime)}
+ExecStart={_unit_quote(python)} -m tern web --host {host} --port 8787
+Restart=always
+RestartSec=15
+
+[Install]
+WantedBy=default.target
+"""
+
+
+def _web_service(runtime: str, host: str = "127.0.0.1") -> int:
+    unit_dir = os.path.expanduser("~/.config/systemd/user")
+    os.makedirs(unit_dir, exist_ok=True)
+    path = os.path.join(unit_dir, "tern-web.service")
+    with open(path, "w") as fh:
+        fh.write(_web_unit(os.path.realpath(cfgmod.ROOT), os.path.realpath(runtime), sys.executable, host))
+    print(f"Wrote {path}\n\nStart it now and at every login:\n"
+          "  systemctl --user daemon-reload\n  systemctl --user enable --now tern-web\n\n"
+          "Then open http://localhost:8787/ (https:// once tern web-cert has made a certificate)")
+    return 0
+
+
+def _web_password() -> int:
+    import getpass, secrets
+    from . import webauth
+    pw = getpass.getpass("new tern web password (enter for a generated one): ") if sys.stdin.isatty() else ""
+    made = not pw
+    if made:
+        pw = secrets.token_urlsafe(15)
+    elif getpass.getpass("again: ") != pw:
+        print("they differ; nothing changed"); return 1
+    try:
+        webauth.set_password(pw)
+    except ValueError as ex:
+        print(ex); return 1
+    print((f"password: {pw}\n" if made else "") + f"saved to {webauth.AUTH_FILE}; every browser is signed out.\n"
+          "Restart tern web if it is running: systemctl --user restart tern-web")
+    return 0
+
+
+def _web_cert() -> int:
+    import socket
+    from . import webauth
+    ips = set()
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:   # the LAN address (no packet is sent)
+            s.connect(("192.0.2.1", 9)); ips.add(s.getsockname()[0])
+    except OSError:
+        pass
+    fp = webauth.make_cert(sorted(ips))
+    print(f"wrote {webauth.CERT_FILE} and {webauth.KEY_FILE} for {', '.join(sorted(ips)) or 'localhost'}\n\n"
+          "Browsers will warn that it is self-signed. Before accepting, check the certificate's\n"
+          f"SHA-256 fingerprint matches this one:\n  {fp}\n\n"
+          "Restart tern web if it is running: systemctl --user restart tern-web")
+    return 0
+
+
 def _service(runtime: str) -> int:
     unit_dir = os.path.expanduser("~/.config/systemd/user")
     os.makedirs(unit_dir, exist_ok=True)
@@ -142,10 +216,20 @@ def main(argv: list[str]) -> int:
             print("\n".join(f"{n}: {d}" for n, d in RETIRED.items()))
         print("\nt is by hour and shows after 10 hours; under about 2 it is still noise.")
         return 0
+    if cmd == "web":
+        from .web import serve
+        opt = dict(zip(argv[1::2], argv[2::2]))
+        serve(runtime, opt.get("--host", "127.0.0.1"), int(opt.get("--port", 8787))); return 0
     if cmd == "live-check":
         return _live_check()
     if cmd == "service":
         return _service(runtime)
+    if cmd == "web-service":
+        return _web_service(runtime, dict(zip(argv[1::2], argv[2::2])).get("--host", "127.0.0.1"))
+    if cmd == "web-password":
+        return _web_password()
+    if cmd == "web-cert":
+        return _web_cert()
     print(f"unknown command {cmd!r}\n{__doc__}")
     return 2
 

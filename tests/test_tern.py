@@ -1186,5 +1186,147 @@ class Charts(unittest.TestCase):
         self.assertEqual(by_time(pts, 0, 40, 4), [1.0, 2.0, 2.0, 2.0])     # the last value carries forward
 
 
+class Web(unittest.TestCase):
+    """tern web: the screen in a browser, view only."""
+    T = "KXBTCD-E1-T100"
+
+    def status(self, d):
+        import json, time
+        from tern.engine import live_dir
+        st = {"heartbeat": time.time(), "mode": "paper", "pid": os.getpid(), "strategy": {"variant": "base", "series": ["KXBTCD"],
+              "band_lo": 0.75, "band_hi": 0.95, "max_spread": 0.02, "minutes": [25, 20, 15, 10]},
+              "variants": [{"name": "base", "active": True, "hours": 1, "entries": 1, "pnl": 1.0, "curve": []},
+                           {"name": "band90", "hours": 1, "entries": 1, "pnl": 2.0, "curve": []}],
+              "events": {"KXBTCD": {"event": "KXBTCD-E1", "close": time.time() + 900, "age": 0,
+                                    "ladder": [{"t": self.T, "k": 99.99, "b": 0.5, "a": 0.52, "v": 10}]}}}
+        with open(os.path.join(live_dir(d), "status.json"), "w") as fh:
+            json.dump(st, fh)
+
+    def test_control_keys_send_nothing_and_view_keys_work(self):
+        from tern.web import Hub
+        with tempfile.TemporaryDirectory() as d:
+            self.status(d)
+            hub = Hub(d)
+            f = hub.handle({"w": 120, "h": 40, "prefs": {"slot3": "variants", "theme": "classic"}})
+            sid = f["sid"]
+            for k in ("q", "s", "R", "L", "r", "Enter", "ArrowDown", "Enter"):
+                f = hub.handle({"sid": sid, "w": 120, "h": 40, "key": k})
+            self.assertEqual(os.listdir(os.path.join(d, "cmd")), [])          # no command reached the engine
+            self.assertFalse(os.path.exists(os.path.join(d, "dash.json")))     # the screen's prefs are its own
+            self.assertIn("view only", "".join(t for t, _ in f["rows"][38]))
+            for k in ("t", "c", "Tab", "BackTab", "w", "2"):
+                f = hub.handle({"sid": sid, "w": 120, "h": 40, "key": k})
+            self.assertEqual(f["prefs"]["watch"], "band90")                    # ↓ then w: watching, trading unchanged
+            self.assertNotEqual(f["prefs"]["theme"], "classic")
+            self.assertEqual(f["prefs"]["chart"], "1h")
+            self.assertEqual(f["prefs"]["hidden"], ["contract"])
+            self.assertEqual(len(f["rows"]), 40)
+
+    def test_engine_sends_history_for_strikes_web_viewers_picked(self):
+        import collections, json, time
+        from tern.engine import Desk
+        with tempfile.TemporaryDirectory() as d:
+            k = Desk(d)
+            k.hist[self.T] = collections.deque([(time.time(), 0.5, 0.52)])
+            k.seeded.add(self.T)                                               # no network
+            with open(os.path.join(k.fast, "view-web.json"), "w") as fh:
+                json.dump({"series": ["KXETHD", "KXFAKED"], "tickers": [self.T]}, fh)
+            k._read_view()
+            self.assertEqual(k.web, {"series": ["KXETHD"], "tickers": [self.T]})
+            k._status()
+            with open(os.path.join(k.fast, "status.json")) as fh:
+                self.assertIn(self.T, json.load(fh)["hist"])
+            old = time.time() - 60                                             # tern web gone: stop serving it
+            os.utime(os.path.join(k.fast, "view-web.json"), (old, old))
+            k._read_view()
+            self.assertEqual(k.web, {"series": [], "tickers": []})
+
+
+class WebLogin(unittest.TestCase):
+    """tern web's login: the password, the signed cookie, the limits on wrong guesses, and the server."""
+
+    def test_password_and_cookie(self):
+        import json, stat
+        from tern import webauth
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "web.json")
+            with self.assertRaises(ValueError):
+                webauth.set_password("short", p)
+            webauth.set_password("correct horse battery", p)
+            self.assertEqual(stat.S_IMODE(os.stat(p).st_mode), 0o600)
+            self.assertNotIn("horse", open(p).read())
+            a = webauth.Auth(p)
+            self.assertTrue(a.check("correct horse battery"))
+            self.assertFalse(a.check("correct horse batter"))
+            tok = a.token(1000.0)
+            self.assertTrue(a.valid(tok, 1001.0))
+            self.assertFalse(a.valid(tok, 1000.0 + webauth.TTL + 1))         # expired
+            exp, nonce, sig = tok.split(".")
+            self.assertFalse(a.valid(f"{int(exp) + 9999}.{nonce}.{sig}", 1001.0))   # stretched expiry
+            for bad in (None, "", "x", "a.b.c", "1.2.3.4"):
+                self.assertFalse(a.valid(bad, 1001.0))
+            webauth.set_password("correct horse battery", p)                  # a new secret signs everyone out
+            self.assertFalse(webauth.Auth(p).valid(tok, 1001.0))
+
+    def test_limiter(self):
+        from tern import webauth
+        lim = webauth.Limiter()
+        for _ in range(webauth.PER_IP):
+            self.assertEqual(lim.wait("1.1.1.1", 100.0), 0)
+            lim.fail("1.1.1.1", 100.0)
+        self.assertGreater(lim.wait("1.1.1.1", 101.0), 0)
+        self.assertEqual(lim.wait("2.2.2.2", 101.0), 0)                       # others still get in
+        self.assertEqual(lim.wait("1.1.1.1", 100.0 + webauth.WINDOW + 1), 0)  # and it passes
+        lim = webauth.Limiter()
+        for i in range(webauth.ALL):
+            lim.fail(f"10.0.0.{i}", 100.0)
+        self.assertGreater(lim.wait("3.3.3.3", 101.0), 0)                     # many addresses: everyone waits
+
+    def test_server_needs_login_and_https(self):
+        import http.client, json, socket, ssl, threading, time
+        from unittest import mock
+        from tern import web, webauth
+        with tempfile.TemporaryDirectory() as d:
+            files = {"AUTH_FILE": os.path.join(d, "web.json"), "CERT_FILE": os.path.join(d, "c.pem"),
+                     "KEY_FILE": os.path.join(d, "k.pem")}
+            with mock.patch.multiple(webauth, **files):
+                with self.assertRaises(SystemExit):                          # off localhost, not without both
+                    web.serve(d, "0.0.0.0", 0)
+                webauth.set_password("correct horse battery")
+                webauth.make_cert([])
+                with socket.socket() as s:
+                    s.bind(("127.0.0.1", 0)); port = s.getsockname()[1]
+                threading.Thread(target=web.serve, args=(d, "127.0.0.1", port), daemon=True).start()
+                ctx = ssl.create_default_context(cafile=files["CERT_FILE"])
+                for _ in range(50):
+                    try:
+                        socket.create_connection(("127.0.0.1", port), 0.2).close(); break
+                    except OSError:
+                        time.sleep(0.1)
+                c = http.client.HTTPSConnection("localhost", port, context=ctx, timeout=10)
+
+                def ask(method, path, body=None, headers=None):
+                    c.request(method, path, body, headers or {})
+                    r = c.getresponse(); return r, r.read()
+                r, _ = ask("GET", "/")
+                self.assertEqual((r.status, r.getheader("Location")), (303, "/login"))
+                self.assertEqual(ask("GET", "/look")[0].status, 401)
+                self.assertEqual(ask("POST", "/frame", b"{}")[0].status, 401)  # and the connection stays in step
+                r, _ = ask("POST", "/login", b"password=nope", {"Content-Type": "application/x-www-form-urlencoded"})
+                self.assertEqual(r.status, 401)
+                r, _ = ask("POST", "/login", b"password=correct+horse+battery",
+                           {"Content-Type": "application/x-www-form-urlencoded"})
+                self.assertEqual(r.status, 303)
+                ck = r.getheader("Set-Cookie")
+                for flag in ("HttpOnly", "Secure", "SameSite=Strict"):
+                    self.assertIn(flag, ck)
+                cookie = {"Cookie": ck.split(";", 1)[0]}
+                r, body = ask("GET", "/look", headers=cookie)
+                self.assertEqual(r.status, 200)
+                self.assertIn("fg", json.loads(body))
+                r, _ = ask("GET", "/logout", headers=cookie)
+                self.assertIn("Max-Age=0", r.getheader("Set-Cookie"))
+
+
 if __name__ == "__main__":
     unittest.main()

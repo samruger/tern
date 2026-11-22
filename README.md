@@ -16,6 +16,8 @@ python3 -m tern run           # the engine in the foreground
 python3 -m tern status        # plain-text summary
 python3 -m tern report        # the rule's variants side by side
 python3 -m tern live-check    # test your Kalshi key (balance, positions; no orders)
+python3 -m tern web           # the screen in a browser, view only: http://localhost:8787/
+python3 -m tern web-service   # a systemd user service for it (tern-web.service)
 python3 -m tern service       # a systemd user service so the engine keeps running
 python3 -m unittest tests.test_tern
 ```
@@ -160,6 +162,37 @@ Keys: `↑↓` / `PgUp PgDn` move in the focused box · `←→` focus · `1`–
 
 <img width="1364" height="682" alt="screenshot-2026-11-21_17-49-07-tern" src="https://github.com/user-attachments/assets/e3c5f332-30ae-41ac-bae7-a796b2ad9275" />
 
+## The web screen
+
+`tern web` serves the screen at http://localhost:8787/ (`--port` to move it). It is not a copy of the
+screen: each browser tab runs the real screen code on a virtual terminal, and the page paints its cells
+with foot's colors and font. So it looks and behaves the same: boxes `1`–`6`, `3` ladder/variants, `c`
+chart span, `tab`/shift+tab coins, `t`/`T` themes, `v` paper/live, `w` watch a variant, `g` gate, `h`
+help, `↑↓ ←→` and the wheel. Clicking a key on a box border, a box's number, or a ladder or variant row
+does what the key would; on a phone, drag to scroll.
+
+It is view only. `q`, `s`, `R`, `L`, `r` and `enter` (pick a variant) do nothing there, and their
+hints are not drawn. It writes no command files and never touches the screen's `dash.json` or
+`view.json`: each browser keeps its own settings. It writes `view-web.json` (in the same tmpfs folder)
+with the coins and strikes its viewers have up, so the engine sends those strikes' contract history
+too; the engine ignores the file 30 seconds after the last viewer leaves.
+
+**From outside the house.** Off localhost (`--host 0.0.0.0`) it will not start without a login and HTTPS:
+
+```
+python3 -m tern web-password                # a password (enter none for a generated one)
+python3 -m tern web-cert                    # a self-signed certificate; prints its fingerprint
+python3 -m tern web-service --host 0.0.0.0  # then: systemctl --user enable --now tern-web
+```
+
+Both live in `~/.config/tern/`, never in the repo. The password is stored as a PBKDF2 hash. A sign-in
+lasts 30 days in an HttpOnly, Secure, SameSite=Strict cookie. Setting a new password signs every
+browser out, and `/logout` signs out the one you are on. Five wrong tries from one address make it wait
+15 minutes, and 30 from everyone make every sign-in wait. The certificate is self-signed, so each
+browser warns once. Check that the fingerprint it shows matches the one `web-cert` printed before you
+accept it. To reach it from the internet, open the port in the firewall (`sudo ufw allow 8787/tcp`) and
+forward TCP 8787 on the router to this machine.
+
 ## Files
 
 `runtime/` (gitignored) holds `config.json`, `state.json` (the books as they
@@ -182,6 +215,8 @@ because they are rewritten every second.
 | `shadow.py` | the variants, each with its own paper record (also each one's gate) |
 | `record.py` | writes quotes and results to `runtime/ticks/` |
 | `dash.py` | the curses screen |
+| `web.py`, `web.html` | the same screen in a browser, view only |
+| `webauth.py` | tern web's password, sign-in cookie, wrong-guess limits and certificate |
 | `research/` | the scripts and data behind the numbers above |
 
 <img width="1364" height="682" alt="screenshot-2026-11-21_17-49-26-tern" src="https://github.com/user-attachments/assets/e5b7f060-8be7-4843-ab2b-88077bc40738" />
