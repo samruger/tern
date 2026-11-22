@@ -180,8 +180,9 @@ python3 -m tern live-check
 The boxes sit on two pages, and `p` flips between them. Page 1 · trade has spot, contract, ladder, book,
 equity and log. Page 2 · compare has variants across the full width, then profiles and equity, then log. Each
 page fits itself to the terminal: tables keep all their rows and the charts give up height first. A screen big
-enough for every box (about 130×46) shows them all as one page. A box keeps its number on every page, and
-hiding one hides it on that page only.
+enough for every box (about 150×45) shows them all as one page. Each page numbers its boxes in reading order
+(page 1: 1–6; page 2: 1 variants, 2 profiles, 3 equity, 4 log), `page 1/2` on the bottom border says which
+page it is, and hiding a box hides it on that page only.
 
 | Box | What it shows |
 |---|---|
@@ -192,10 +193,10 @@ hiding one hides it on that page only.
 | ⁴ book | equity, P&L, cash, at risk, fees, the rule's paper record, and open positions. `v` switches between paper and live |
 | ⁵ equity | that book's equity by the minute |
 | ⁶ log | what the engine did |
-| ⁷ variants | page 2: each variant's record and gate progress, ● on the one in use, and the highlighted one's P&L by hour |
-| ⁸ profiles | page 2: profile 1 and the profiles you made (see Profiles) |
+| ¹ variants (page 2) | each variant's record and gate progress, ● on the one in use, and the highlighted one's P&L by hour |
+| ² profiles (page 2) | profile 1 and the profiles you made (see Profiles) |
 
-Keys: `p` page 1 / page 2 · `↑↓` / `PgUp PgDn` move in the focused box · `←→` focus · `1`–`8` show/hide a box on this page · `enter` use the highlighted variant or view the highlighted profile (whichever box has focus) · `w` watch a variant (view only) · `tab` next coin · `r` rule trades this coin ·
+Keys: `p` page 1 / page 2 · `↑↓` / `PgUp PgDn` move in the focused box · `←→` focus · `1`–`6` (page 1) or `1`–`4` (page 2) show/hide a box on that page · `enter` use the highlighted variant or view the highlighted profile (whichever box has focus) · `w` watch a variant (view only) · `tab` next coin · `r` rule trades this coin ·
 `c` chart range · `v` book · `L` arm/disarm live · `g` gate · `R` reset paper ·
 `s` start the engine · `?` help · `q` close (the engine keeps running).
 
@@ -205,7 +206,7 @@ Keys: `p` page 1 / page 2 · `↑↓` / `PgUp PgDn` move in the focused box · `
 
 `tern web` serves the screen at http://localhost:8787/ (`--port` to move it). It is not a copy of the
 screen: each browser tab runs the real screen code on a virtual terminal, and the page paints its cells
-with foot's colors and font. So it looks and behaves the same: `p` pages, boxes `1`–`8`, `c`
+with foot's colors and font. So it looks and behaves the same: `p` pages, box numbers, `c`
 chart span, `tab`/shift+tab coins, `t`/`T` themes, `v` paper/live, `w` watch a variant, `g` gate, `h`
 help, `↑↓ ←→` and the wheel. Clicking a key on a box border, a box's number, or a ladder or variant row
 does what the key would; on a phone, drag to scroll.

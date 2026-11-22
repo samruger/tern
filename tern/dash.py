@@ -295,7 +295,7 @@ HELP = [
     ("VARIANTS", "Each variant runs on paper side by side with its own record and real fees, written down "
                  "before it saw any data:\n"
                  "{variants}\n"
-                 "The one marked ● in the variants box (7, on page 2: p) is what the paper book trades, and live too once it "
+                 "The one marked ● in the variants box (page 2: p) is what the paper book trades, and live too once it "
                  "passes the gate. Highlight another with ↑↓ and press enter to switch; while live is on or armed "
                  "you type \"live\" to confirm. Open positions ride to settlement. Picking whichever looks best "
                  "after watching flatters it: the gate is the real check.\n"
@@ -329,13 +329,14 @@ HELP_BOXES = [
     ("", "", "  positions, settlements and fills; (v) switches paper / live"),
     ("⁵", "equity", "that book's equity by the minute"),
     ("⁶", "log", "what the engine did, newest at the bottom; scroll back with ↑↓"),
-    ("⁷", "variants", "page 2: each variant's hours, entries, P&L, ¢ a contract, win rate, t,"),
+    ("¹", "variants", "page 2: each variant's hours, entries, P&L, ¢ a contract, win rate, t,"),
     ("", "", "  and gate progress (yellow: still short); ● in use; the highlighted"),
     ("", "", "  one's P&L by hour below"),
-    ("⁸", "profiles", "page 2: profile 1 (the desk) and the profiles you made, each running"),
+    ("²", "profiles", "page 2: profile 1 (the desk) and the profiles you made, each running"),
     ("", "", "  every variant under its own settings, paper only; ● is the one shown"),
-    ("", "pages", "(p) flips page 1 · trade (1-6) and page 2 · compare (variants, profiles,"),
-    ("", "", "  equity, log); a screen big enough for all of them shows one page"),
+    ("", "pages", "(p) flips page 1 (boxes 1-6) and page 2 (1 variants, 2 profiles, 3 equity,"),
+    ("", "", "  4 log); \"page 1/2\" on the bottom border says which. A screen big enough"),
+    ("", "", "  for every box shows them all as one, numbered 1-8"),
     ("", "status", "bottom row: PAPER or LIVE, the coin's price and 1h change, the hourly event"),
     ("", "", "  and time to its close, rule ON/off with the next slot (+live when live"),
     ("", "", "  trades), stale data warnings (usually Wi-Fi), engine ok / stale / down"),
@@ -359,11 +360,11 @@ HELP_KEYS = [
                ("PgUp PgDn", "ten steps at a time"),
                ("mouse wheel", "scroll the box under the pointer"),
                ("tab S-tab", "next / previous coin")]),
-     ("look", [("p", "page 1 trade / page 2 compare"),
-               ("1 2 3", "show / hide spot, contract, ladder"),
-               ("4 5 6", "show / hide book, equity, log"),
-               ("7 8", "show / hide variants, profiles"),
-               ("", "(hidden on this page only)"),
+     ("look", [("p", "page 1 / page 2"),
+               ("1-6", "page 1: show / hide spot, contract,"),
+               ("", "ladder, book, equity, log"),
+               ("1-4", "page 2: variants, profiles, equity, log"),
+               ("", "(hidden on that page only)"),
                ("c", "spot chart span: 5m 15m 1h 24h"),
                ("v", "book and equity: paper / live"),
                ("w", "watch the highlighted variant: book,"),
@@ -413,7 +414,7 @@ SCREEN_SETTINGS = [cfgmod.Setting("screen", "log", "log shows", kind="choice", g
 # spot chart spans: c cycles them in this order (the engine sends ~15 min of seconds and 24h of minutes)
 CHARTS = {"5m": 300, "15m": 900, "1h": 3600, "24h": 86400}
 
-# the boxes, in the order of their number keys (the same number on every page)
+# every box; on each view its number key is its place in that view's reading order (page 2: 1 variants ... 4 log)
 BOXES = ["spot", "contract", "ladder", "book", "equity", "log", "variants", "profiles"]
 PANELS = BOXES                                   # older name, kept for the web and tests
 # each view's rows of boxes, top to bottom; p flips page1 / page2, and a screen big enough for every box at its
@@ -520,7 +521,6 @@ class Screen:
         self.prefs_path = os.path.join(runtime, "dash.json")
         self.hidden = clean_hidden(None)       # each view's boxes turned off with 1-8
         self.page = 1                          # p flips page 1 (trade) / page 2 (compare)
-        self.page_spots: list[tuple[int, int, int, int]] = []   # (y, x0, x1, page) of the page names on the border
         self.panel_key = ""                    # the number drawn in the title of the box being drawn
         self.drawing = ""                      # the box being drawn, so box() can mark the focused one
         self.focus = "ladder"                  # the box ↑↓ scroll; ←→ move it
@@ -621,19 +621,18 @@ class Screen:
         return n + 6, 7
 
     def toggle(self, i: int) -> None:
-        """1-8: show / hide that box on this page. A box on the other page stays where it is."""
-        name = BOXES[i]
+        """1-8: show / hide this view's i-th box (its number on its border)."""
         H, W = self.s.getmaxyx()
         v = self.view(H, W)
-        if name not in view_boxes(v):
-            pg = next(k for k in PAGE_NAMES if name in view_boxes(f"page{k}"))
-            self.say(f"{name} is on page {pg} ({PAGE_NAMES[pg]}) · p flips to it"); return
+        here = view_boxes(v)
+        if i >= len(here):
+            where = f"page {self.page}" if v != "merged" else "this screen"
+            self.say(f"{where} has boxes 1-{len(here)}"); return
+        name = here[i]
         self.hidden[v] ^= {name}
         self.save_prefs()
-        here = view_boxes(v)
-        nums = " ".join(str(BOXES.index(n) + 1) for n in BOXES if n in here)
         self.say(f"{name} {'hidden' if name in self.hidden[v] else 'shown'}"
-                 + (f" · every box here is hidden: {nums} bring them back" if self.hidden[v] >= set(here) else ""))
+                 + (f" · every box here is hidden: 1-{len(here)} bring them back" if self.hidden[v] >= set(here) else ""))
 
     def flip_page(self) -> None:
         H, W = self.s.getmaxyx()
@@ -1661,7 +1660,9 @@ class Screen:
         box (so tab, ?, q... never go missing) at its right end, and a flash message at its left."""
         P = self.P
         flashing = bool(self.flash) and time.time() - self.flash_at < 8
-        lo = 1 if flashing or self.view(H, W) == "merged" else 2 + self.page_hint_w() + 1   # left of it: the page names
+        paged = not flashing and self.view(H, W) != "merged"
+        page_seg = ("p", "age ", str(self.page), "/2")           # ─page 1/2─ at the row's left end
+        lo = 2 + sum(map(len, page_seg)) + 3 if paged else 1   # the hidden boxes' hints stay right of it
         orphans = [k for name, fn in PANEL_KEYS.items() if name not in self.rects for k in fn(self)]
         width = lambda segs: sum(sum(map(len, seg)) + 3 for seg in segs) - 1
         for key in ORPHAN_DROP:                       # too many for the row: the least needed go first, tab last
@@ -1676,30 +1677,11 @@ class Screen:
                 if rx >= lo:
                     self.hint(H - 2, rx, seg, border)
                 rx += sum(map(len, seg)) + 3
-        if not flashing:                              # a flash takes the row's left end (and would leave pieces of it)
-            self.page_hint(H, W)
+        if paged:                                     # a flash takes the row's left end instead
+            self.hint(H - 2, 2, page_seg, P(P.grey))
         if flashing:
             msg = f" {self.flash} "[:max(0, W - 4)]
             self.put(H - 2, 2, msg, P(YELLOW, bold=True) | curses.A_REVERSE)
-
-    @staticmethod
-    def page_hint_w() -> int:
-        return 6 + sum(len(n) + 3 for n in PAGE_NAMES.values())
-
-    def page_hint(self, H: int, W: int) -> None:
-        """─page  trade  compare─ at the left of the bottom border, the page shown highlighted. Not drawn when
-        both pages fit as one."""
-        if self.view(H, W) == "merged":
-            return
-        P = self.P
-        x = 2
-        self.hint(H - 2, x, ("p", "age"), P(P.grey)); x += 6
-        for n, name in PAGE_NAMES.items():
-            on = n == self.page
-            self.put(H - 2, x, f" {name} ", P(WHITE, bold=True) | curses.A_REVERSE if on else P(P.grey))
-            self.page_spots.append((H - 2, x, x + len(name) + 2, n))
-            x += len(name) + 3
-        self.put(H - 2, x - 1, "─", P(P.grey))
 
     def draw_overlay(self, lines: list, title: str, color: int = CYAN, scroll: bool = False, hints=None) -> None:
         """A centered box of lines. A line is a plain string (colored by `rich`) or a list of (text, attr).
@@ -2068,23 +2050,24 @@ class Screen:
             self.put(0, 0, f"tern needs at least 100x30 (now {W}x{H})", self.P(RED, bold=True)); self.s.refresh(); return
         self.header(H, W)
         self.rects = {}
-        self.page_spots = []
         boxes = self.layout(H, W)
+        view = self.view(H, W)
+        here = view_boxes(view)
         names = [b[0] for b in boxes if b[0] in SCROLLS]
         if names and self.focus not in names:          # the focused box went off screen (page, hiding, size)
             self.focus = names[0]
         for name, y, x, h, w in boxes:
             self.rects[name] = (y, x, h, w)
             self.clip = x + w - 1
-            self.panel_key = SUPER[BOXES.index(name)]
+            self.panel_key = SUPER[here.index(name)]
             self.drawing = name
             getattr(self, name + "_panel")(y, x, h, w)
         self.clip = None
         self.panel_key = ""
         self.drawing = ""
-        here = [n for n in BOXES if n in view_boxes(self.view(H, W))]
         if not boxes:
-            msg = "every box here is hidden · press " + ", ".join(f"{BOXES.index(n) + 1} {n}" for n in here)
+            msg = "every box here is hidden · press " + ", ".join(f"{i} {n}" for i, n in enumerate(here, 1)) \
+                + (" · p flips the page" if view != "merged" else "")
             self.put(H // 2, max(0, (W - len(msg)) // 2), msg, self.P(self.P.grey))
         self.footer(H, W)
         if self.overlay == "settings":

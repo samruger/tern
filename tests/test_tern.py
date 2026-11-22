@@ -1651,16 +1651,27 @@ class Pages(unittest.TestCase):
             self.press("p")
             self.assertEqual(scr.page, 2)
             self.assertIn("equity", scr.rects)
-            self.assertEqual(scr.hidden, {"page1": {"equity"}, "page2": set(), "merged": set()})
+            self.press("3")                                                     # equity is page 2's third box
+            self.assertEqual(scr.hidden, {"page1": {"equity"}, "page2": {"equity"}, "merged": set()})
 
-    def test_number_for_box_on_other_page_says_where(self):
+    def test_numbers_follow_each_page(self):
         with tempfile.TemporaryDirectory() as d:
             k, p, scr = self.setup(d)
+            text = self.text()
+            for n, name in zip("¹²³⁴⁵⁶", ("spot", "contract", "ladder", "book", "equity", "log")):
+                self.assertTrue(n in text and name in text, name)
             self.press("7")
             self.assertEqual(scr.hidden["page1"], set())
-            self.assertIn("variants is on page 2", scr.flash)
-            self.press("p", "1")
-            self.assertIn("spot is on page 1", scr.flash)
+            self.assertIn("1-6", scr.flash)
+            self.press("p")
+            text = self.text()
+            for n, name in zip("¹²³⁴", ("variants", "profiles", "equity", "log")):
+                self.assertIn(n + name, text)
+            self.press("1", "2")
+            self.assertEqual(scr.hidden["page2"], {"variants", "profiles"})
+            self.press("5")
+            self.assertIn("1-4", scr.flash)
+            self.assertEqual(scr.hidden["page2"], {"variants", "profiles"})
 
     def test_page2_fits_small_screens(self):
         with tempfile.TemporaryDirectory() as d:
@@ -1764,26 +1775,27 @@ class Pages(unittest.TestCase):
         import curses
         with tempfile.TemporaryDirectory() as d:
             k, p, scr = self.setup(d)
-            scr.flash = ""
             H, W = scr.s.getmaxyx()
-            def word(w):
+            for page in (1, 2):
+                scr.flash = ""; self.sync()
                 row = "".join(scr.s.ch[H - 2])
-                i = row.find(w)
-                self.assertGreaterEqual(i, 0, row)
-                return bool(scr.s.at[H - 2][i] & curses.A_REVERSE)
-            self.assertIn("page", "".join(scr.s.ch[H - 2]))
-            self.assertEqual((word("trade"), word("compare")), (True, False))
-            self.press("p"); scr.flash = ""; self.sync()
-            self.assertEqual((word("trade"), word("compare")), (False, True))
+                self.assertIn(f"page {page}/2", row)
+                self.assertNotIn("page", "".join(scr.s.ch[0]))
+                self.assertNotIn("compare", self.text())
+                self.assertNotIn(" trade ", self.text())
+                self.assertFalse(any(a & curses.A_REVERSE for a in scr.s.at[H - 2]))   # nothing white above the status
+                self.press("p")
+            scr.say("hello"); self.sync()
+            self.assertNotIn("page 1/2", "".join(scr.s.ch[H - 2]))             # a flash takes its place
             self.size(50, 150); scr.flash = ""; self.sync()
-            self.assertNotIn("compare", "".join(scr.s.ch[48]))
+            self.assertNotIn("page ", "".join(scr.s.ch[48]))                  # one merged screen: no pages
 
     def test_watch_without_variants_box_says_page2(self):
         with tempfile.TemporaryDirectory() as d:
             k, p, scr = self.setup(d)
             self.press("w")
             self.assertIn("page 2", scr.flash)
-            self.press("p", "7", "w")
+            self.press("p", "1", "w")
             self.assertIn("page 2", scr.flash)
 
     def test_status_line_fits_every_width(self):
@@ -1813,20 +1825,8 @@ class Pages(unittest.TestCase):
             for H, W in ((30, 100), (33, 111)):
                 scr.flash = ""; self.size(H, W)
                 row = "".join(scr.s.ch[H - 2])
-                self.assertIn("compare", row)
-                self.assertNotRegex(row, r"compare ─[^─ ]", (W, row))           # nothing drawn over the page names
                 self.assertIn("tab next coin", row, (W, row))                   # the moved hints keep tab, whole
-
-    def test_flash_hides_the_page_hint(self):
-        with tempfile.TemporaryDirectory() as d:
-            k, p, scr = self.setup(d)
-            self.press("p")
-            scr.say("page 2: compare"); self.sync()
-            H, W = scr.s.getmaxyx()
-            row = "".join(scr.s.ch[H - 2])
-            self.assertEqual(row.count("compare"), 1, row)
-            self.assertNotIn("trade", row)
-            self.assertEqual(scr.page_spots, [])
+                self.assertIn("page 2/2", row, (W, row))
 
     def test_profile_keys_follow_the_focus(self):
         with tempfile.TemporaryDirectory() as d:
@@ -2030,7 +2030,7 @@ class Web(unittest.TestCase):
             self.assertEqual(os.listdir(os.path.join(d, "cmd")), [])          # no command reached the engine
             self.assertFalse(os.path.exists(os.path.join(d, "dash.json")))     # the screen's prefs are its own
             self.assertIn("view only", "".join(t for t, _ in f["rows"][38]))
-            for k in ("t", "c", "Tab", "BackTab", "w", "6"):
+            for k in ("t", "c", "Tab", "BackTab", "w", "4"):
                 f = hub.handle({"sid": sid, "w": 120, "h": 40, "key": k})
             self.assertEqual(f["prefs"]["watch"], "band90")                    # ↓ then w: watching, trading unchanged
             self.assertNotEqual(f["prefs"]["theme"], "classic")
@@ -2054,11 +2054,15 @@ class Web(unittest.TestCase):
             self.assertIn("view only", "".join(t for t, _ in f["rows"][31]))
             f = go(key="p")
             self.assertEqual(f["prefs"]["page"], 1)
+            f = go(key="ArrowUp")                                               # let the flash go: any key but p
+            hub.sessions[sid][0].flash = ""; f = go(key="ArrowUp")
             row = "".join(t for t, _ in f["rows"][31])
-            f = go(click={"y": 31, "x": row.index("compare")})                  # clicking a page's name shows it
+            f = go(click={"y": 31, "x": row.index("page 1/2")})                 # clicking the page hint flips it
             self.assertEqual(f["prefs"]["page"], 2)
-            f = go(click={"y": 31, "x": row.index("compare")})                  # the one shown: stays
-            self.assertEqual(f["prefs"]["page"], 2)
+            hub.sessions[sid][0].flash = ""; f = go(key="ArrowUp")
+            row = "".join(t for t, _ in f["rows"][31])
+            f = go(click={"y": 31, "x": row.index("page 2/2")})
+            self.assertEqual(f["prefs"]["page"], 1)
             self.assertEqual(os.listdir(os.path.join(d, "cmd")), [])
             self.assertFalse(os.path.exists(os.path.join(d, "dash.json")))
 
