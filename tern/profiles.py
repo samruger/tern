@@ -119,6 +119,26 @@ class SettingsLog:
         return self.sv
 
 
+def show(key: str, v) -> str:
+    """A setting's value the way the screen and the report say it: 82¢, 25 20 15, BTC ETH, on, 5."""
+    r = PSET.get(key) or cfgmod.setting(key)
+    kind = r.kind if r else ""
+    if kind == "bool" or isinstance(v, bool):
+        return "on" if v else "off"
+    if kind == "p":
+        return f"{v * 100:.0f}¢"
+    if isinstance(v, list):
+        return " ".join(SERIES.get(x, str(x)).split("-")[0] if isinstance(x, str) else str(x) for x in v)
+    if kind == "usd":
+        return f"${v:,.2f}".replace(".00", "")
+    return f"{v:g}" if isinstance(v, (int, float)) else str(v)
+
+
+def label(key: str) -> str:
+    r = PSET.get(key) or cfgmod.setting(key)
+    return ({"live": "live ", "gate": "gate "}.get(r.sec, "") + r.label) if r else key
+
+
 def slug(name: str, taken: set[str]) -> str:
     """A folder name for a profile: lowercase letters, digits and dashes, unique among `taken`."""
     base = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")[:NAME_MAX] or "profile"

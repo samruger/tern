@@ -1188,6 +1188,42 @@ class Profiles(unittest.TestCase):
             with self.assertRaises(ValueError):
                 self.make(d, "one too many")
 
+    def test_report_profiles(self):
+        import contextlib, io, json
+        from unittest import mock
+        from tern import __main__ as cli, config as cfgmod
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(cfgmod, "RUNTIME", d):
+            p = self.make(d, series=["E"])
+            row = lambda sv, pnl: json.dumps({"v": "base", "ts": 1.0, "event": f"E-{sv}", "close": 2.0 + sv, "ticker": f"E-{sv}-T1",
+                                              "side": "yes", "n": 5, "cost": 0.9, "fee": 0.02, "slot": 25, "pnl": pnl, "sv": sv})
+            p.set("strategy.band_lo", 0.82)
+            with open(os.path.join(p.dir, "shadow-settled.jsonl"), "w") as fh:
+                fh.write(row(1, 0.48) + "\n" + row(2, -4.52) + "\n")
+            def run(*argv):
+                out = io.StringIO()
+                with contextlib.redirect_stdout(out):
+                    code = cli.main(["report", *argv])
+                return code, out.getvalue()
+            code, out = run("--profile", "Profile 2")
+            self.assertEqual(code, 0)
+            self.assertIn("settings 1", out)
+            self.assertIn("settings 2", out)
+            self.assertIn("band low 75¢ → 82¢", out)
+            self.assertIn("+0.48", out)
+            self.assertIn("-4.52", out)
+            code, out = run("--profiles")
+            self.assertEqual(code, 0)
+            self.assertIn("profile 1", out)
+            self.assertIn("Profile 2", out)
+            code, out = run("--profile", "nope")
+            self.assertEqual(code, 2)
+            self.assertIn("Profile 2", out)                                    # the known ones
+            from tern import profiles
+            profiles.delete(d, p.id)
+            code, out = run("--deleted")
+            self.assertEqual(code, 0)
+            self.assertIn("Profile 2", out)
+
     def test_delete_moves_folder(self):
         from tern import profiles
         with tempfile.TemporaryDirectory() as d:

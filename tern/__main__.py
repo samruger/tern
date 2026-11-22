@@ -4,6 +4,10 @@
   tern run              run the engine in the foreground
   tern status           a plain-text summary
   tern report           the rule's variants side by side (shadow records, paper only)
+  tern report --profile NAME
+                        a profile's variants, split by settings period ("1" or "profile 1": the desk)
+  tern report --profiles
+                        every profile's book side by side; --deleted: the deleted ones
   tern live-check       test the Kalshi key: balance and positions, no orders
   tern web [--host H] [--port P]
                         the screen in a browser, view only (default http://localhost:8787/)
@@ -190,6 +194,98 @@ def _service(runtime: str) -> int:
     return 0
 
 
+def _periods(name: str, sh, lines: list[dict], sv_now: int) -> list[str]:
+    """A profile's variants, one table per settings period, each headed with when it ran and what changed."""
+    import datetime as dt
+    from . import profiles as profmod
+    from .shadow import table
+    day = lambda ts: dt.datetime.fromtimestamp(ts).strftime("%m-%d %H:%M")
+    starts: dict[int, float] = {}
+    why: dict[int, list[str]] = {}
+    for ln in lines:
+        sv = ln.get("sv")
+        if isinstance(sv, int):
+            starts.setdefault(sv, ln.get("ts") or 0)
+            if ln.get("key") in profmod.RECORD_KEYS:
+                why.setdefault(sv, []).append(f"{profmod.label(ln['key'])} {profmod.show(ln['key'], ln.get('from'))}"
+                                              f" → {profmod.show(ln['key'], ln.get('to'))}")
+    versions = sorted({v for n in shadow_names() for v in sh.versions(n)} | {sv_now})
+    out = []
+    for sv in versions:
+        later = [starts[v] for v in starts if v > sv]
+        when = (f"{day(starts[sv])} to {day(min(later)) if later else 'now'}" if sv in starts else
+                "before settings were logged" if sv == 0 else "")
+        made = any(ln.get("key") == "created" for ln in lines)
+        head = f"settings {sv}" + (f", {when}" if when else "") + (": " + ", ".join(why[sv]) if why.get(sv) else
+                                                                     (": as created" if made else ": the settings in use when logging began")
+                                                                     if sv == 1 else "")
+        rows = [r for r in sh.summary(sv=sv) if r["entries"] or r["open"]]
+        out += ["", head] + (["  " + l for l in table(rows)] if rows else ["  no entries yet"])
+    rows = [r for r in sh.summary() if r["entries"] or r["open"]]
+    if len(versions) > 1 and rows:
+        out += ["", "all settings together"] + ["  " + l for l in table(rows)]
+    return out
+
+
+def shadow_names() -> list[str]:
+    from .shadow import ORDER, RETIRED
+    return list(ORDER) + list(RETIRED)
+
+
+def _report_profiles(runtime: str, args: list[str]) -> int:
+    from . import profiles as profmod
+    from .shadow import Shadow
+    cfg = cfgmod.load(runtime)
+    loaded = profmod.load_all(runtime, cfg.taker_fee)
+    if args[0] == "--deleted":
+        root = os.path.join(runtime, profmod.DELETED_DIR)
+        gone = []
+        for n in sorted(os.listdir(root)) if os.path.isdir(root) else []:
+            try:
+                gone.append(profmod.Profile.load(os.path.join(root, n), cfg.taker_fee))
+            except Exception as ex:
+                print(f"{n}: unreadable ({ex})")
+        if not gone:
+            print("no deleted profiles"); return 0
+        print(f"deleted profiles, kept in {root}:")
+        _side_by_side([(f"{p.name} ({p.id})", p.variant, p.log.sv, p.shadow) for p in gone])
+        return 0
+    if args[0] == "--profiles":
+        rows = [("profile 1", cfg.strategy.variant, profmod.SettingsLog(os.path.join(runtime, "settings-log.jsonl")).sv,
+                 Shadow(runtime, cfg.taker_fee))]
+        rows += [(p.name + ("" if p.enabled else " (off)"), p.variant, p.log.sv, p.shadow) for p in loaded]
+        _side_by_side(rows)
+        print("\neach profile's book is its picked variant's record; picking the best-looking of many flatters it:")
+        print("look at entries and t (by hour, shows after 10 hours; under about 2 it is still noise).")
+        return 0
+    if args[0] == "--profile" and len(args) > 1:
+        want = " ".join(args[1:]).strip().lower()
+        if want in ("1", "profile 1"):
+            log = profmod.SettingsLog(os.path.join(runtime, "settings-log.jsonl"))
+            print(f"profile 1 (the desk): book trades {cfg.strategy.variant}, settings {log.sv}")
+            print("\n".join(_periods("profile 1", Shadow(runtime, cfg.taker_fee), log.lines(), log.sv)))
+            return 0
+        p = next((p for p in loaded if want in (p.id, p.name.lower())), None)
+        if p is None:
+            print(f"no profile {' '.join(args[1:])!r}; known: profile 1, " + ", ".join(f"{p.name} ({p.id})" for p in loaded))
+            return 2
+        print(f"{p.name} ({p.id}): {'on' if p.enabled else 'off'}, book trades {p.variant}, settings {p.log.sv}")
+        print("\n".join(_periods(p.name, p.shadow, p.log.lines(), p.log.sv)))
+        return 0
+    print("tern report [--profile NAME | --profiles | --deleted]")
+    return 2
+
+
+def _side_by_side(rows: list[tuple]) -> None:
+    w = max(len(r[0]) for r in rows)
+    print(f"{'profile':<{w}}  {'book':<8} {'set':>3} {'hours':>5} {'entries':>7} {'P&L':>9} {'¢/contract':>10} {'t':>6}")
+    for name, variant, sv, sh in rows:
+        r = sh.summary([variant])[0]
+        pc = f"{r['per_contract'] * 100:+.2f}" if r["per_contract"] is not None else "-"
+        t = f"{r['t']:+.2f}" if r["t"] is not None else "-"
+        print(f"{name:<{w}}  {variant:<8} {sv:>3} {r['hours']:>5} {r['entries']:>7} {r['pnl']:>+9.2f} {pc:>10} {t:>6}")
+
+
 def main(argv: list[str]) -> int:
     runtime = cfgmod.RUNTIME
     cmd = argv[0] if argv else "dash"
@@ -203,6 +299,8 @@ def main(argv: list[str]) -> int:
         Desk(runtime, echo=True).run(once="--once" in argv); return 0
     if cmd == "status":
         return _status(runtime)
+    if cmd == "report" and len(argv) > 1:
+        return _report_profiles(runtime, argv[1:])
     if cmd == "report":
         from .shadow import DESC, RETIRED, Shadow, table
         sh = Shadow(runtime)

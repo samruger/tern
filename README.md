@@ -128,6 +128,38 @@ data for testing ideas the first research could not.
 
 <img width="1364" height="682" alt="screenshot-2026-11-21_17-48-45-tern" src="https://github.com/user-attachments/assets/41fada51-6dc4-4381-9249-3ed672e7d72d" />
 
+## Profiles
+
+The variants all share one set of settings. A profile is a whole copy of the
+desk on paper with its own: band, slots, max spread, coins, contracts a strike,
+most an hour, paper start, and the variant its book trades. Every variant runs
+under each profile's settings, on the same prices at the same moment as the
+desk, so a difference between two profiles comes from their settings, not
+from timing.
+
+- **Profile 1 is the desk:** the paper book, live and the gate, with its files
+  where they always were. Only profile 1 ever trades live.
+- **Make one** with `3` (three times, to the profiles box), then `n`. It starts
+  with profile 1's settings and empty records. `enter` views it: the book,
+  equity, variants box and settings box then show that profile. Viewing changes
+  nothing about what trades. `space` turns one off (no new entries, open ones
+  still settle) and on. `D` deletes it after you type `delete`; its folder moves
+  to `runtime/profiles-deleted/`, nothing is erased. At most 8 besides profile 1.
+- **Change its settings** with `e` while viewing it. Every change is written
+  down with its time (`runtime/profiles/<id>/settings-log.jsonl`;
+  `runtime/settings-log.jsonl` for profile 1), and a change to how records are
+  made starts a new settings period. Rows are stamped with their period, so
+  results can be split by it.
+- **Compare:** `python3 -m tern report --profiles` puts each profile's book
+  side by side; `--profile <name>` shows one profile's variants period by
+  period with what changed; `--deleted` lists the deleted ones.
+
+Choosing the best-looking of many profiles flatters it, the same as choosing
+among variants. Look at entries and t, not only P&L.
+
+The web screen can view any profile; making, changing and deleting them stays
+with the terminal.
+
 ## Keys
 
 At kalshi.com, under Account → API keys, create a key and download the private

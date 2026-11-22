@@ -1006,19 +1006,8 @@ class Desk:
                 was, now = p.set(key, c.get("value"))
             except ValueError as ex:
                 return f"{p.name}: not set: {ex}"
-            r = profmod.PSET[key]
-            return f"{p.name}: {r.label} {self._show(r, was)} → {self._show(r, now)} (settings {p.log.sv})"
+            return f"{p.name}: {profmod.label(key)} {profmod.show(key, was)} → {profmod.show(key, now)} (settings {p.log.sv})"
         return f"unknown command {op!r}"
-
-    @staticmethod
-    def _show(r, v) -> str:
-        if r.kind == "bool":
-            return "on" if v else "off"
-        if r.kind == "p":
-            return f"{v * 100:.0f}¢"
-        if isinstance(v, list):
-            return " ".join(str(x).removeprefix("KX").removesuffix("D") for x in v)
-        return f"{v:g}" if isinstance(v, (int, float)) else str(v)
 
     def _profile_rows(self, variants: list[dict]) -> list[dict]:
         """One row per profile for the screen's profiles box, profile 1 first."""
