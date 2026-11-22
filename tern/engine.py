@@ -169,6 +169,7 @@ class Desk:
         # profile 1's settings changes, from now on; a profile's are in its own folder (profiles.py)
         self.slog = profmod.SettingsLog(os.path.join(runtime, "settings-log.jsonl"))
         self.profiles: list[profmod.Profile] = []
+        self.names = profmod.Names(runtime)    # profile 1's name, the variants' display names
         self._profiles_reload(force=True)
         for ev, close in self.shadow.pending(time.time()).items():
             self.closed[ev] = {"series": ev.split("-", 1)[0], "close": close}
@@ -936,10 +937,11 @@ class Desk:
             was = self.variant()
             self.cfg.strategy.variant = name; cfgmod.save(self.cfg, self.runtime)
             g = self.checks(name)
-            msg = f"variant {was} → {name}: paper trades it from the next slot (open positions ride to settlement)"
+            vn = self.names.variant
+            msg = f"variant {vn(was)} → {vn(name)}: paper trades it from the next slot (open positions ride to settlement)"
             if self.mode == "live" or self.cfg.live.enabled:
                 msg += " · live trades it now" if g["passed"] or not self.cfg.live.auto_needs_gate else \
-                       f" · live waits: {name} has not passed the gate"
+                       f" · live waits: {vn(name)} has not passed the gate"
             self.log(msg, "warn" if self.mode == "live" else "info")
             return msg
         if op == "set":
@@ -958,6 +960,8 @@ class Desk:
             show = (lambda x: "on" if x else "off") if r.kind == "bool" else (lambda x: f"{x:g}")
             msg = f"{label}: {show(was)} → {show(v)}" + (" (the paper book starts there at the next reset)" if key == "paper_capital" else "")
             return msg
+        if op == "rename":
+            return self._rename(c)
         if op and op.startswith("profile_"):
             return self._profile_command(op, c)
         if op == "reset_paper":
@@ -972,6 +976,38 @@ class Desk:
             self.taken = {k: v for k, v in self.taken.items() if not k.startswith("paper|")}
             return f"paper reset to ${self.cfg.paper_capital:,.2f}"
         return f"unknown command {op!r}"
+
+    def _rename(self, c: dict) -> str:
+        """A profile ("profile": its id, "1" the desk) or a variant ("variant": its name) gets a new name."""
+        to = c.get("name") if isinstance(c.get("name"), str) else ""
+        if "variant" in c:
+            v = c.get("variant")
+            try:
+                was, now = self.names.rename_variant(v, to)
+            except ValueError as ex:
+                return f"not renamed: {ex}"
+            if was == now:
+                return f"{now} keeps its name"
+            return f"variant {was} is now {now}" + ("" if now != v else " again") + \
+                (f" (its record stays under {v})" if now != v else "")
+        pid = c.get("profile")
+        if pid == "1":
+            was, now = self.names.profile, " ".join(to.split())[:profmod.NAME_MAX] or profmod.Names.DEFAULT
+            if len(" ".join(to.split())) > profmod.NAME_MAX:
+                return f"not renamed: a profile's name is at most {profmod.NAME_MAX} characters"
+            if was == now:
+                return f"{now} keeps its name"
+            self.names.profile = now; self.names.save()
+            self.slog.append("name", was, now, bump=False)
+            return f"{was} is now {now}"
+        p = self._profile(pid)
+        if p is None:
+            return f"no profile {pid!r}"
+        try:
+            was, now = p.rename(to)
+        except ValueError as ex:
+            return f"not renamed: {ex}"
+        return f"{now} keeps its name" if was == now else f"{was} is now {now}"
 
     def _profile(self, pid) -> "profmod.Profile | None":
         return next((p for p in self.profiles if p.id == pid), None)
@@ -1027,7 +1063,7 @@ class Desk:
             return {"band_lo": S.band_lo, "band_hi": S.band_hi, "minutes": S.minutes, "max_spread": S.max_spread,
                     "series": S.series, "contracts": S.contracts, "max_hour_cost": S.max_hour_cost,
                     "paper_capital": cfg.paper_capital}
-        out = [{"id": "1", "name": "profile 1", "enabled": True, "variant": self.variant(), "sv": self.slog.sv,
+        out = [{"id": "1", "name": self.names.profile, "enabled": True, "variant": self.variant(), "sv": self.slog.sv,
                 "created": 0, "variants": variants, "rule": rule(self.cfg)}]
         def one(p):
             rows = self._summary(p)
@@ -1123,7 +1159,7 @@ class Desk:
               "strategy": strategy, "views": views, "live_cfg": self.cfg.live.__dict__,
               "settings": {r.key: cfgmod.get_setting(self.cfg, r.key) for r in cfgmod.SETTINGS},
               "logs": [list(x) for x in list(self.logs)[-200:]], "results": self.results,
-              "auto_live": self._live_rule_on(gate), "pviews": {}}
+              "auto_live": self._live_rule_on(gate), "pviews": {}, "variant_names": dict(self.names.variants)}
         looked = {self.view.get("profile")} | set(self.web.get("profiles", []))
         st["profiles"] = self._profile_rows(variants, looked)
         for p in self.profiles:

@@ -145,6 +145,12 @@ from timing.
   nothing about what trades. `space` turns one off (no new entries, open ones
   still settle) and on. `D` deletes it after you type `delete`; its folder moves
   to `runtime/profiles-deleted/`, nothing is erased. At most 8 besides profile 1.
+- **Rename** with `N`: in the profiles box it renames the highlighted profile
+  (profile 1 too; an empty name gives "profile 1" back), in the variants box it
+  gives the highlighted variant a display name (up to 12 characters; empty gives
+  its own back). A variant's record, the gate, `config.json` and `tern report`
+  keep its own name, so renaming never splits a record. Names live in
+  `runtime/names.json` (profile 1, variants) and each profile's `profile.json`.
 - **Change its settings** with `e` while viewing it. Every change is written
   down with its time (`runtime/profiles/<id>/settings-log.jsonl`;
   `runtime/settings-log.jsonl` for profile 1), and a change to how records are

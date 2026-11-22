@@ -5,7 +5,7 @@ drawing into a virtual terminal here; the cells go to the page, which paints the
 So the web view always looks and behaves like the screen, minus the keys that change anything:
 no quit, engine stop or start, paper reset, live, rule coins or picking a variant. The settings
 box (e) opens and its cursor moves, but only its log filter row changes (for that viewer). The
-profiles box (page 2) can show any profile; making, turning on/off or deleting one, and its settings, stay
+profiles box (page 2) can show any profile; making, renaming, turning on/off or deleting one (or renaming a variant), and its settings, stay
 with the terminal. It sends
 no command files and never writes the screen's own view.json or dash.json. Its viewers' coins
 and strikes go to view-web.json, so the engine also sends those strikes' contract history.
@@ -48,9 +48,9 @@ NAMED = {"ArrowUp": curses.KEY_UP, "ArrowDown": curses.KEY_DOWN, "ArrowLeft": cu
 VIEW_KEYS = set("12345678pjktTcvwgeh?") | {"ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "PageUp", "PageDown",
                                        "Tab", "BackTab"}
 CONTROL_KEYS = {"q": "quit", "Q": "quit", "s": "engine start/stop", "R": "paper reset", "L": "live",
-                "r": "rule coins", "Enter": "picking a variant"}
+                "r": "rule coins", "Enter": "picking a variant", "N": "renaming"}
 # border hints whose key changes something: not drawn on the web (the profiles box keeps ⏎: it only views)
-CONTROL_HINTS = {"r", "L", "R", "s", "q", "⏎", "space", "n", "D"}
+CONTROL_HINTS = {"r", "L", "R", "s", "q", "⏎", "space", "n", "D", "N"}
 # what a hint on a border sends when clicked
 HINT_KEY = {"tab": "Tab", "any key": "Escape", "esc": "Escape", "↑↓": None, "⏎": "Enter"}
 PROFILE_ONLY = "view only: profiles are made, changed and deleted from the screen in the terminal"
@@ -227,7 +227,7 @@ class WebScreen(dash.Screen):
     def box(self, y, x, h, w, title, color, key="", right=()) -> None:
         segs = [right] if isinstance(right, str) else list(right)
         keep = {"⏎"} if self.drawing == "profiles" else set()
-        segs = [s for s in segs if isinstance(s, str) or s[0] not in CONTROL_HINTS - keep]
+        segs = [s for s in segs if isinstance(s, str) or not set(s[0::2]) & (CONTROL_HINTS - keep)]   # any key piece
         key = key or self.panel_key
         if key in dash.SUPER:                    # the box number: a click zooms / restores it, as 1-8 do
             self.hits.append((y, x + 3, x + 3 + len(key), str(dash.SUPER.index(key) + 1)))
@@ -243,7 +243,7 @@ class WebScreen(dash.Screen):
     def footer(self, H: int, W: int) -> None:
         with _PAL_SWAP:                          # one tab at a time swaps the module's table
             real = dash.PANEL_KEYS
-            dash.PANEL_KEYS = {n: (lambda fn: lambda s: [g for g in fn(s) if g[0] not in CONTROL_HINTS])(fn)
+            dash.PANEL_KEYS = {n: (lambda fn: lambda s: [g for g in fn(s) if not set(g[0::2]) & CONTROL_HINTS])(fn)
                                for n, fn in real.items()}   # off-screen boxes' hints, without the control ones
             try:
                 super().footer(H, W)

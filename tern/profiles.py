@@ -32,6 +32,8 @@ SLOT_CHOICES = (30, 25, 20, 15, 10, 5)           # minutes before the close a pr
 PROFILES_DIR = "profiles"
 DELETED_DIR = "profiles-deleted"
 NAME_MAX = 40
+NAMES_FILE = "names.json"                        # runtime/: profile 1's name and the variants' display names
+VARIANT_NAME_MAX = 12
 
 # fields that change how variant records are made: a change bumps the settings version
 RECORD_KEYS = ("strategy.band_lo", "strategy.band_hi", "strategy.minutes", "strategy.max_spread",
@@ -149,6 +151,61 @@ def slug(name: str, taken: set[str]) -> str:
     return out
 
 
+def _clean(name) -> str:
+    return " ".join(name.split()) if isinstance(name, str) else ""
+
+
+class Names:
+    """runtime/names.json: {"profile": profile 1's name, "variants": {variant: display name}}.
+
+    A variant's display name is only what the screens call it: its records, the gate, config.json's
+    strategy.variant and `tern report` keep the name in shadow.TABLE, so renaming never splits a record.
+    Profiles 2+ keep their names in their own profile.json (Profile.rename)."""
+
+    DEFAULT = "profile 1"
+
+    def __init__(self, runtime: str):
+        self.path = os.path.join(runtime, NAMES_FILE)
+        self.profile, self.variants = self.DEFAULT, {}
+        try:
+            with open(self.path) as fh:
+                d = json.load(fh)
+        except (OSError, ValueError):
+            d = {}
+        if isinstance(d, dict):
+            self.profile = _clean(d.get("profile"))[:NAME_MAX] or self.DEFAULT
+            vs = d.get("variants") if isinstance(d.get("variants"), dict) else {}
+            self.variants = {k: _clean(v)[:VARIANT_NAME_MAX] for k, v in vs.items()
+                             if k in VARIANTS and _clean(v) and _clean(v) != k}
+
+    def save(self) -> None:
+        with open(self.path + ".tmp", "w") as fh:
+            json.dump({"profile": self.profile, "variants": self.variants}, fh)
+        os.replace(self.path + ".tmp", self.path)
+
+    def variant(self, name: str) -> str:
+        return self.variants.get(name, name)
+
+    def rename_variant(self, name: str, to: str) -> tuple[str, str]:
+        """(was, now). An empty name, or the variant's own, goes back to the variant's own name."""
+        if name not in VARIANTS:
+            raise ValueError(f"unknown variant {name!r} (known: {', '.join(ORDER)})")
+        to = _clean(to)
+        if len(to) > VARIANT_NAME_MAX:
+            raise ValueError(f"a variant's name is at most {VARIANT_NAME_MAX} characters")
+        to = to or name
+        for other in ORDER:                      # no two variants may look alike, by key or by display name
+            if other != name and to.lower() in (other.lower(), self.variant(other).lower()):
+                raise ValueError(f"{to!r} is already {other}'s name")
+        was = self.variant(name)
+        if to == name:
+            self.variants.pop(name, None)
+        else:
+            self.variants[name] = to
+        self.save()
+        return was, to
+
+
 class Profile:
     def __init__(self, dir: str, name: str, enabled: bool, created: float, cfg: Config, fee: float):
         self.dir = dir
@@ -180,6 +237,19 @@ class Profile:
         with open(path + ".tmp", "w") as fh:
             json.dump({"name": self.name, "enabled": self.enabled, "created": self.created, "sv": self.log.sv}, fh)
         os.replace(path + ".tmp", path)
+
+    def rename(self, name: str) -> tuple[str, str]:
+        """(was, now). The folder (the profile's id) keeps its name; only what it is called changes."""
+        name = _clean(name)
+        if not name:
+            raise ValueError("a profile needs a name")
+        if len(name) > NAME_MAX:
+            raise ValueError(f"a profile's name is at most {NAME_MAX} characters")
+        was, self.name = self.name, name
+        if was != name:
+            self.log.append("name", was, name, bump=False)
+            self.save_meta()
+        return was, name
 
     @property
     def variant(self) -> str:

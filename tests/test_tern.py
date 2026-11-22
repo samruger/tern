@@ -1483,6 +1483,59 @@ class ProfileCommands(unittest.TestCase):
             self.assertEqual(self.status(k)["pviews"], {})
 
 
+class Renames(unittest.TestCase):
+    """N: profiles and variants get new names; a variant's record keeps its own."""
+    T, desk, profile = EngineProfiles.T, EngineProfiles.desk, EngineProfiles.profile
+    status = ProfileCommands.status
+
+    def test_rename_profiles(self):
+        from tern import profiles
+        with tempfile.TemporaryDirectory() as d:
+            k = self.desk(d)
+            p = self.profile(k, "profile 2")
+            self.assertIn("profile 2 is now wide band", k._command({"op": "rename", "profile": p.id, "name": "  wide   band "}))
+            self.assertIn("profile 1 is now the desk", k._command({"op": "rename", "profile": "1", "name": "the desk"}))
+            self.assertIn("not renamed", k._command({"op": "rename", "profile": p.id, "name": "  "}))
+            self.assertIn("not renamed", k._command({"op": "rename", "profile": p.id, "name": "x" * 41}))
+            self.assertIn("no profile", k._command({"op": "rename", "profile": "nope", "name": "x"}))
+            names = {r["id"]: r["name"] for r in self.status(k)["profiles"]}
+            self.assertEqual(names, {"1": "the desk", p.id: "wide band"})
+            self.assertEqual(profiles.Profile.load(p.dir, 0.07).name, "wide band")   # kept on disk, same folder
+            self.assertEqual(p.id, "profile-2")
+            self.assertEqual(p.log.sv, 1)                                      # a name is not a settings change
+            self.assertEqual([l["key"] for l in p.log.lines()][-1], "name")
+            k2 = self.desk(d)                                                  # a restart keeps profile 1's name
+            self.assertEqual(k2.names.profile, "the desk")
+            self.assertIn("the desk is now profile 1", k2._command({"op": "rename", "profile": "1", "name": ""}))
+
+    def test_rename_variant_is_display_only(self):
+        with tempfile.TemporaryDirectory() as d:
+            k = self.desk(d)
+            self.assertIn("band90 is now high", k._command({"op": "rename", "variant": "band90", "name": "high"}))
+            self.assertIn("unknown variant", k._command({"op": "rename", "variant": "stop20", "name": "x"}))
+            self.assertIn("already base's name", k._command({"op": "rename", "variant": "late", "name": "BASE"}))
+            self.assertIn("already band90's name", k._command({"op": "rename", "variant": "late", "name": "High"}))
+            self.assertIn("at most 12", k._command({"op": "rename", "variant": "late", "name": "x" * 13}))
+            self.assertIn("base → high", k._command({"op": "variant", "name": "band90"}))
+            self.assertIn("high → base", k._command({"op": "variant", "name": "base"}))
+            st = self.status(k)
+            self.assertEqual(st["variant_names"], {"band90": "high"})
+            self.assertIn("band90", [v["name"] for v in st["variants"]])     # the record keeps its key
+            from tern import config
+            k._command({"op": "variant", "name": "band90"})
+            self.assertEqual(config.load(d).strategy.variant, "band90")      # config.json keeps the key too
+            self.assertEqual(self.desk(d).names.variant("band90"), "high")    # kept across a restart
+            self.assertIn("is now band90 again", k._command({"op": "rename", "variant": "band90", "name": ""}))
+            self.assertEqual(self.status(k)["variant_names"], {})
+
+    def test_bad_names_file_is_ignored(self):
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, "names.json"), "w") as fh:
+                fh.write('{"profile": 5, "variants": {"nope": "x", "base": "  ", "late": "slow"}}')
+            k = self.desk(d)
+            self.assertEqual((k.names.profile, k.names.variants), ("profile 1", {"late": "slow"}))
+
+
 class ScreenProfiles(unittest.TestCase):
     """The terminal screen's profiles box, viewing a profile, and its settings, against a real engine's status."""
     T, desk, profile = EngineProfiles.T, EngineProfiles.desk, EngineProfiles.profile
@@ -1547,6 +1600,31 @@ class ScreenProfiles(unittest.TestCase):
             self.press(self.curses.KEY_UP, 10)
             self.assertIsNone(scr.profile)
             self.assertNotIn("profile_name", scr.st)
+
+    def test_N_renames_the_focused_profile_or_variant(self):
+        with tempfile.TemporaryDirectory() as d:
+            k, p, scr = self.setup(d)
+            self.press("p"); self.cmds()
+            scr.focus = "ladder"
+            self.press("N")
+            self.assertIn("N renames", scr.flash)
+            scr.focus = "profiles"
+            self.press(self.curses.KEY_DOWN, "N")
+            self.assertIn("rename profile 2", self.text())
+            self.press(21, *"wide", 10)                                       # ctrl+u, then a new name
+            [c] = self.cmds()
+            self.assertEqual((c["op"], c["profile"], c["name"]), ("rename", p.id, "wide"))
+            k._command(c); self.sync()
+            self.assertIn("wide", self.text())
+            scr.focus = "variants"
+            scr.var_sel = "band90"
+            self.press("N", *"hi", 10)                                        # typed after the old name
+            [c] = self.cmds()
+            self.assertEqual((c["op"], c["variant"], c["name"]), ("rename", "band90", "band90hi"))
+            k._command(c); self.sync()
+            self.assertIn("│   band90hi     0 ", self.text())                 # the row, its columns moved along
+            self.press("N", 27)
+            self.assertEqual(self.cmds(), [])                                  # esc sends nothing
 
     def test_profile_settings_send_profile_set(self):
         with tempfile.TemporaryDirectory() as d:
@@ -2217,7 +2295,7 @@ class Web(unittest.TestCase):
             hub.checked = 0                                                    # reread the status now, not in 0.2 s
             f = go("ArrowUp")
             self.assertIn("profile 2", "".join(t for t, _ in f["rows"][39]))     # status line: the profile shown
-            for key in (" ", "n", "D"):
+            for key in (" ", "n", "D", "N"):
                 f = go(key)
                 self.assertIn("view only", "".join(t for t, _ in f["rows"][38]), key)
             go("e"); go("ArrowDown"); go("ArrowDown")

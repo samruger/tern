@@ -250,8 +250,9 @@ def _report_profiles(runtime: str, args: list[str]) -> int:
         print(f"deleted profiles, kept in {root}:")
         _side_by_side([(f"{p.name} ({p.id})", p.variant, p.log.sv, p.shadow) for p in gone])
         return 0
+    one = profmod.Names(runtime).profile       # profile 1's name (N on the screen renames it)
     if args[0] == "--profiles":
-        rows = [("profile 1", cfg.strategy.variant, profmod.SettingsLog(os.path.join(runtime, "settings-log.jsonl")).sv,
+        rows = [(one, cfg.strategy.variant, profmod.SettingsLog(os.path.join(runtime, "settings-log.jsonl")).sv,
                  Shadow(runtime, cfg.taker_fee))]
         rows += [(p.name + ("" if p.enabled else " (off)"), p.variant, p.log.sv, p.shadow) for p in loaded]
         _side_by_side(rows)
@@ -260,14 +261,14 @@ def _report_profiles(runtime: str, args: list[str]) -> int:
         return 0
     if args[0] == "--profile" and len(args) > 1:
         want = " ".join(args[1:]).strip().lower()
-        if want in ("1", "profile 1"):
+        if want in ("1", "profile 1", one.lower()):
             log = profmod.SettingsLog(os.path.join(runtime, "settings-log.jsonl"))
-            print(f"profile 1 (the desk): book trades {cfg.strategy.variant}, settings {log.sv}")
-            print("\n".join(_periods("profile 1", Shadow(runtime, cfg.taker_fee), log.lines(), log.sv)))
+            print(f"{one} (profile 1, the desk): book trades {cfg.strategy.variant}, settings {log.sv}")
+            print("\n".join(_periods(one, Shadow(runtime, cfg.taker_fee), log.lines(), log.sv)))
             return 0
         p = next((p for p in loaded if want in (p.id, p.name.lower())), None)
         if p is None:
-            print(f"no profile {' '.join(args[1:])!r}; known: profile 1, " + ", ".join(f"{p.name} ({p.id})" for p in loaded))
+            print(f"no profile {' '.join(args[1:])!r}; known: {one} (1), " + ", ".join(f"{p.name} ({p.id})" for p in loaded))
             return 2
         print(f"{p.name} ({p.id}): {'on' if p.enabled else 'off'}, book trades {p.variant}, settings {p.log.sv}")
         print("\n".join(_periods(p.name, p.shadow, p.log.lines(), p.log.sv)))
