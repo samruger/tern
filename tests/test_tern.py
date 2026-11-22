@@ -1523,14 +1523,16 @@ class ScreenProfiles(unittest.TestCase):
 
     def view2(self):
         c = self.curses
-        self.press("3", "3")
-        self.assertEqual(self.scr.slot3, "profiles")
+        self.press("p")
+        self.assertEqual(self.scr.page, 2)
+        self.scr.focus = "profiles"
         self.press(c.KEY_DOWN, 10)
 
     def test_profiles_box_and_view(self):
         with tempfile.TemporaryDirectory() as d:
             k, p, scr = self.setup(d)
-            self.press("3", "3")
+            self.press("p")
+            self.scr.focus = "profiles"
             self.assertIn("profiles", self.text())
             self.assertIn("profile 1", self.text())
             self.assertIn("profile 2", self.text())
@@ -1571,7 +1573,7 @@ class ScreenProfiles(unittest.TestCase):
     def test_profile_box_keys(self):
         with tempfile.TemporaryDirectory() as d:
             k, p, scr = self.setup(d)
-            self.press("3", "3", self.curses.KEY_DOWN); self.cmds()
+            self.press("p"); self.scr.focus = "profiles"; self.press(self.curses.KEY_DOWN); self.cmds()
             self.press(" ")
             self.assertEqual([(x["op"], x["profile"], x["on"]) for x in self.cmds()], [("profile_enable", p.id, False)])
             self.press("n", "t", "r", "y", 10)
@@ -1586,7 +1588,7 @@ class ScreenProfiles(unittest.TestCase):
     def test_no_setting_change_before_the_profile_settings_arrive(self):
         with tempfile.TemporaryDirectory() as d:
             k, p, scr = self.setup(d)
-            self.press("3", "3", self.curses.KEY_DOWN)
+            self.press("p"); self.scr.focus = "profiles"; self.press(self.curses.KEY_DOWN)
             scr.key(10)                                                        # view it; the engine hasn't answered yet
             self.assertTrue(scr.st.get("profile_wait"))
             self.cmds()
@@ -1618,6 +1620,120 @@ class ScreenProfiles(unittest.TestCase):
             self.sync()
             self.assertIsNone(scr.profile)
             self.assertIn("profile 1", scr.flash)
+
+
+class Pages(unittest.TestCase):
+    """Two fixed pages (p flips them) fitted to the screen, merged when it is big; boxes hidden per page."""
+    T, desk, profile = EngineProfiles.T, EngineProfiles.desk, EngineProfiles.profile
+    setup, sync, text, press, cmds = (ScreenProfiles.setup, ScreenProfiles.sync, ScreenProfiles.text,
+                                      ScreenProfiles.press, ScreenProfiles.cmds)
+
+    def size(self, H, W):
+        self.scr.s.resize(H, W); self.sync()
+
+    def rects_ok(self, H, W):
+        r = self.scr.rects
+        for n, (y, x, h, w) in r.items():
+            self.assertTrue(y >= 0 and x >= 0 and y + h <= H - 1 and x + w <= W, (n, (y, x, h, w), H, W))
+        cells = set()
+        for n, (y, x, h, w) in r.items():
+            mine = {(yy, xx) for yy in range(y, y + h) for xx in range(x, x + w)}
+            self.assertFalse(cells & mine, n)
+            cells |= mine
+        return r
+
+    def test_number_keys_hide_on_this_page_only(self):
+        with tempfile.TemporaryDirectory() as d:
+            k, p, scr = self.setup(d)
+            self.assertEqual(scr.page, 1)
+            self.press("5")
+            self.assertNotIn("equity", scr.rects)
+            self.press("p")
+            self.assertEqual(scr.page, 2)
+            self.assertIn("equity", scr.rects)
+            self.assertEqual(scr.hidden, {"page1": {"equity"}, "page2": set(), "merged": set()})
+
+    def test_number_for_box_on_other_page_says_where(self):
+        with tempfile.TemporaryDirectory() as d:
+            k, p, scr = self.setup(d)
+            self.press("7")
+            self.assertEqual(scr.hidden["page1"], set())
+            self.assertIn("variants is on page 2", scr.flash)
+            self.press("p", "1")
+            self.assertIn("spot is on page 1", scr.flash)
+
+    def test_page2_fits_small_screens(self):
+        with tempfile.TemporaryDirectory() as d:
+            k, p, scr = self.setup(d)
+            self.profile(k, "profile 3"); k._shadow()
+            self.press("p")
+            n = len(scr.st.get("variants") or [])
+            self.assertEqual(n, 10)
+            for H, W in ((33, 111), (30, 100), (37, 151)):
+                self.size(H, W)
+                r = self.rects_ok(H, W)
+                self.assertEqual(set(r), {"variants", "profiles", "equity", "log"}, (H, W))
+                self.assertGreaterEqual(r["variants"][2], n + 3, (H, W))
+                self.assertEqual(r["variants"][3], W)
+                self.assertGreaterEqual(r["profiles"][2], 3 + 6, (H, W))
+                for name in ("calm", "band75", "base"):
+                    self.assertIn(name, self.text())
+
+    def test_page1_layout_at_small_size(self):
+        with tempfile.TemporaryDirectory() as d:
+            k, p, scr = self.setup(d)
+            for H, W in ((33, 111), (30, 100)):
+                self.size(H, W)
+                r = self.rects_ok(H, W)
+                self.assertEqual(set(r), {"spot", "contract", "ladder", "book", "equity", "log"})
+
+    def test_merged_when_big(self):
+        with tempfile.TemporaryDirectory() as d:
+            k, p, scr = self.setup(d)
+            self.size(50, 140)
+            self.assertEqual(scr.view(50, 140), "merged")
+            r = self.rects_ok(50, 140)
+            self.assertEqual(set(r), {"spot", "contract", "ladder", "book", "variants", "profiles", "equity", "log"})
+            self.press("p")
+            self.assertIn("both pages fit", scr.flash)
+            self.press("2")
+            self.assertEqual(scr.hidden["merged"], {"contract"})
+            self.assertEqual(scr.hidden["page1"], set())
+            self.size(33, 111)
+            self.assertEqual(scr.view(33, 111), "page1")
+            self.assertIn("contract", scr.rects)
+
+    def test_old_prefs_load(self):
+        import json
+        from unittest import mock
+        from tern import dash, web
+        with tempfile.TemporaryDirectory() as d:
+            def screen(prefs):
+                with open(os.path.join(d, "dash.json"), "w") as fh:
+                    json.dump(prefs, fh)
+                with mock.patch.object(dash, "Pal", web.WebPal):
+                    return dash.Screen(web.VTerm(33, 111), d)
+            s = screen({"hidden": ["contract", "nope"], "slot3": "variants"})
+            self.assertEqual((s.page, s.hidden["page1"], s.hidden["page2"]), (1, {"contract"}, set()))
+            s = screen({"page": 2, "hidden": {"page2": ["log", "spot"], "merged": "junk"}})
+            self.assertEqual((s.page, s.hidden["page2"], s.hidden["merged"]), (2, {"log"}, set()))
+            s = screen({"page": 7, "hidden": 5})
+            self.assertEqual(s.page, 1)
+            s.save_prefs()
+            with open(os.path.join(d, "dash.json")) as fh:
+                saved = json.load(fh)
+            self.assertEqual(saved["page"], 1)
+            self.assertEqual(saved["hidden"], {"page1": [], "page2": [], "merged": []})
+            self.assertNotIn("slot3", saved)
+
+    def test_no_key_cycles(self):
+        with tempfile.TemporaryDirectory() as d:
+            k, p, scr = self.setup(d)
+            seen = []
+            for _ in range(3):
+                self.press("3")
+                seen.append(("ladder" in scr.rects, "variants" in scr.rects, "profiles" in scr.rects))
+            self.assertEqual(seen, [(False, False, False), (True, False, False), (False, False, False)])
 
 
 class Net(unittest.TestCase):
@@ -1787,19 +1903,19 @@ class Web(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             self.status(d)
             hub = Hub(d)
-            f = hub.handle({"w": 120, "h": 40, "prefs": {"slot3": "variants", "theme": "classic"}})
+            f = hub.handle({"w": 120, "h": 40, "prefs": {"page": 2, "theme": "classic"}})
             sid = f["sid"]
             for k in ("q", "s", "R", "L", "r", "Enter", "ArrowDown", "Enter"):
                 f = hub.handle({"sid": sid, "w": 120, "h": 40, "key": k})
             self.assertEqual(os.listdir(os.path.join(d, "cmd")), [])          # no command reached the engine
             self.assertFalse(os.path.exists(os.path.join(d, "dash.json")))     # the screen's prefs are its own
             self.assertIn("view only", "".join(t for t, _ in f["rows"][38]))
-            for k in ("t", "c", "Tab", "BackTab", "w", "2"):
+            for k in ("t", "c", "Tab", "BackTab", "w", "6"):
                 f = hub.handle({"sid": sid, "w": 120, "h": 40, "key": k})
             self.assertEqual(f["prefs"]["watch"], "band90")                    # ↓ then w: watching, trading unchanged
             self.assertNotEqual(f["prefs"]["theme"], "classic")
             self.assertEqual(f["prefs"]["chart"], "1h")
-            self.assertEqual(f["prefs"]["hidden"], ["contract"])
+            self.assertEqual(f["prefs"]["hidden"], {"page1": [], "page2": ["log"], "merged": []})
             self.assertEqual(len(f["rows"]), 40)
 
     def test_settings_box_opens_but_changes_nothing(self):
@@ -1843,7 +1959,7 @@ class Web(unittest.TestCase):
             hub = Hub(d)
             sid = hub.handle({"w": 120, "h": 40})["sid"]
             go = lambda key: hub.handle({"sid": sid, "w": 120, "h": 40, "key": key})
-            for key in ("3", "3", "ArrowDown", "Enter"):
+            for key in ("p", "ArrowRight", "ArrowDown", "Enter"):
                 f = go(key)
             self.assertEqual(f["prefs"]["profile"], p.id)
             hub.publish(force=True)
@@ -1860,7 +1976,7 @@ class Web(unittest.TestCase):
             f = go("ArrowRight")                                               # band low, one step up
             self.assertIn("view only", "".join(t for t, _ in f["rows"][38]))
             self.assertEqual(os.listdir(os.path.join(d, "cmd")), [])          # nothing reached the engine
-            f = hub.handle({"w": 120, "h": 40, "prefs": {"profile": p.id, "slot3": "profiles"}})   # a reload keeps it
+            f = hub.handle({"w": 120, "h": 40, "prefs": {"profile": p.id, "page": 2}})   # a reload keeps it
             self.assertEqual(f["prefs"]["profile"], p.id)
 
     def test_engine_sends_history_for_strikes_web_viewers_picked(self):

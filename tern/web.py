@@ -45,7 +45,7 @@ NAMED = {"ArrowUp": curses.KEY_UP, "ArrowDown": curses.KEY_DOWN, "ArrowLeft": cu
          "Home": curses.KEY_HOME, "End": curses.KEY_END, "Tab": 9, "BackTab": curses.KEY_BTAB,
          "Enter": 10, "Escape": 27, "Backspace": 127}
 # keys that only change what this viewer sees: they reach the screen; everything else stops here
-VIEW_KEYS = set("123456jktTcvwgeh?") | {"ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "PageUp", "PageDown",
+VIEW_KEYS = set("12345678pjktTcvwgeh?") | {"ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "PageUp", "PageDown",
                                        "Tab", "BackTab"}
 CONTROL_KEYS = {"q": "quit", "Q": "quit", "s": "engine start/stop", "R": "paper reset", "L": "live",
                 "r": "rule coins", "Enter": "picking a variant"}
@@ -132,9 +132,9 @@ def clean_prefs(d) -> dict:
     out = {}
     if not isinstance(d, dict):
         return out
-    if isinstance(d.get("hidden"), list):
-        out["hidden"] = sorted(set(x for x in d["hidden"] if isinstance(x, str)) & set(dash.PANELS))
-    for k, ok in (("series", cfgmod.SERIES), ("chart", dash.CHARTS), ("slot3", dash.SLOT3)):
+    if isinstance(d.get("hidden"), (list, dict)):    # a list is from before pages: it was page 1's
+        out["hidden"] = {v: sorted(b) for v, b in dash.clean_hidden(d["hidden"]).items()}
+    for k, ok in (("series", cfgmod.SERIES), ("chart", dash.CHARTS), ("page", dash.PAGE_NAMES)):
         if d.get(k) in ok:
             out[k] = d[k]
     if isinstance(d.get("theme"), str) and d["theme"] in dash.themes.THEMES:
@@ -168,16 +168,16 @@ class WebScreen(dash.Screen):
     def apply_prefs(self, d: dict) -> None:
         d = clean_prefs(d)
         if "hidden" in d:
-            self.hidden = set(d["hidden"])
+            self.hidden = dash.clean_hidden(d["hidden"])
         if "series" in d:
             self.series, self.sel = d["series"], None
         if "chart" in d:
             self.chart = d["chart"]
         if "watch" in d:
             self.watch = d["watch"]
-        if "slot3" in d:
-            self.slot3 = d["slot3"]
-            self.focus = "variants" if self.slot3 == "variants" else "ladder"
+        if "page" in d:
+            self.page = d["page"]
+            self.focus = "ladder" if self.page == 1 else "variants"
         if "theme" in d:
             self.P.set_theme(d["theme"])
         if "log_filter" in d:
@@ -186,8 +186,9 @@ class WebScreen(dash.Screen):
             self.profile = d["profile"]
 
     def current_prefs(self) -> dict:
-        return {"hidden": sorted(self.hidden), "series": self.series, "chart": self.chart, "theme": self.P.name,
-                "slot3": self.slot3, "watch": self.watch, "log_filter": self.log_filter,
+        return {"page": self.page, "hidden": {v: sorted(b) for v, b in self.hidden.items()},
+                "series": self.series, "chart": self.chart, "theme": self.P.name,
+                "watch": self.watch, "log_filter": self.log_filter,
                 "profile": self.profile}
 
     def save_prefs(self) -> None:                # kept by the browser (localStorage), not in dash.json

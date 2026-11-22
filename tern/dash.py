@@ -409,13 +409,39 @@ SCREEN_SETTINGS = [cfgmod.Setting("screen", "log", "log shows", kind="choice", g
 # spot chart spans: c cycles them in this order (the engine sends ~15 min of seconds and 24h of minutes)
 CHARTS = {"5m": 300, "15m": 900, "1h": 3600, "24h": 86400}
 
-# the boxes, in the order their number keys toggle them, as rows of (left, right)
-PANELS = ["spot", "contract", "ladder", "book", "equity", "log"]
-ROWS = [("spot", "contract", 0.36, 0.6), ("ladder", "book", 0.44, 0.52), ("equity", "log", 0.28, 0.4)]   # (.., height share, left width share)
+# the boxes, in the order of their number keys (the same number on every page)
+BOXES = ["spot", "contract", "ladder", "book", "equity", "log", "variants", "profiles"]
+PANELS = BOXES                                   # older name, kept for the web and tests
+# each view's rows of boxes, top to bottom; p flips page1 / page2, and a screen big enough for every box at its
+# smallest shows them all as one (merged). Each view keeps its own hidden boxes.
+PAGES = {"page1": [("spot", "contract"), ("ladder", "book"), ("equity", "log")],
+         "page2": [("variants",), ("profiles", "equity"), ("log",)],
+         "merged": [("spot", "contract"), ("ladder", "book"), ("variants", "profiles"), ("equity", "log")]}
+PAGE_NAMES = {1: "trade", 2: "compare"}
+SHARE = {"spot": 0.36, "contract": 0.36, "ladder": 0.44, "book": 0.44, "equity": 0.28, "log": 0.28}   # flexible rows' height shares
+LEFT_SHARE = {"spot": 0.6, "ladder": 0.52, "equity": 0.4, "variants": 0.6, "profiles": 0.6}         # a pair's left width share
+MIN_H = {"spot": 6, "contract": 8, "ladder": 8, "book": 9, "equity": 6, "log": 4}   # a flexible box's smallest height
+WANT_W = {"ladder": 56, "variants": 80, "profiles": 50}   # the width a box needs to show all its columns (others 40)
 SUPER = "¹²³⁴⁵⁶⁷⁸⁹"
 LEFT_MIN = {"ladder": 56, "variants": 56, "profiles": 56}   # the ladder's columns need this much before its bar has any room
-SLOT3 = ["ladder", "variants", "profiles"]   # the boxes 3 cycles through in the ladder's place, then hidden
 SCROLLS = ["ladder", "variants", "profiles", "book", "log"]   # the boxes ←→ focus and ↑↓ scroll
+COMFY_H = {"spot": 10, "contract": 10, "ladder": 12, "book": 12, "equity": 8, "log": 8}   # sizes the merged view needs
+
+
+def view_boxes(view: str) -> list[str]:
+    return [n for row in PAGES[view] for n in row]
+
+
+def clean_hidden(hd) -> dict[str, set[str]]:
+    """Each view's hidden boxes from saved prefs. The old shape, one list, was page 1's (then the only page)."""
+    out = {v: set() for v in PAGES}
+    if isinstance(hd, list):
+        hd = {"page1": hd}
+    if isinstance(hd, dict):
+        for v in PAGES:
+            if isinstance(hd.get(v), list):
+                out[v] = {x for x in hd[v] if isinstance(x, str)} & set(view_boxes(v))
+    return out
 
 # key hints drawn on each box's top border (btop style); a hidden box's hints move to the bottom row
 PANEL_KEYS = {
@@ -487,11 +513,11 @@ class Screen:
         self.log_anchor: float | None = None   # ts of the bottom log line while scrolled back; None follows new lines
         self.pos_off = 0                       # first line shown under the book's totals
         self.prefs_path = os.path.join(runtime, "dash.json")
-        self.hidden: set[str] = set()          # boxes turned off with 1-6
+        self.hidden = clean_hidden(None)       # each view's boxes turned off with 1-8
+        self.page = 1                          # p flips page 1 (trade) / page 2 (compare)
         self.panel_key = ""                    # the number drawn in the title of the box being drawn
         self.drawing = ""                      # the box being drawn, so box() can mark the focused one
         self.focus = "ladder"                  # the box ↑↓ scroll; ←→ move it
-        self.slot3 = "ladder"                  # what sits in the ladder's place: ladder or variants
         self.var_sel: str | None = None        # the variant the cursor is on in the variants box
         self.var_top = 0                       # first variant row shown when the list is taller than its box
         self.watch: str | None = None          # w: a variant shown as if it traded (view only; trading is unchanged)
@@ -502,7 +528,10 @@ class Screen:
         try:
             with open(self.prefs_path) as fh:
                 d = json.load(fh)
-            self.hidden = set(d.get("hidden", [])) & set(PANELS)
+            self.hidden = clean_hidden(d.get("hidden"))
+            if d.get("page") in PAGE_NAMES:
+                self.page = d["page"]
+                self.focus = "ladder" if self.page == 1 else "variants"
             if d.get("series") in cfgmod.SERIES:
                 self.series = d["series"]
             if d.get("chart") in CHARTS:
@@ -511,10 +540,6 @@ class Screen:
                 self.watch = d["watch"]
             if d.get("log_filter") in LOG_FILTERS:
                 self.log_filter = d["log_filter"]
-            if d.get("slot3") in SLOT3:
-                self.slot3 = d["slot3"]
-                if self.slot3 != "ladder":
-                    self.focus = self.slot3
             if isinstance(d.get("profile"), str):
                 self.profile = d["profile"]
             self.P.set_theme(d.get("theme"))
@@ -565,48 +590,117 @@ class Screen:
     def save_prefs(self) -> None:
         try:
             with open(self.prefs_path + ".tmp", "w") as fh:
-                json.dump({"hidden": sorted(self.hidden), "series": self.series, "chart": self.chart, "theme": self.P.name,
-                           "slot3": self.slot3, "watch": self.watch, "log_filter": self.log_filter,
+                json.dump({"page": self.page, "hidden": {v: sorted(b) for v, b in self.hidden.items()},
+                           "series": self.series, "chart": self.chart, "theme": self.P.name,
+                           "watch": self.watch, "log_filter": self.log_filter,
                            "profile": self.profile}, fh)
             os.replace(self.prefs_path + ".tmp", self.prefs_path)
         except OSError:
             pass
 
+    def view(self, H: int, W: int) -> str:
+        """merged when every box fits at a comfortable size, else the page p is on."""
+        rows = PAGES["merged"]
+        need = sum(max(self.fixed_h(n)[0] if n in ("variants", "profiles") else COMFY_H[n] for n in row) for row in rows)
+        wide = max(sum(WANT_W.get(n, 40) for n in row) for row in rows)
+        return "merged" if need <= H - 1 and wide <= W else f"page{self.page}"
+
+    def fixed_h(self, name: str) -> tuple[int, int]:
+        """(wanted, smallest) height of a box that keeps all its rows: variants (its rows, then the tip line)
+        and profiles (scrolls, so it can give rows back first)."""
+        if name == "variants":
+            n = max(1, len(self.st.get("variants") or []))
+            return n + 4, n + 3
+        n = max(1, len(self.prof_rows()))
+        return n + 6, 7
+
     def toggle(self, i: int) -> None:
-        name = PANELS[i]
-        if name == "ladder":                   # 3 cycles: ladder → variants → profiles → hidden → ladder
-            if "ladder" in self.hidden:
-                self.hidden.discard("ladder"); self.slot3 = "ladder"
-            elif self.slot3 != SLOT3[-1]:
-                self.slot3 = SLOT3[SLOT3.index(self.slot3) + 1]
-            else:
-                self.hidden.add("ladder"); self.slot3 = "ladder"
-            if self.focus in SLOT3:
-                self.focus = self.slot3
-            self.save_prefs()
-            self.say("ladder hidden" if "ladder" in self.hidden else f"{self.slot3} shown"
-                     + (" · ↑↓ pick, enter uses it" if self.slot3 == "variants" else
-                        " · ↑↓ pick, enter views it, space on/off, n new, D delete" if self.slot3 == "profiles" else ""))
-            return
-        self.hidden ^= {name}
+        """1-8: show / hide that box on this page. A box on the other page stays where it is."""
+        name = BOXES[i]
+        H, W = self.s.getmaxyx()
+        v = self.view(H, W)
+        if name not in view_boxes(v):
+            pg = next(k for k in PAGE_NAMES if name in view_boxes(f"page{k}"))
+            self.say(f"{name} is on page {pg} ({PAGE_NAMES[pg]}) · p flips to it"); return
+        self.hidden[v] ^= {name}
         self.save_prefs()
-        self.say(f"{name} {'hidden' if name in self.hidden else 'shown'}"
-                 + (" · every box is hidden: 1-6 bring them back" if self.hidden >= set(PANELS) else ""))
+        here = view_boxes(v)
+        nums = " ".join(str(BOXES.index(n) + 1) for n in BOXES if n in here)
+        self.say(f"{name} {'hidden' if name in self.hidden[v] else 'shown'}"
+                 + (f" · every box here is hidden: {nums} bring them back" if self.hidden[v] >= set(here) else ""))
+
+    def flip_page(self) -> None:
+        H, W = self.s.getmaxyx()
+        if self.view(H, W) == "merged":
+            self.say("both pages fit on this screen: every box is shown"); return
+        self.page = 2 if self.page == 1 else 1
+        self.save_prefs()
+        self.say(f"page {self.page}: {PAGE_NAMES[self.page]}")
+
+    def shown(self, name: str) -> bool:
+        if self.rects:
+            return name in self.rects
+        H, W = self.s.getmaxyx()
+        return any(n == name for n, *_ in self.layout(H, W))
+
+    def fit(self, rows: list[tuple[str, ...]], avail: int) -> list[int]:
+        """Each row's height. Rows holding variants or profiles take what those need to show every row;
+        the others share the rest by their shares, each at least its smallest. If even that is too much,
+        profiles gives rows back first (it scrolls), then variants its tip line, then all shrink alike."""
+        fixed = [max((self.fixed_h(n) if n in ("variants", "profiles") else (MIN_H[n], MIN_H[n])) for n in row)
+                 if any(n in ("variants", "profiles") for n in row) else None for row in rows]
+        mins = [max([MIN_H[n] for n in row if n in MIN_H] or [0]) if f is None else 0 for row, f in zip(rows, fixed)]
+        h = [f[0] if f else m for f, m in zip(fixed, mins)]
+        over = sum(h) - avail
+        for prefer in ("profiles", "variants"):          # give back down to the smallest, profiles first
+            for i, row in enumerate(rows):
+                if over > 0 and fixed[i] and prefer in row:
+                    floor = max([fixed[i][1]] + [MIN_H[n] for n in row if n in MIN_H])
+                    give = min(over, h[i] - floor)
+                    if give > 0:
+                        h[i] -= give; over -= give
+        if over > 0:                                       # still too tall: everything shrinks alike
+            tot = sum(h)
+            h = [max(3, x * avail // tot) for x in h]
+            h[-1] += avail - sum(h)
+            return h
+        flex = [i for i, f in enumerate(fixed) if f is None]
+        rest = avail - sum(h)
+        if not flex:
+            h[-1] += rest
+            return h
+        shares = [max(SHARE.get(n, 0.3) for n in rows[i]) for i in flex]
+        rest += sum(h[i] for i in flex)                    # the flexible rows split this between them
+        for i, sh in zip(flex, shares):
+            h[i] = max(mins[i], int(rest * sh / sum(shares)))
+        h[flex[-1]] += avail - sum(h)
+        for i in flex[:-1]:                                # the last one went under its smallest: take from the others
+            short = mins[flex[-1]] - h[flex[-1]]
+            if short > 0:
+                give = min(short, h[i] - mins[i]); h[i] -= give; h[flex[-1]] += give
+        return h
 
     def layout(self, H: int, W: int) -> list[tuple[str, int, int, int, int]]:
-        """(panel, y, x, h, w) for every box shown. A row's survivor takes the full width; rows share the height."""
-        rows = [(l, r, share, lw) for l, r, share, lw in ROWS if l not in self.hidden or r not in self.hidden]
-        rows = [(self.slot3 if l == "ladder" else l, r, share, lw) for l, r, share, lw in rows]
-        avail, total = H - 1, sum(r[2] for r in rows)   # the status line takes the last row; the boxes start at the top
+        """(panel, y, x, h, w) for every box shown on this view. A row's survivor takes the full width; a pair
+        too narrow for both stacks into two rows."""
+        view = self.view(H, W)
+        rows: list[tuple[str, ...]] = []
+        for row in PAGES[view]:
+            shown = tuple(n for n in row if n not in self.hidden[view])
+            if len(shown) == 2 and sum(WANT_W.get(n, 40) for n in shown) > W:
+                rows += [(shown[0],), (shown[1],)]
+            elif shown:
+                rows.append(shown)
+        if not rows:
+            return []
         out, y = [], 0
-        for i, (l, r, share, lws) in enumerate(rows):
-            h = avail - y if i == len(rows) - 1 else max(7, int(avail * share / total))
-            shown = [n for n in (l, r) if n not in self.hidden]
-            if len(shown) == 2:
-                lw = max(int(W * lws), LEFT_MIN.get(l, 0))
+        for row, h in zip(rows, self.fit(rows, H - 1)):   # the status line takes the last row
+            if len(row) == 2:
+                l, r = row
+                lw = min(W - 30, max(int(W * LEFT_SHARE.get(l, 0.5)), LEFT_MIN.get(l, 0)))
                 out += [(l, y, 0, h, lw), (r, y, lw, h, W - lw)]
             else:
-                out.append((shown[0], y, 0, h, W))
+                out.append((row[0], y, 0, h, W))
             y += h
         return out
 
@@ -1123,8 +1217,8 @@ class Screen:
         if self.wview():
             name, self.watch = self.watch, None
             self.save_prefs(); self.say(f"stopped watching {name}: back to the {self.active()} paper book"); return
-        if self.slot3 != "variants" or "ladder" in self.hidden:
-            self.say("w watches a variant: press 3 for the variants box, highlight one, then w"); return
+        if not self.shown("variants"):
+            self.say("w watches a variant: p for page 2, highlight one in variants, then w"); return
         name = self.var_sel
         if not name or name == self.active():
             self.say(f"{name} is what trades: the paper book already shows it"); return
@@ -1134,8 +1228,8 @@ class Screen:
     def use_variant(self) -> None:
         """Enter in the variants box: trade the picked variant. Paper switches at once; while live is
         on or armed it asks for "live" first, as arming does."""
-        if self.slot3 != "variants" or "ladder" in self.hidden:
-            self.say("enter picks a variant: press 3 for the variants box first"); return
+        if not self.shown("variants"):
+            self.say("enter picks a variant: p for page 2, where the variants box is"); return
         vs = self.st.get("variants") or []
         cur = next((v for v in vs if v["name"] == self.var_sel), None)
         active = next((v["name"] for v in vs if v.get("active")), None)
@@ -1159,7 +1253,7 @@ class Screen:
         self.send(op="variant", name=cur["name"])
 
     def in_profiles(self) -> bool:
-        return self.slot3 == "profiles" and "ladder" not in self.hidden
+        return self.shown("profiles")
 
     def prof_rows(self) -> list[dict]:
         return self.raw.get("profiles") or []
@@ -1515,7 +1609,7 @@ class Screen:
     def move_focus(self, d: int) -> None:
         names = self.focusable()
         if not names:
-            self.say("no scrolling box is shown · 3, 4, 6 bring back ladder or variants, book, log"); return
+            self.say("no scrolling box is shown here · its number brings one back (see the bottom row)"); return
         i = names.index(self.focus) if self.focus in names else -1 if d > 0 else 0
         self.focus = names[(i + d) % len(names)]
         self.say(f"focus: {self.focus}")
@@ -1913,17 +2007,21 @@ class Screen:
         self.header(H, W)
         self.rects = {}
         boxes = self.layout(H, W)
+        names = [b[0] for b in boxes if b[0] in SCROLLS]
+        if names and self.focus not in names:          # the focused box went off screen (page, hiding, size)
+            self.focus = names[0]
         for name, y, x, h, w in boxes:
             self.rects[name] = (y, x, h, w)
             self.clip = x + w - 1
-            self.panel_key = SUPER[PANELS.index("ladder" if name in SLOT3 else name)]
+            self.panel_key = SUPER[BOXES.index(name)]
             self.drawing = name
             getattr(self, name + "_panel")(y, x, h, w)
         self.clip = None
         self.panel_key = ""
         self.drawing = ""
+        here = [n for n in BOXES if n in view_boxes(self.view(H, W))]
         if not boxes:
-            msg = "every box is hidden · press 1-6 to show spot, contract, ladder, book, equity, log"
+            msg = "every box here is hidden · press " + ", ".join(f"{BOXES.index(n) + 1} {n}" for n in here)
             self.put(H // 2, max(0, (W - len(msg)) // 2), msg, self.P(self.P.grey))
         self.footer(H, W)
         if self.overlay == "settings":
@@ -2036,8 +2134,10 @@ class Screen:
             self.profile_ask("pname")
         elif ch == ord("D") and self.in_profiles():
             self.profile_ask("pdelete")
-        elif ord("1") <= ch <= ord(str(len(PANELS))):
+        elif ord("1") <= ch <= ord(str(len(BOXES))):
             self.toggle(ch - ord("1"))
+        elif ch == ord("p"):
+            self.flip_page()
         elif ch in (9, curses.KEY_BTAB):
             order = list(cfgmod.SERIES)
             step = -1 if ch == curses.KEY_BTAB else 1
