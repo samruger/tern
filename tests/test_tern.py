@@ -1068,6 +1068,139 @@ class Shadows(unittest.TestCase):
                                      "400,600,75001.5,74999.99,0.5,0.52,50,40", "460,540,,74999.99,0.5,0.52,50,40"])
 
 
+class Profiles(unittest.TestCase):
+    """Profiles: whole copies of the desk on paper, each running every variant under its own settings."""
+
+    def m(self, t, bid, ask, k):
+        return {"ticker": t, "yes_bid_dollars": str(bid), "yes_ask_dollars": str(ask),
+                "yes_bid_size_fp": "50", "yes_ask_size_fp": "40", "floor_strike": k, "status": "active"}
+
+    def make(self, d, name="Profile 2", **strat):
+        from tern import profiles
+        from tern.config import Config, Strategy
+        return profiles.create(d, name, Config(strategy=Strategy(**strat)), 0.07)
+
+    def test_create_copies_settings_and_starts_empty(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = self.make(d, band_lo=0.8)
+            self.assertEqual(p.id, "profile-2")
+            self.assertEqual(p.name, "Profile 2")
+            self.assertEqual(p.cfg.strategy.band_lo, 0.8)
+            self.assertEqual(p.log.sv, 1)
+            self.assertEqual(p.shadow.rows, [])
+            self.assertTrue(p.enabled)
+            for f in ("profile.json", "config.json", "settings-log.jsonl"):
+                self.assertTrue(os.path.exists(os.path.join(d, "profiles", "profile-2", f)), f)
+
+    def test_slug_is_safe_and_unique(self):
+        from tern.profiles import slug
+        self.assertEqual(slug("../x/", set()), "x")
+        self.assertEqual(slug("", set()), "profile")
+        self.assertEqual(slug("!!!", set()), "profile")
+        self.assertEqual(slug("A b", {"a-b"}), "a-b-2")
+        self.assertEqual(slug("A b", {"a-b", "a-b-2"}), "a-b-3")
+
+    def test_set_bumps_sv_only_for_record_fields(self):
+        import json
+        with tempfile.TemporaryDirectory() as d:
+            p = self.make(d)
+            self.assertEqual(p.set("strategy.band_lo", 0.82), (0.75, 0.82))
+            self.assertEqual(p.log.sv, 2)
+            p.set("strategy.variant", "late")
+            self.assertEqual(p.log.sv, 2)
+            self.assertEqual(len(p.log.lines()), 3)                           # created, band low, variant
+            with self.assertRaises(ValueError):
+                p.set("strategy.band_lo", 0.99)                               # not below band high (0.95)
+            with self.assertRaises(ValueError):
+                p.set("strategy.band_hi", 0.80)                               # not above band low (0.82)
+            with self.assertRaises(ValueError):
+                p.set("strategy.variant", "nope")
+            with self.assertRaises(ValueError):
+                p.set("live.capital_usd", 50)                                 # no live settings on a profile
+            with open(os.path.join(p.dir, "config.json")) as fh:
+                self.assertEqual(json.load(fh)["strategy"]["band_lo"], 0.82)
+
+    def test_slots_and_coins_need_one_on(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = self.make(d)
+            for key, bad in (("strategy.minutes", []), ("strategy.series", []), ("strategy.minutes", [12]),
+                             ("strategy.series", ["KXFAKED"])):
+                with self.assertRaises(ValueError):
+                    p.set(key, bad)
+            p.set("strategy.minutes", [15, 10])
+            self.assertEqual(p.cfg.strategy.minutes, [15, 10])
+
+    def test_hand_edit_is_logged_and_bad_edit_kept_out(self):
+        import json
+        with tempfile.TemporaryDirectory() as d:
+            p = self.make(d)
+            path = os.path.join(p.dir, "config.json")
+            with open(path) as fh:
+                c = json.load(fh)
+            c["strategy"]["band_hi"] = 0.92
+            with open(path, "w") as fh:
+                json.dump(c, fh)
+            self.assertEqual(p.reload_cfg(), [("strategy.band_hi", 0.95, 0.92)])
+            self.assertEqual(p.log.sv, 2)
+            with open(path, "w") as fh:
+                fh.write("{not json")
+            self.assertEqual(p.reload_cfg(), [])
+            self.assertEqual(p.cfg.strategy.band_hi, 0.92)
+
+    def test_disabled_profile_takes_no_entries(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = self.make(d, series=["E"])
+            p.enabled = False
+            p.step("E", 1000.0, [self.m("E-T1", 0.92, 0.93, 1)], 1000.0 - 25 * 60 + 1, None)
+            self.assertEqual(p.shadow.rows, [])
+            p.enabled = True
+            p.step("E", 1000.0, [self.m("E-T1", 0.92, 0.93, 1)], 1000.0 - 25 * 60 + 2, None)
+            self.assertEqual({r["sv"] for r in p.shadow.rows}, {1})
+
+    def test_restart_keeps_slots(self):
+        from tern.profiles import Profile
+        with tempfile.TemporaryDirectory() as d:
+            p = self.make(d, series=["E"])
+            ms = [self.m("E-T1", 0.92, 0.93, 1)]
+            p.step("E", 1000.0, ms, 1000.0 - 25 * 60 + 1, None)
+            n = len(p.shadow.rows)
+            p.shadow.save()
+            again = Profile.load(p.dir, 0.07)
+            again.step("E", 1000.0, ms, 1000.0 - 25 * 60 + 5, None)
+            self.assertEqual(len(again.shadow.rows), n)
+
+    def test_unreadable_folder_is_skipped(self):
+        from tern import profiles
+        with tempfile.TemporaryDirectory() as d:
+            self.make(d)
+            bad = os.path.join(d, "profiles", "bad")
+            os.makedirs(bad)
+            with open(os.path.join(bad, "profile.json"), "w") as fh:
+                fh.write("{bad")
+            self.assertEqual([p.id for p in profiles.load_all(d, 0.07)], ["profile-2"])
+            self.assertIn("bad", profiles.load_errors)
+
+    def test_max_profiles(self):
+        from tern import profiles
+        with tempfile.TemporaryDirectory() as d:
+            for i in range(profiles.MAX_PROFILES):
+                self.make(d, f"p{i}")
+            with self.assertRaises(ValueError):
+                self.make(d, "one too many")
+
+    def test_delete_moves_folder(self):
+        from tern import profiles
+        with tempfile.TemporaryDirectory() as d:
+            p = self.make(d)
+            to = profiles.delete(d, p.id)
+            self.assertTrue(os.path.isdir(to))
+            self.assertEqual(os.path.dirname(to), os.path.join(d, "profiles-deleted"))
+            self.assertFalse(os.path.exists(p.dir))
+            for bad in ("../..", "", "nope"):
+                with self.assertRaises(ValueError):
+                    profiles.delete(d, bad)
+
+
 class Net(unittest.TestCase):
     """The kept-open HTTPS connections, against a fake connection class."""
 
