@@ -1237,6 +1237,21 @@ class Web(unittest.TestCase):
             self.assertEqual(os.listdir(os.path.join(d, "cmd")), [])          # nothing reached the engine
             self.assertFalse(os.path.exists(os.path.join(d, "dash.json")))
 
+    def test_settings_log_filter_works_for_that_viewer(self):
+        from tern.web import Hub
+        with tempfile.TemporaryDirectory() as d:
+            self.status(d)
+            hub = Hub(d)
+            sid = hub.handle({"w": 120, "h": 40})["sid"]
+            for k in ("e", "ArrowUp", "ArrowRight"):                           # the last row: log shows
+                f = hub.handle({"sid": sid, "w": 120, "h": 40, "key": k})
+            self.assertEqual(f["prefs"]["log_filter"], "no_shadow")
+            self.assertIn("saved at once", "\n".join("".join(t for t, _ in r) for r in f["rows"]))
+            self.assertEqual(os.listdir(os.path.join(d, "cmd")), [])
+            self.assertFalse(os.path.exists(os.path.join(d, "dash.json")))
+            f = hub.handle({"w": 120, "h": 40, "prefs": {"log_filter": "trades"}})   # a reload brings it back
+            self.assertEqual(f["prefs"]["log_filter"], "trades")
+
     def test_engine_sends_history_for_strikes_web_viewers_picked(self):
         import collections, json, time
         from tern.engine import Desk

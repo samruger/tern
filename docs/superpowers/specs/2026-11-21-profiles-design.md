@@ -1,6 +1,6 @@
 # Profiles: design
 
-2026-11-21. Status: draft for approval.
+2026-11-21. Status: approved.
 
 ## Why
 

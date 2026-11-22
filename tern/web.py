@@ -4,7 +4,7 @@ The browser does not draw its own copy of the dash. Each browser tab gets a real
 drawing into a virtual terminal here; the cells go to the page, which paints them like foot does.
 So the web view always looks and behaves like the screen, minus the keys that change anything:
 no quit, engine stop or start, paper reset, live, rule coins or picking a variant. The settings
-box (e) opens and its cursor moves, but nothing in it changes. It sends
+box (e) opens and its cursor moves, but only its log filter row changes (for that viewer). It sends
 no command files and never writes the screen's own view.json or dash.json. Its viewers' coins
 and strikes go to view-web.json, so the engine also sends those strikes' contract history.
 """
@@ -138,6 +138,8 @@ def clean_prefs(d) -> dict:
         out["theme"] = d["theme"]
     if "watch" in d and (d["watch"] is None or isinstance(d["watch"], str)):
         out["watch"] = d["watch"]
+    if d.get("log_filter") in dash.LOG_FILTERS:
+        out["log_filter"] = d["log_filter"]
     return out
 
 
@@ -173,10 +175,12 @@ class WebScreen(dash.Screen):
             self.focus = "variants" if self.slot3 == "variants" else "ladder"
         if "theme" in d:
             self.P.set_theme(d["theme"])
+        if "log_filter" in d:
+            self.log_filter, self.log_anchor = d["log_filter"], None
 
     def current_prefs(self) -> dict:
         return {"hidden": sorted(self.hidden), "series": self.series, "chart": self.chart, "theme": self.P.name,
-                "slot3": self.slot3, "watch": self.watch}
+                "slot3": self.slot3, "watch": self.watch, "log_filter": self.log_filter}
 
     def save_prefs(self) -> None:                # kept by the browser (localStorage), not in dash.json
         self.prefs = self.current_prefs()
@@ -187,11 +191,15 @@ class WebScreen(dash.Screen):
     def send(self, **cmd) -> None:               # unreachable: every key that sends is filtered out
         self.say("view only: the web screen sends no commands")
 
-    def send_setting(self, row, value) -> None:  # the settings box shows, but changes nothing here
+    def send_setting(self, row, value) -> None:  # the settings box shows, but only its log row changes here
+        if row.key == "screen.log":              # just this viewer's log box, kept with its other prefs
+            return super().send_setting(row, value)
         self.say("view only: settings are changed from the screen in the terminal")
 
     def settings_lines(self) -> list:
         out = super().settings_lines()
+        if self.set_rows()[self.set_sel].key == "screen.log":
+            return out                           # this row really is saved at once
         for line in out:                         # its "saved at once" hints don't hold here
             if isinstance(line, list) and len(line) == 1 and "saved at once" in line[0][0]:
                 t = line[0][0]
