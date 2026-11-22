@@ -9,11 +9,12 @@
   tern report --profiles
                         every profile's book side by side; --deleted: the deleted ones
   tern live-check       test the Kalshi key: balance and positions, no orders
-  tern web [--host H] [--port P]
+  tern web [--host H] [--port P] | --config
                         the screen in a browser, view only (default http://localhost:8787/)
   tern service          write a systemd user service that keeps the engine running
   tern web-service [--host H]
-                        the same for tern web (tern-web.service, port 8787; --host 0.0.0.0 to open it up)
+                        the same for tern web (tern-web.service; --host 0.0.0.0 opens it up); its port,
+                        on/off and network access are the settings box's WEB rows
   tern web-password     set tern web's login password (prints a generated one if you enter none)
   tern web-cert         make tern web's self-signed HTTPS certificate
 """
@@ -113,9 +114,10 @@ WantedBy=default.target
 """
 
 
-def _web_unit(root: str, runtime: str, python: str, host: str = "127.0.0.1") -> str:
+def _web_unit(root: str, runtime: str, python: str) -> str:
     # View only: it reads the status file the engine writes, so it needs no keys. Off localhost tern web
-    # refuses to start without its login and certificate.
+    # refuses to start without its login and certificate. Its port, host and on/off are config.json's
+    # "web" section (the settings box's WEB rows): off, it exits 0 and on-failure leaves it down.
     return f"""[Unit]
 Description=tern web screen (view only)
 After=tern.service
@@ -125,8 +127,8 @@ WorkingDirectory={root.replace("%", "%%")}
 Environment={_unit_quote("TERN_RUNTIME=" + runtime)}
 Environment=PYTHONUNBUFFERED=1
 ExecStartPre=/usr/bin/test -d {_unit_quote(runtime)}
-ExecStart={_unit_quote(python)} -m tern web --host {host} --port 8787
-Restart=always
+ExecStart={_unit_quote(python)} -m tern web --config
+Restart=on-failure
 RestartSec=15
 
 [Install]
@@ -134,15 +136,20 @@ WantedBy=default.target
 """
 
 
-def _web_service(runtime: str, host: str = "127.0.0.1") -> int:
+def _web_service(runtime: str, network: bool | None = None) -> int:
     unit_dir = os.path.expanduser("~/.config/systemd/user")
     os.makedirs(unit_dir, exist_ok=True)
     path = os.path.join(unit_dir, "tern-web.service")
     with open(path, "w") as fh:
-        fh.write(_web_unit(os.path.realpath(cfgmod.ROOT), os.path.realpath(runtime), sys.executable, host))
+        fh.write(_web_unit(os.path.realpath(cfgmod.ROOT), os.path.realpath(runtime), sys.executable))
+    cfg = cfgmod.load(runtime)
+    if network is not None:                      # --host 0.0.0.0 / 127.0.0.1 sets the settings box's row
+        cfg.web.network = network
+        cfgmod.save(cfg, runtime)
     print(f"Wrote {path}\n\nStart it now and at every login:\n"
           "  systemctl --user daemon-reload\n  systemctl --user enable --now tern-web\n\n"
-          "Then open http://localhost:8787/ (https:// once tern web-cert has made a certificate)")
+          f"Then open http://localhost:{cfg.web.port}/ (https:// once tern web-cert has made a certificate).\n"
+          "Its port, on/off and network access are in the screen's settings box (e), WEB.")
     return 0
 
 
@@ -317,6 +324,12 @@ def main(argv: list[str]) -> int:
         return 0
     if cmd == "web":
         from .web import serve
+        from .webctl import host
+        if "--config" in argv:                   # the unit's way: the settings box's WEB rows
+            W = cfgmod.load(runtime).web
+            if not W.enabled:
+                print("tern web is off in the settings box (e, WEB): not starting"); return 0
+            serve(runtime, host(W), W.port); return 0
         opt = dict(zip(argv[1::2], argv[2::2]))
         serve(runtime, opt.get("--host", "127.0.0.1"), int(opt.get("--port", 8787))); return 0
     if cmd == "live-check":
@@ -324,7 +337,8 @@ def main(argv: list[str]) -> int:
     if cmd == "service":
         return _service(runtime)
     if cmd == "web-service":
-        return _web_service(runtime, dict(zip(argv[1::2], argv[2::2])).get("--host", "127.0.0.1"))
+        h = dict(zip(argv[1::2], argv[2::2])).get("--host")
+        return _web_service(runtime, None if h is None else h not in ("127.0.0.1", "localhost", "::1"))
     if cmd == "web-password":
         return _web_password()
     if cmd == "web-cert":

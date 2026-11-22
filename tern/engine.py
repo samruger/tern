@@ -22,6 +22,7 @@ from .kalshi import Kalshi, KalshiError, quote
 from .record import Recorder
 from . import profiles as profmod
 from . import shadow as shadowmod
+from . import webctl
 from .shadow import Shadow
 from .spot import coinbase, history
 from .strategy import due_slot, signals
@@ -237,6 +238,9 @@ class Desk:
             for key, was, to in profmod.diff_record(old.strategy, self.cfg.strategy):
                 self.slog.append(key, was, to, bump=True)
                 self.log(f"config: {key} {was} → {to} (settings {self.slog.sv})")
+            if old.web != self.cfg.web:              # a hand edit of the web section: the service follows it
+                self.log("config: " + webctl.apply(self.cfg.web))
+                self.last["webstate"] = 0
 
     # ------------------------------------------------------------ state
     def _load_state(self) -> None:
@@ -956,9 +960,15 @@ class Desk:
             if was != v:
                 self.slog.append(key, was, v, bump=key in profmod.RECORD_KEYS)
             r = cfgmod.setting(key)
-            label = {"live": "live ", "gate": "gate ", "strategy": "paper " if r.name == "contracts" else ""}.get(r.sec, "") + r.label
+            label = {"live": "live ", "gate": "gate ", "web": "web ", "strategy": "paper " if r.name == "contracts" else ""}.get(r.sec, "") + r.label
+            label = "web screen" if key == "web.enabled" else label
             show = (lambda x: "on" if x else "off") if r.kind == "bool" else (lambda x: f"{x:g}")
             msg = f"{label}: {show(was)} → {show(v)}" + (" (the paper book starts there at the next reset)" if key == "paper_capital" else "")
+            if r.sec == "web" and was != v and (key == "web.enabled" or self.cfg.web.enabled):
+                msg += " · " + webctl.apply(self.cfg.web)
+                if key == "web.port":
+                    msg += f" · open it: sudo ufw allow {v}/tcp"
+                self.last["webstate"] = 0                # look again at the next status
             return msg
         if op == "rename":
             return self._rename(c)
@@ -976,6 +986,16 @@ class Desk:
             self.taken = {k: v for k, v in self.taken.items() if not k.startswith("paper|")}
             return f"paper reset to ${self.cfg.paper_capital:,.2f}"
         return f"unknown command {op!r}"
+
+    def _web_state(self, now: float) -> dict:
+        """tern-web.service as the settings box shows it: whether it runs, and where to open it. Asked every
+        20 s, every 3 s while it is starting, and at the next status after a WEB setting changes."""
+        last = getattr(self, "_webst", None)
+        wait = 3 if last and last["state"] in ("activating", "deactivating") else 20
+        if last is None or now - self.last["webstate"] >= wait:
+            self.last["webstate"] = now
+            self._webst = {"state": webctl.state(), "url": webctl.url(self.cfg.web)}
+        return self._webst
 
     def _rename(self, c: dict) -> str:
         """A profile ("profile": its id, "1" the desk) or a variant ("variant": its name) gets a new name."""
@@ -1159,7 +1179,8 @@ class Desk:
               "strategy": strategy, "views": views, "live_cfg": self.cfg.live.__dict__,
               "settings": {r.key: cfgmod.get_setting(self.cfg, r.key) for r in cfgmod.SETTINGS},
               "logs": [list(x) for x in list(self.logs)[-200:]], "results": self.results,
-              "auto_live": self._live_rule_on(gate), "pviews": {}, "variant_names": dict(self.names.variants)}
+              "auto_live": self._live_rule_on(gate), "pviews": {}, "variant_names": dict(self.names.variants),
+              "web_state": self._web_state(now)}
         looked = {self.view.get("profile")} | set(self.web.get("profiles", []))
         st["profiles"] = self._profile_rows(variants, looked)
         for p in self.profiles:

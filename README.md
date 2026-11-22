@@ -230,6 +230,7 @@ too; the engine ignores the file 30 seconds after the last viewer leaves.
 python3 -m tern web-password                # a password (enter none for a generated one)
 python3 -m tern web-cert                    # a self-signed certificate; prints its fingerprint
 python3 -m tern web-service --host 0.0.0.0  # then: systemctl --user enable --now tern-web
+                                            # (--host sets the settings box's "open to the network")
 ```
 
 Both live in `~/.config/tern/`, never in the repo. The password is stored as a PBKDF2 hash. A sign-in
@@ -239,6 +240,13 @@ browser out, and `/logout` signs out the one you are on. Five wrong tries from o
 browser warns once. Check that the fingerprint it shows matches the one `web-cert` printed before you
 accept it. To reach it from the internet, open the port in the firewall (`sudo ufw allow 8787/tcp`) and
 forward TCP 8787 on the router to this machine.
+
+**Settings box (`e`), WEB.** `web screen` turns it on and off, `port` moves it and `open to the
+network` switches between every address and this computer only. tern-web.service runs
+`tern web --config`, which reads those from `config.json`'s `web` section and exits (and stays down)
+when it is off. The engine restarts or stops the service as soon as one changes, from the box or by
+hand in `config.json`, and the box shows whether it is running and where to open it. The firewall is
+not touched: a new port still needs `sudo ufw allow PORT/tcp` (and the router forward moved).
 
 ## Files
 
@@ -263,6 +271,7 @@ because they are rewritten every second.
 | `record.py` | writes quotes and results to `runtime/ticks/` |
 | `dash.py` | the curses screen |
 | `web.py`, `web.html` | the same screen in a browser, view only |
+| `webctl.py` | starts, stops and asks about tern-web.service for the settings box's WEB rows |
 | `webauth.py` | tern web's password, sign-in cookie, wrong-guess limits and certificate |
 | `research/` | the scripts and data behind the numbers above |
 

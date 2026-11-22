@@ -1,3 +1,4 @@
+import json
 import os
 import shutil
 import subprocess
@@ -11,6 +12,9 @@ from tern.book import Book, taker_fee
 from tern.sign import load_key, signature
 from tern.strategy import due_slot, signals
 from tern.dash import braille, by_time
+from tern import webctl
+
+webctl.ENABLED = False           # no test starts, stops or asks systemd about the real tern-web
 
 # Every engine keeps its status and view files in $XDG_RUNTIME_DIR/tern-<hash of its runtime>. Each test has a
 # fresh temp runtime, so without this every run would leave dozens of folders there for good (until reboot).
@@ -360,6 +364,66 @@ class Commands(unittest.TestCase):
             self.assertIn("not set", k._command({"op": "set", "key": "live.capital_usd", "value": "100"}))
             self.assertFalse(config.load(d).live.enabled)
             self.assertEqual(config.load(d).live.capital_usd, 100.0)
+
+    def test_web_settings_drive_the_service(self):
+        from unittest import mock
+        from tern import config
+        calls = []
+        def fake(*args):
+            calls.append(args)
+            return (0, "active") if args[0] == "is-active" else (0, "")
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(webctl, "systemctl", fake):
+            k = self.desk(d)
+            self.assertEqual((k.cfg.web.enabled, k.cfg.web.port, k.cfg.web.network), (True, 8787, False))
+            msg = k._command({"op": "set", "key": "web.port", "value": 9090})
+            self.assertIn("web port: 8787 → 9090", msg)
+            self.assertIn("restarting on port 9090", msg)
+            self.assertIn("sudo ufw allow 9090/tcp", msg)
+            self.assertEqual(calls[-1], ("restart", "tern-web"))
+            self.assertEqual(config.load(d).web.port, 9090)
+            self.assertIsInstance(config.load(d).web.port, int)
+            self.assertIn("open to the network", k._command({"op": "set", "key": "web.network", "value": True}))
+            self.assertIn("web screen: on → off · web screen off", k._command({"op": "set", "key": "web.enabled", "value": False}))
+            self.assertEqual(calls[-1], ("stop", "tern-web"))
+            n = len(calls)
+            self.assertNotIn("restart", k._command({"op": "set", "key": "web.port", "value": 9091}))   # off: just saved
+            self.assertEqual(len(calls), n)
+            self.assertIn("restarting on port 9091", k._command({"op": "set", "key": "web.enabled", "value": True}))
+            for bad in (80, 70000, "9000", True):
+                self.assertIn("not set", k._command({"op": "set", "key": "web.port", "value": bad}))
+            st = (k._status(), json.load(open(os.path.join(k.fast, "status.json"))))[1]
+            self.assertEqual(st["web_state"]["state"], "active")
+            self.assertIn(":9091/", st["web_state"]["url"])
+            self.assertEqual(st["settings"]["web.port"], 9091)
+
+    def test_web_section_hand_edit_restarts_the_service(self):
+        from unittest import mock
+        from tern import config
+        calls = []
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(webctl, "systemctl", lambda *a: calls.append(a) or (0, "")):
+            k = self.desk(d)
+            cfg = config.load(d); cfg.web.port = 8800; config.save(cfg, d)
+            k._reload_cfg(force=True)
+            self.assertEqual(calls[-1], ("restart", "tern-web"))
+            self.assertTrue(any("port 8800" in m for _, _, m in k.logs))
+            n = len(calls); k._reload_cfg(force=True)
+            self.assertEqual(len(calls), n)                                  # unchanged: left alone
+
+    def test_web_config_mode_and_unit(self):
+        from unittest import mock
+        from tern import __main__ as cli, config
+        with tempfile.TemporaryDirectory() as d:
+            unit = cli._web_unit("/r", "/r/runtime", "/usr/bin/python3")
+            self.assertIn("-m tern web --config", unit)
+            self.assertIn("Restart=on-failure", unit)                       # off exits 0 and stays down
+            cfg = config.Config(); cfg.web.enabled = False; config.save(cfg, d)
+            with mock.patch.object(config, "RUNTIME", d), mock.patch.object(cli.cfgmod, "RUNTIME", d), \
+                    mock.patch("tern.web.serve") as serve:
+                self.assertEqual(cli.main(["web", "--config"]), 0)
+                serve.assert_not_called()
+                cfg.web.enabled, cfg.web.port, cfg.web.network = True, 9000, True; config.save(cfg, d)
+                cli.main(["web", "--config"])
+                serve.assert_called_once_with(d, "0.0.0.0", 9000)
 
     def test_gate_and_alert_settings(self):
         with tempfile.TemporaryDirectory() as d:
@@ -1625,6 +1689,28 @@ class ScreenProfiles(unittest.TestCase):
             self.assertIn("│   band90hi     0 ", self.text())                 # the row, its columns moved along
             self.press("N", 27)
             self.assertEqual(self.cmds(), [])                                  # esc sends nothing
+
+    def test_settings_box_scrolls_on_a_short_screen_and_shows_the_web_service(self):
+        from unittest import mock
+        from tern import dash, web
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(webctl, "systemctl", lambda *a: (0, "active")):
+            k = self.desk(d); k.seeded.add(self.T)
+            with mock.patch.object(dash, "Pal", web.WebPal):
+                scr = dash.Screen(web.VTerm(31, 104), d)
+            k._read_view(); k._status(); scr.read(); scr.key(ord("e"))
+            text = lambda: "\n".join("".join(r) for r in scr.s.ch)
+            scr.set_sel = [r.key for r in scr.set_rows()].index("web.port"); scr.draw()
+            self.assertIn("▸ port", text())
+            self.assertIn("web screen now: running · http", text())
+            self.assertIn("sudo ufw allow PORT/tcp", text())               # its description, pinned below
+            scr.set_sel = 0; scr.draw()
+            self.assertIn("▸ most at risk at once", text())
+            self.assertIn("LIVE", text())
+            self.assertNotIn("web screen now", text())
+            scr.set_sel = [r.key for r in scr.set_rows()].index("web.port")
+            scr.key(__import__("curses").KEY_RIGHT)
+            [c] = [json.load(open(os.path.join(scr.cmd_dir, n))) for n in os.listdir(scr.cmd_dir)]
+            self.assertEqual((c["op"], c["key"], c["value"]), ("set", "web.port", 8788))
 
     def test_profile_settings_send_profile_set(self):
         with tempfile.TemporaryDirectory() as d:

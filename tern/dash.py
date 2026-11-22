@@ -1727,9 +1727,12 @@ class Screen:
             msg = f" {self.flash} "[:max(0, W - 4)]
             self.put(H - 2, 2, msg, P(YELLOW, bold=True) | curses.A_REVERSE)
 
-    def draw_overlay(self, lines: list, title: str, color: int = CYAN, scroll: bool = False, hints=None) -> None:
+    def draw_overlay(self, lines: list, title: str, color: int = CYAN, scroll: bool = False, hints=None,
+                     pin: int = 0, follow: int | None = None) -> None:
         """A centered box of lines. A line is a plain string (colored by `rich`) or a list of (text, attr).
-        With scroll, lines that don't fit scroll by self.ov_off (help and gate); ▲▼ and the place show on the border."""
+        With scroll, lines that don't fit scroll by self.ov_off (help and gate); ▲▼ and the place show on the border.
+        pin keeps the last pin lines in place (settings: the divider and what the row is) while the lines above
+        them scroll just enough to show line `follow` (the cursor's)."""
         H, W = self.s.getmaxyx()
         lines = [self.rich(l) if isinstance(l, str) else l for l in lines]
         w = min(W - 4, max(sum(len(t) for t, _ in l) for l in lines) + 4)
@@ -1737,6 +1740,28 @@ class Screen:
         y, x = (H - h) // 2, (W - w) // 2
         room = h - 2
         off = 0
+        if pin and len(lines) > room and room > pin:
+            body, foot = lines[:-pin], lines[-pin:]
+            br = room - pin
+            off = self.pin_off = max(0, min(getattr(self, "pin_off", 0), len(body) - br))
+            if follow is not None:
+                off = self.pin_off = min(max(off, follow - br + 1), follow)
+            for r in range(h):
+                self.put(y + r, x, " " * w)
+            self.box(y, x, h, w, title, color, "", hints or [("any key", " closes")])
+            saved, self.clip = self.clip, x + w - 2
+            for j, l in enumerate(body[off:off + br] + foot):
+                cx = x + 2
+                for text, attr in l:
+                    if text == RULE_LINE:
+                        text = "─" * (w - 4)
+                    self.put(y + 1 + j, cx, text, attr); cx += len(text)
+            self.clip = saved
+            if off > 0:
+                self.put(y + 1, x + w - 2, "▲", self.P(YELLOW))
+            if off + br < len(body):
+                self.put(y + br, x + w - 2, "▼", self.P(YELLOW))
+            return
         if scroll:
             self.ov_room, self.ov_len = room, len(lines)
             self.ov_off = off = max(0, min(self.ov_off, len(lines) - room))
@@ -1942,6 +1967,8 @@ class Screen:
                 v = self.set_value(row.key)
                 col = YELLOW if row.key in self.set_sent else (GREEN if v else RED) if row.kind == "bool" else P.c("key")
                 val = [(f" {self.set_fmt(row, v)} ", P(col, bold=True) | (curses.A_REVERSE if sel else 0))]
+            if sel:                                      # the line the settings box keeps in view
+                self.set_line = len(out) - (1 if i == 0 else 0)   # the first row: its heading too
             mark = ("▸ ", P(P.c("key"), bold=True)) if sel else ("  ", 0)
             out.append([mark, (f"{row.label:<{lw}}  ", P(WHITE, bold=sel))] + val)
         row = rows[self.set_sel]
@@ -1956,7 +1983,18 @@ class Screen:
             return [r.what, "←→ or enter changes it  ·  saved at once"]
         # pad to the widest any row needs, so the box keeps one size while the cursor moves
         wide = max(len(t) for r in rows for t in details(r))
+        self.set_foot = len(out)                         # from here down stays put while the rows scroll
         out += [RULE_LINE] + [[(t.ljust(wide), P(P.grey))] for t in details(row)]
+        if row.sec == "web":                             # what the service is doing now, and where to open it
+            ws = self.st.get("web_state") or {}
+            st = ws.get("state", "unknown")
+            say = {"active": ("running · " + ws.get("url", ""), GREEN), "inactive": ("stopped", P.grey),
+                   "failed": ("failed: journalctl --user -u tern-web", RED),
+                   "activating": ("starting… (stuck here: the port may be taken; journalctl --user -u tern-web)", YELLOW),
+                   "deactivating": ("stopping…", YELLOW)}.get(st, (st, P.grey))
+            out += [[("web screen now: ", P(WHITE)), (say[0], P(say[1], bold=True))]]
+        else:                                            # the same height on every row
+            out += [[("", 0)]]
         if self.st.get("profile_wait"):
             out += [[("Waiting for the engine to send this profile's settings…", P(YELLOW, bold=True))]]
         elif "settings" not in self.st or any(r.key not in self.st["settings"] for r in rows if r.sec != "screen"):
@@ -2111,8 +2149,9 @@ class Screen:
         self.drawing = ""
         self.footer(H, W)
         if self.overlay == "settings":
-            self.draw_overlay(self.settings_lines(), "settings", self.P.border("contract"),
-                              hints=[("↑↓", " pick"), ("←→", " step"), ("enter", " type"), ("esc", " close")])
+            lines = self.settings_lines()
+            self.draw_overlay(lines, "settings", self.P.border("contract"), pin=len(lines) - self.set_foot,
+                              follow=self.set_line, hints=[("↑↓", " pick"), ("←→", " step"), ("enter", " type"), ("esc", " close")])
         elif self.overlay:
             lines = self.help_lines(W) if self.overlay == "help" else self.gate_lines()
             self.draw_overlay(lines, self.overlay, self.P.border("contract"), scroll=True)

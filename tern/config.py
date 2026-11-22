@@ -53,6 +53,15 @@ class Gate:
 
 
 @dataclass
+class Web:
+    """tern web, the screen in a browser (view only). tern-web.service reads these (tern web --config);
+    the engine restarts or stops it when one changes from the settings box."""
+    enabled: bool = True
+    port: int = 8787
+    network: bool = False          # on: every address (needs its login and HTTPS); off: this computer only
+
+
+@dataclass
 class Config:
     paper_capital: float = 1_000.0
     taker_fee: float = 0.07        # Kalshi: ceil(0.07 * C * P * (1-P)) per order, to the cent
@@ -61,6 +70,7 @@ class Config:
     live: Live = field(default_factory=Live)
     strategy: Strategy = field(default_factory=Strategy)
     gate: Gate = field(default_factory=Gate)
+    web: Web = field(default_factory=Web)
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -96,6 +106,7 @@ class Config:
         top["live"] = Live(**keep(Live, d.get("live")))
         top["strategy"] = Strategy(**keep(Strategy, d.get("strategy")))
         top["gate"] = Gate(**keep(Gate, d.get("gate")))
+        top["web"] = Web(**keep(Web, d.get("web")))
         return cls(**top)
 
 
@@ -145,6 +156,12 @@ SETTINGS = [
             what="paper P&L after fees the variant in use needs before live may trade it"),
     Setting("", "alerts", "desktop alerts", kind="bool", group="ALERTS",
             what="pop-ups for live orders and settlements, live turning off, errors and the engine stopping"),
+    Setting("web", "enabled", "web screen", kind="bool", group="WEB",
+            what="tern web: this screen in a browser, view only; off stops tern-web.service"),
+    Setting("web", "port", "port", 1024, 65535, 1, kind="n",
+            what="the port tern web listens on; a new one needs sudo ufw allow PORT/tcp (and the router forward)"),
+    Setting("web", "network", "open to the network", kind="bool",
+            what="on: other computers can reach it (login + HTTPS required); off: this computer only"),
 ]
 
 
