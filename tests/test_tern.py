@@ -1222,6 +1222,21 @@ class Web(unittest.TestCase):
             self.assertEqual(f["prefs"]["hidden"], ["contract"])
             self.assertEqual(len(f["rows"]), 40)
 
+    def test_settings_box_opens_but_changes_nothing(self):
+        from tern.web import Hub
+        with tempfile.TemporaryDirectory() as d:
+            self.status(d)
+            hub = Hub(d)
+            sid = hub.handle({"w": 120, "h": 40})["sid"]
+            for k in ("e", "ArrowDown", "ArrowRight", "ArrowLeft", "Enter", "5", "Enter", " "):
+                f = hub.handle({"sid": sid, "w": 120, "h": 40, "key": k})
+            text = "\n".join("".join(t for t, _ in r) for r in f["rows"])
+            self.assertIn("settings", text)                                    # the box is up
+            self.assertIn("view only", text)
+            self.assertNotIn("saved at once", text)
+            self.assertEqual(os.listdir(os.path.join(d, "cmd")), [])          # nothing reached the engine
+            self.assertFalse(os.path.exists(os.path.join(d, "dash.json")))
+
     def test_engine_sends_history_for_strikes_web_viewers_picked(self):
         import collections, json, time
         from tern.engine import Desk

@@ -3,7 +3,8 @@
 The browser does not draw its own copy of the dash. Each browser tab gets a real dash.Screen
 drawing into a virtual terminal here; the cells go to the page, which paints them like foot does.
 So the web view always looks and behaves like the screen, minus the keys that change anything:
-no quit, engine stop or start, paper reset, live, rule coins or picking a variant. It sends
+no quit, engine stop or start, paper reset, live, rule coins or picking a variant. The settings
+box (e) opens and its cursor moves, but nothing in it changes. It sends
 no command files and never writes the screen's own view.json or dash.json. Its viewers' coins
 and strikes go to view-web.json, so the engine also sends those strikes' contract history.
 """
@@ -42,7 +43,7 @@ NAMED = {"ArrowUp": curses.KEY_UP, "ArrowDown": curses.KEY_DOWN, "ArrowLeft": cu
          "Home": curses.KEY_HOME, "End": curses.KEY_END, "Tab": 9, "BackTab": curses.KEY_BTAB,
          "Enter": 10, "Escape": 27, "Backspace": 127}
 # keys that only change what this viewer sees: they reach the screen; everything else stops here
-VIEW_KEYS = set("123456jktTcvwgh?") | {"ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "PageUp", "PageDown",
+VIEW_KEYS = set("123456jktTcvwgeh?") | {"ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "PageUp", "PageDown",
                                        "Tab", "BackTab"}
 CONTROL_KEYS = {"q": "quit", "Q": "quit", "s": "engine start/stop", "R": "paper reset", "L": "live",
                 "r": "rule coins", "Enter": "picking a variant"}
@@ -185,6 +186,17 @@ class WebScreen(dash.Screen):
 
     def send(self, **cmd) -> None:               # unreachable: every key that sends is filtered out
         self.say("view only: the web screen sends no commands")
+
+    def send_setting(self, row, value) -> None:  # the settings box shows, but changes nothing here
+        self.say("view only: settings are changed from the screen in the terminal")
+
+    def settings_lines(self) -> list:
+        out = super().settings_lines()
+        for line in out:                         # its "saved at once" hints don't hold here
+            if isinstance(line, list) and len(line) == 1 and "saved at once" in line[0][0]:
+                t = line[0][0]
+                line[0] = (t.replace("saved at once", "view only here").ljust(len(t)), line[0][1])
+        return out
 
     def read(self) -> None:
         self.alive, self.alive_at = self.hub.alive(), time.time()
