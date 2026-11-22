@@ -1381,7 +1381,7 @@ class ProfileCommands(unittest.TestCase):
             self.assertEqual(k.view["profile"], a.id)
             k._command({"op": "profile_delete", "id": a.id})
             self.view(k, profile=a.id)
-            self.assertIsNone(k.view["profile"])
+            self.assertIsNone(k.view.get("profile"))
             self.assertEqual(self.status(k)["pviews"], {})
 
 
@@ -1607,14 +1607,14 @@ class Web(unittest.TestCase):
             with open(os.path.join(k.fast, "view-web.json"), "w") as fh:
                 json.dump({"series": ["KXETHD", "KXFAKED"], "tickers": [self.T]}, fh)
             k._read_view()
-            self.assertEqual(k.web, {"series": ["KXETHD"], "tickers": [self.T]})
+            self.assertEqual(k.web, {"series": ["KXETHD"], "tickers": [self.T], "profiles": []})
             k._status()
             with open(os.path.join(k.fast, "status.json")) as fh:
                 self.assertIn(self.T, json.load(fh)["hist"])
             old = time.time() - 60                                             # tern web gone: stop serving it
             os.utime(os.path.join(k.fast, "view-web.json"), (old, old))
             k._read_view()
-            self.assertEqual(k.web, {"series": [], "tickers": []})
+            self.assertEqual(k.web, {"series": [], "tickers": [], "profiles": []})
 
 
 class WebLogin(unittest.TestCase):

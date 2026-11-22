@@ -995,7 +995,7 @@ class Desk:
             to = profmod.delete(self.runtime, p.id)
             self.profiles = [x for x in self.profiles if x is not p]
             if self.view.get("profile") == p.id:
-                self.view = {**self.view, "profile": None}
+                self.view = {k: v for k, v in self.view.items() if k != "profile"}
             return f"{p.name} deleted: kept in {os.path.relpath(to, self.runtime)}"
         if op == "profile_enable":
             p.set("enabled", bool(c.get("on")))
@@ -1138,8 +1138,8 @@ class Desk:
         except (OSError, json.JSONDecodeError):
             pass
         ids = {p.id for p in self.profiles}
-        if self.view.get("profile") not in ids:  # profile 1, or one since deleted: profile 1
-            self.view = {**self.view, "profile": None}
+        if "profile" in self.view and self.view["profile"] not in ids:   # one since deleted: back to profile 1
+            self.view = {k: v for k, v in self.view.items() if k != "profile"}
         self.web = {"series": [], "tickers": [], "profiles": []}
         try:                                        # tern web: the coins and strikes its viewers have on screen
             path = os.path.join(self.fast, "view-web.json")
