@@ -11,6 +11,7 @@ import re
 import textwrap
 import subprocess
 import sys
+import threading
 import time
 import uuid
 
@@ -380,7 +381,7 @@ HELP_KEYS = [
                ("w", "watch the highlighted variant: book,"),
                ("", "equity and band as if it traded (view only)"),
                ("o", "reports: every record, live and saved"),
-               ("", "(←→ ↑↓ move, PgUp PgDn page, esc closes)"),
+               ("", "(←→ ↑↓ move, PgUp PgDn page, s saves one)"),
                ("t T", "next / previous of {themes} color themes")])],
     [("trade", [("enter", "use the highlighted variant (page 2)"),
                 ("n", "new variant: a copy of the highlighted one"),
@@ -405,7 +406,7 @@ HELP_KEYS = [
                    ("", "its own name"),
                    ("e", "while viewing one: its variant, rule and"),
                    ("", "size; every change logged (tern report)")]),
-     ("engine", [("s", "stop (asks y) / start the engine"),
+     ("engine", [("S", "stop (asks y) / start the engine"),
                  ("h ?", "this help"),
                  ("q", "close the screen; the engine keeps going")]),
      ("settings", [("↑↓", "pick a setting"),
@@ -426,6 +427,7 @@ HELP_CLI = [
     ("tern report", "every variant's record, deleted and retired ones too (o shows it here)"),
     ("tern report --profile NAME", "one profile's variants and their rules"),
     ("tern report --profiles", "every profile's book side by side"),
+    ("tern report --save", "save a summary: status, variants, profiles (report-timer: weekly)"),
     ("tern status", "a plain-text summary"),
     ("tern live-check", "test the Kalshi key: balance and positions, no orders"),
     ("systemctl --user status tern", "the engine's service"),
@@ -464,13 +466,13 @@ WANT_W = {"ladder": 56, "variants": 80, "profiles": 70}   # the width a box need
 SUPER = "¹²³⁴⁵⁶⁷⁸⁹"
 LEFT_MIN = {"ladder": 56, "variants": 56, "profiles": 56}   # the ladder's columns need this much before its bar has any room
 SCROLLS = ["ladder", "variants", "profiles", "book", "log"]   # the boxes ←→ focus and ↑↓ scroll
-ORPHAN_DROP = ["t", "c", "R", "L", "v", "r", "", "h", "s", "g", "q", "tab"]   # off-screen boxes' hints, first dropped first
+ORPHAN_DROP = ["t", "c", "R", "L", "v", "r", "", "h", "S", "g", "q", "tab"]   # off-screen boxes' hints, first dropped first
 COMFY_H = {"spot": 10, "contract": 10, "ladder": 12, "book": 12, "equity": 8, "log": 8}   # sizes the merged view needs
 
 
 # the reports screen (o): the list's width, and the lines of a report that are a table's header, a table's row
 # (name, then whole-number columns and a P&L) and a name with what it is
-REPORT_LIST_W = 24
+REPORT_LIST_W = 28
 REPORT_HEAD = re.compile(r"^\s*(?:variant|profile)\s.*\bhours\s+entries\b")
 REPORT_ROW = re.compile(r"^(\s*)(\S.*?)(\s+\d+\s+\d+(?:\s+\d+)?\s+[+-]\d+\.\d\d\s+\S.*)$")
 REPORT_NAME = re.compile(r"^(\s*)([a-z0-9][\w-]*(?: \([^)]*\))?)(: )(.+)$")
@@ -499,7 +501,7 @@ PANEL_KEYS = {
                        ("c", "hart " + s.chart)],
     "book": lambda s: [("v", "iew"), ("L", "ive"), ("R", "eset")],
     "contract": lambda s: [("t", "heme ", s.P.name)],
-    "log": lambda s: [("g", "ate"), ("", "s", "e", "ttings"), ("", "rep", "o", "rts"), ("s", "top" if s.alive else "tart"), ("h", "elp"), ("q", "uit")],
+    "log": lambda s: [("g", "ate"), ("", "s", "e", "ttings"), ("", "rep", "o", "rts"), ("S", "top" if s.alive else "tart"), ("h", "elp"), ("q", "uit")],
 }
 
 
@@ -585,6 +587,7 @@ class Screen:
         self.rep_top = 0                       # first row of the list shown
         self.rep_off, self.rep_room, self.rep_len = 0, 1, 0   # the report's scroll: as ov_off, ov_room, ov_len
         self.rep_rows: dict[int, str] = {}     # screen row -> the report listed there, as last drawn
+        self.rep_saving = False                # s: a report is being saved, on a thread
         self.rep_drawn: tuple = ()             # (what it was made from, its colored lines)
         try:
             with open(self.prefs_path) as fh:
@@ -627,7 +630,7 @@ class Screen:
                 if self.var_new and self.var_new[0] == cid and ": new variant " not in res:
                     self.var_new = None                  # refused
             elif time.time() - self.pending[cid] > 15:
-                self.say("no answer from the engine (is it running? press s)"); self.pending.pop(cid)
+                self.say("no answer from the engine (is it running? press S)"); self.pending.pop(cid)
 
     def apply_profile(self) -> None:
         """self.st from self.raw: as is for profile 1, through profile_overlay for another. A profile that is
@@ -1036,9 +1039,9 @@ class Screen:
             stale.append(f"ladder {ago(ev['age'])}" + (" old" if lvl < 2 else ""))
         if stale:
             left.append(("stale", [(" · ".join(stale) + ("" if lvl < 2 else " old"), P(YELLOW, bold=True))]))
-        state = "ok" if ok else ("down — s starts it" if down else "starting" if st.get("stopped") or not hb else "stale")
+        state = "ok" if ok else ("down — S starts it" if down else "starting" if st.get("stopped") or not hb else "stale")
         if lvl >= 2 and down:
-            state = "down (s)"
+            state = "down (S)"
         word = "engine " if lvl < 3 else ""
         clk = time.strftime("%H:%M:%S") if lvl < 1 else time.strftime("%H:%M") if lvl < 3 else ""
         right = [(f" {'●' if ok else '○'} {word}{state}" + (f"  {clk} " if clk else " "), P(GREEN if ok else RED))]
@@ -2251,7 +2254,7 @@ class Screen:
         self.drawing = "report"
         self.rects["report"] = (0, x, h, w)
         self.box(0, x, h, w, cur.label, P.border("ladder"), "",
-                 [("←→", " box"), ("↑↓", " scroll" if self.rep_focus == "report" else " pick"), ("esc", " close")])
+                 ([] if cur.saved else [("s", "ave")]) + [("←→", " box"), ("↑↓", " scroll" if self.rep_focus == "report" else " pick"), ("esc", " close")])
         self.drawing = ""
         got = reports.FEED.get(self.runtime, cur.id, w - 4)
         if got is None:
@@ -2270,10 +2273,8 @@ class Screen:
                 self.put(1 + j, cx, text, attr); cx += len(text)
         self.clip = saved
         # the bottom border: where it comes from, and the place in it
-        src = (f"runtime/{cur.id[len('saved:'):]}" if cur.saved else
-               "tern report" + ({"desk": "", "profiles": " --profiles", "deleted": " --deleted"}.get(cur.id)
-                                if ":" not in cur.id else f" --profile {cur.id[len('profile:'):]}") +
-               time.strftime(" · worked out %H:%M:%S", time.localtime(got.at)))
+        src = f"runtime/{cur.id[len('saved:'):]}" if cur.saved else \
+            reports.command(cur.id) + time.strftime(" · worked out %H:%M:%S", time.localtime(got.at))
         self.put(h - 1, x + 3, f" {src} ", P(P.c("ticker")))
         if off > 0:
             self.put(1, x + w - 1, "▲", P(YELLOW))
@@ -2330,10 +2331,43 @@ class Screen:
             self.scroll(self.rep_focus, -10 ** 6 if ch == curses.KEY_HOME else 10 ** 6)
         elif ch in (curses.KEY_LEFT, curses.KEY_RIGHT, 10, 13, curses.KEY_ENTER):
             self.rep_focus = "reports" if ch == curses.KEY_LEFT else "report"
+        elif ch == ord("s"):
+            self.save_report()
+        elif ch == ord("S"):
+            self.engine_key()
         elif ch in (9, curses.KEY_BTAB):
             self.rep_focus = "report" if self.rep_focus == "reports" else "reports"
         elif ch in (ord("t"), ord("T")):
             self.next_theme(-1 if ch == ord("T") else 1)
+
+    def engine_key(self) -> None:
+        """S: stop the engine (asks first), or start it."""
+        if engine_alive(self.runtime):
+            self.modal = {"type": "stop", "title": "stop engine", "lines": [
+                "Stop the engine? Nothing trades, paper or live, until it starts again",
+                "(S here, or reopening the dash). It saves its state before it exits.", "",
+                "y stops · any other key keeps it running"]}
+        else:
+            self.say(start_engine(self.runtime)); self.alive_at = 0
+
+    def save_report(self) -> None:
+        """Keep the live report shown as a file. On a thread: it is worked out again, whole."""
+        rid = self.rep_sel
+        if rid.startswith("saved:"):
+            self.say(f"already saved: runtime/{rid[len('saved:'):]}"); return
+        if self.rep_saving:
+            return
+        self.rep_saving = True
+        self.say("saving the report…")
+
+        def work() -> None:
+            try:
+                msg = f"saved runtime/{reports.save(self.runtime, rid)}"
+            except Exception as ex:
+                msg = f"not saved: {getattr(ex, 'strerror', None) or ex or type(ex).__name__}"
+            self.rep_saving, self.rep_at = False, 0.0     # the list is looked up again
+            self.say(msg)
+        threading.Thread(target=work).start()             # not a daemon: closing the screen lets it finish
 
     def next_theme(self, d: int) -> None:
         self.P.set_theme(themes.next_name(self.P.name, d))
@@ -2628,6 +2662,8 @@ class Screen:
         if self.overlay == "reports":
             self.reports_screen(H, W)
             self.footer(H, W)
+            if self.modal:                           # S: stop the engine?
+                self.draw_overlay(self.modal["lines"], self.modal["title"], self.modal.get("color", YELLOW))
             self.s.refresh(); return
         boxes = self.layout(H, W)
         view = self.view(H, W)
@@ -2836,14 +2872,10 @@ class Screen:
             self.overlay, self.rep_focus, self.rep_at = "reports", "reports", 0.0
         elif ch == ord("?") or ch == ord("h"):
             self.overlay, self.ov_off = "help", 0
+        elif ch == ord("S"):
+            self.engine_key()
         elif ch == ord("s"):
-            if engine_alive(self.runtime):
-                self.modal = {"type": "stop", "title": "stop engine", "lines": [
-                    "Stop the engine? Nothing trades, paper or live, until it starts again",
-                    "(s here, or reopening the dash). It saves its state before it exits.", "",
-                    "y stops · any other key keeps it running"]}
-            else:
-                self.say(start_engine(self.runtime)); self.alive_at = 0
+            self.say("S stops / starts the engine · s saves a report (o)")
         elif ch == ord("R"):
             if self.not_here():
                 return True

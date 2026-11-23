@@ -8,6 +8,8 @@
                         a profile's variants, split by settings period ("1" or "profile 1": the desk)
   tern report --profiles
                         every profile's book side by side; --deleted: the deleted ones
+  tern report --save    save a summary (status, variants, profiles) as runtime/report-*.txt; o on the screen shows it
+  tern report-timer     write a systemd user timer that does that every Monday at 10:00
   tern live-check       test the Kalshi key: balance and positions, no orders
   tern web [--host H] [--port P] | --config
                         the screen in a browser, view only (default http://localhost:8787/)
@@ -153,6 +155,41 @@ def _web_service(runtime: str, network: bool | None = None) -> int:
     return 0
 
 
+def _report_units(root: str, runtime: str, python: str) -> dict[str, str]:
+    return {"tern-save-report.service": f"""[Unit]
+Description=tern: save a report
+
+[Service]
+Type=oneshot
+WorkingDirectory={root.replace("%", "%%")}
+Environment={_unit_quote("TERN_RUNTIME=" + runtime)}
+ExecStartPre=/usr/bin/test -d {_unit_quote(runtime)}
+ExecStart={_unit_quote(python)} -m tern report --save
+""", "tern-save-report.timer": """[Unit]
+Description=tern: save a report every week
+
+[Timer]
+# If the machine is off then, soon after it is next up.
+OnCalendar=Mon *-*-* 10:00:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+"""}
+
+
+def _report_timer(runtime: str) -> int:
+    unit_dir = os.path.expanduser("~/.config/systemd/user")
+    os.makedirs(unit_dir, exist_ok=True)
+    for name, text in _report_units(os.path.realpath(cfgmod.ROOT), os.path.realpath(runtime), sys.executable).items():
+        with open(os.path.join(unit_dir, name), "w") as fh:
+            fh.write(text)
+        print(f"Wrote {os.path.join(unit_dir, name)}")
+    print("\nStart it:\n  systemctl --user daemon-reload\n  systemctl --user enable --now tern-save-report.timer\n\n"
+          "It saves a report every Monday at 10:00; o on the screen lists them.")
+    return 0
+
+
 def _web_password() -> int:
     import getpass, secrets
     from . import webauth
@@ -215,8 +252,18 @@ def _report(runtime: str, args: list[str]) -> int:
         except LookupError as ex:
             print(ex.args[0])
             return 2
+    elif args == ["--save"]:
+        import contextlib
+        import io
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            _status(runtime)
+        name = reports.save_text(runtime, "summary", "tern report --save", [*buf.getvalue().rstrip().split("\n"), "",
+                                 *reports.desk(runtime), "", *reports.side_by_side(runtime)])
+        print(f"saved {os.path.join(runtime, name)}")
+        return 0
     else:
-        print("tern report [--profile NAME | --profiles | --deleted]")
+        print("tern report [--profile NAME | --profiles | --deleted | --save]")
         return 2
     print("\n".join(out))
     return 0
@@ -237,6 +284,8 @@ def main(argv: list[str]) -> int:
         return _status(runtime)
     if cmd == "report":
         return _report(runtime, argv[1:])
+    if cmd == "report-timer":
+        return _report_timer(runtime)
     if cmd == "web":
         from .web import serve
         from .webctl import host

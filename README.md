@@ -10,6 +10,7 @@ It paper trades from the start and sends no real order until you arm live.
 - **Paper and live books.** Live is off until you arm it, and has its own caps, gate and daily loss limit.
 - **Variants.** Ten built-in versions of the rule run side by side on paper, each with its own record. Make your own from the screen.
 - **Profiles.** Whole copies of the bot with their own variants and settings, compared on the same prices.
+- **Reports.** Every variant's and profile's record on one screen, live or saved, with a weekly one if you want it.
 - **Runs unattended.** The engine is separate from the screen and can run as a systemd service.
 - **Web screen.** The same screen in a browser, view only.
 - **54 color themes.**
@@ -35,6 +36,8 @@ engine keeps running.
 | `python3 -m tern report` | profile 1's variants side by side, built in and its own |
 | `python3 -m tern report --profiles` | every profile's book side by side (`--deleted`: the deleted ones) |
 | `python3 -m tern report --profile NAME` | one profile's variants, by settings period |
+| `python3 -m tern report --save` | saves a summary (status, variants, profiles) as `runtime/report-*.txt` |
+| `python3 -m tern report-timer` | writes a systemd user timer that saves one every Monday at 10:00 |
 | `python3 -m tern live-check` | tests your Kalshi key: balance and positions, no orders |
 | `python3 -m tern service` | writes a systemd user service that keeps the engine running |
 | `python3 -m tern web` | the screen in a browser: http://localhost:8787/ |
@@ -285,7 +288,8 @@ Requests are signed (Ed25519 or RSA-PSS) in pure Python, checked against openssl
 | `o` | reports (below) |
 | `L` | arm / disarm live |
 | `R` | reset the paper book (asks `y`) |
-| `s` | stop (asks `y`) / start the engine |
+| `S` | stop (asks `y`) / start the engine |
+| `s` | in the reports: save the one shown |
 | `h` or `?` | help |
 | `q` | close the screen; the engine keeps running |
 | `space` `n` `d` `D` | profiles box: on/off, new, live trades its rule, delete |
@@ -299,11 +303,19 @@ Requests are signed (Ed25519 or RSA-PSS) in pure Python, checked against openssl
 - **LIVE:** what `tern report` prints, worked out from the records as they stand: profile 1's variants, every
   profile's book side by side, each profile by settings period, and the deleted profiles. A report is worked out
   again when its records change; its bottom border says when it was.
-- **SAVED:** the files named `report-*.txt` in `runtime/`, newest first, shown as written. To save one:
-  `python3 -m tern report > runtime/report-$(date +%F).txt`.
+- **SAVED:** the files named `report-*.txt` in `runtime/`, newest first, shown as written. `s` saves the live report
+  on screen, `python3 -m tern report --save` a summary, and the weekly timer does that by itself:
+
+```
+python3 -m tern report-timer
+systemctl --user daemon-reload
+systemctl --user enable --now tern-save-report.timer
+```
 
 `←→` moves between the list and the report, `↑↓` picks or scrolls, `PgUp` `PgDn` page the report, and `esc` closes
-them. Reading one changes nothing, so the web screen has them too.
+them. Reading one changes nothing, so the web screen has them too, without `s`.
+
+<img width="1364" height="668" alt="The reports: the list, and a profile's variants by settings period" src="docs/screenshots/13-reports.png" />
 
 <img width="1364" height="668" alt="The help" src="docs/screenshots/08-help.png" />
 
@@ -324,7 +336,7 @@ chart span, `tab`/shift+tab coins, `t`/`T` themes, `v` paper/live, `w` watch a v
 help, `↑↓ ←→` and the wheel. Clicking a key on a box border, a box's number, or a ladder or variant row
 does what the key would; on a phone, drag to scroll.
 
-It is view only. `q`, `s`, `R`, `L`, `r`, `N`, `E` and `enter` on a variant do nothing there, nor do `space`,
+It is view only. `q`, `S`, `s`, `R`, `L`, `r`, `N`, `E` and `enter` on a variant do nothing there, nor do `space`,
 `n`, `d` and `D` in the variants and profiles boxes, and their hints are not drawn. `enter` on a profile views it, and the
 settings box (`e`) shows the settings but changes only what that browser's log box shows.
 The web screen writes no command files and never touches the terminal's `dash.json` or `view.json`: each browser keeps its own settings. It writes `view-web.json` (in the same tmpfs folder)
@@ -414,7 +426,7 @@ The major ones, newest first.
 | Date | Change |
 |---|---|
 | 2026-11-23 | **Your own variants.** Make, change and delete them from the screen (`n`, `E`, `D`), in each profile. Changing a rule makes a new variant with its own record; the built-in ones never change. Profile 1's settings show its variant and rule. Profiles that had changed their rule are converted (see Profiles). |
-| 2026-11-23 | **Reports screen** (`o`): what `tern report` prints, from the records as they stand, and the saved `report-*.txt` files. |
+| 2026-11-23 | **Reports screen** (`o`): what `tern report` prints, from the records as they stand, and the saved `report-*.txt` files. `s` there saves one, and `tern report-timer` sets up a weekly one. `S` (was `s`) stops and starts the engine. |
 | 2026-11-23 | MIT license; README rewritten for anyone running it. |
 | 2026-11-22 | **Any profile can go live** (`d`), past its own gate on its own record. |
 | 2026-11-22 | Two pages (`p`), and a box's number zooms it to the whole screen. Hiding boxes is gone. |

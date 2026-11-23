@@ -3381,7 +3381,7 @@ class Reports(unittest.TestCase):
             self.cmds(); self.press("o")
             self.assertEqual(scr.overlay, "reports")
             self.until("base: the rule")
-            for what in ("LIVE", "SAVED", "variants", "side by side", "profile 1", "profile 2", "deleted", "2026-11-23"):
+            for what in ("LIVE", "SAVED", "variants", "profiles", "profile 1", "profile 2", "deleted", "2026-11-23"):
                 self.assertIn(what, self.text())
             self.assertEqual("".join(scr.s.ch[39])[:20], status[:20])          # the status line stays
             for key in (27, "o", "q"):
@@ -3487,6 +3487,132 @@ class Reports(unittest.TestCase):
             self.assertIsNone(hub.sessions[sid][0].overlay)
             self.assertEqual(os.listdir(os.path.join(d, "cmd")), [])
             self.assertEqual(sorted(os.listdir(d)), ["cmd", "report-2026-11-23.txt"])
+
+    def test_save_writes_a_new_file_each_time_and_lists_it(self):
+        import time
+        from tern import reports
+        with tempfile.TemporaryDirectory() as d:
+            p = self.profile(self.desk(d), "a name that is forty characters long!!")
+            now = time.mktime((2026, 11, 30, 9, 5, 0, 0, 0, -1))
+            one = reports.save(d, "profiles", now=now)
+            two = reports.save(d, "profiles", now=now)
+            self.assertEqual([one, two], ["report-2026-11-30-0905-profiles.txt", "report-2026-11-30-0905-profiles-2.txt"])
+            got = reports.lines(d, "saved:" + one)
+            self.assertEqual(got[:2], ["2026-11-30 09:05 · tern report --profiles", ""])
+            self.assertEqual(got[2:], reports.lines(d, "profiles"))            # whole: no names cut to a screen
+            three = reports.save(d, f"profile:{p.id}", now=now + 60)
+            self.save(d, "report-2026-11-30.txt", "x\n")
+            self.save(d, "report-2026-11-23.txt", "x\n")
+            self.assertEqual([r.label for r in reports.index(d) if r.saved],
+                             [f"11-30 09:06 {p.id}", "11-30 09:05 profiles-2", "11-30 09:05 profiles",
+                              "2026-11-30", "2026-11-23"])
+            self.assertFalse([n for n in os.listdir(d) if n.endswith(".tmp")])
+            self.assertEqual(reports.index(d)[5].id, "saved:" + three)
+
+    def test_s_saves_the_report_shown(self):
+        with tempfile.TemporaryDirectory() as d:
+            k, p, scr = self.setup(d)
+            saved = lambda: [n for n in os.listdir(d) if n.startswith("report-")]
+            self.cmds(); self.press("o", self.curses.KEY_DOWN)
+            self.assertIn("─save─", self.text())
+            self.press("s")
+            self.until("saved runtime/report-")
+            [name] = saved()
+            self.assertTrue(name.endswith("-profiles.txt"), name)
+            self.until(f"{name[12:17]} {name[18:20]}:{name[20:22]} profiles ")     # listed, whole
+            self.press(self.curses.KEY_END)
+            self.until("· tern report --profiles")
+            self.press("s")
+            self.assertIn("already saved", self.text())
+            self.assertEqual(saved(), [name])
+            self.assertEqual(self.cmds(), [])
+
+    def test_S_stops_the_engine_and_s_only_saves(self):
+        from unittest import mock
+        from tern import dash
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(dash, "engine_alive", lambda r: True), \
+                mock.patch.object(dash, "stop_engine", lambda *a: "asked to stop"):
+            k, p, scr = self.setup(d)
+            self.cmds(); self.press("s")
+            self.assertIsNone(scr.modal)                                       # s used to stop it: now it says where it went
+            self.assertIn("S stops / starts the engine", self.text())
+            self.press("S")
+            self.assertEqual(scr.modal["type"], "stop")
+            self.press("n")
+            self.press("o", "S")                                               # from the reports too, asking over them
+            self.assertIn("Stop the engine?", self.text())
+            self.press("y")
+            self.assertIn("asked to stop", self.text())
+            self.assertEqual((scr.overlay, self.cmds()), ("reports", []))
+
+    def test_a_save_that_fails_says_so(self):
+        from unittest import mock
+        from tern import reports
+        with tempfile.TemporaryDirectory() as d:
+            k, p, scr = self.setup(d)
+            self.press("o")
+            with mock.patch.object(reports, "lines", side_effect=OSError(28, "No space left on device")):
+                self.press("s")
+                self.until("not saved: No space left on device")
+            self.assertFalse(scr.rep_saving)
+            self.assertEqual([n for n in os.listdir(d) if n.startswith("report-")], [])
+
+    def test_the_web_never_saves(self):
+        from tern.web import Hub
+        with tempfile.TemporaryDirectory() as d:
+            Web.status(self, d)
+            hub = Hub(d)
+            sid = hub.handle({"w": 120, "h": 40})["sid"]
+            go = lambda **req: "\n".join("".join(t for t, _ in r) for r in hub.handle({"sid": sid, "w": 120, "h": 40, **req})["rows"])
+            self.assertNotIn("─save─", go(key="o"))
+            self.assertIn("view only", go(key="s"))
+            self.assertIn("view only", go(key="S"))                            # nor stops the engine from in here
+            self.assertIsNone(hub.sessions[sid][0].modal)
+            go(key="Escape")
+            for k in "sS":
+                self.assertIn("view only", go(key=k))
+                self.assertIsNone(hub.sessions[sid][0].modal)
+                hub.sessions[sid][0].flash = ""
+            self.assertEqual(os.listdir(d), ["cmd"])
+
+    def test_report_save_on_the_command_line(self):
+        import contextlib, io
+        from unittest import mock
+        from tern import __main__ as cli, config as cfgmod, reports
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(cfgmod, "RUNTIME", d):
+            k = self.desk(d); k._status()
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                self.assertEqual(cli.main(["report", "--save"]), 0)
+            [name] = [n for n in os.listdir(d) if n.startswith("report-")]
+            self.assertIn(name, out.getvalue())
+            self.assertTrue(name.endswith("-summary.txt"), name)
+            text = "\n".join(reports.lines(d, "saved:" + name))
+            for what in ("mode paper", "paper: equity", "base: the rule", "each profile's book"):
+                self.assertIn(what, text)
+
+    def test_report_timer_writes_the_units(self):
+        import contextlib, io
+        from unittest import mock
+        from tern import __main__ as cli, config as cfgmod
+        with tempfile.TemporaryDirectory() as home, mock.patch.dict(os.environ, {"HOME": home}), \
+                mock.patch.object(cfgmod, "RUNTIME", "/r s/100%"):
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                self.assertEqual(cli.main(["report-timer"]), 0)
+            u = os.path.join(home, ".config", "systemd", "user")
+            self.assertEqual(sorted(os.listdir(u)), ["tern-save-report.service", "tern-save-report.timer"])
+            with open(os.path.join(u, "tern-save-report.service")) as fh:
+                svc = fh.read()
+            with open(os.path.join(u, "tern-save-report.timer")) as fh:
+                tim = fh.read()
+            self.assertIn("-m tern report --save", svc)
+            self.assertIn('Environment="TERN_RUNTIME=/r s/100%%"', svc)
+            self.assertIn('ExecStartPre=/usr/bin/test -d "/r s/100%%"', svc)
+            self.assertIn("Type=oneshot", svc)
+            self.assertIn("OnCalendar=Mon *-*-* 10:00:00", tim)
+            self.assertIn("Persistent=true", tim)
+            self.assertIn("systemctl --user enable --now tern-save-report.timer", out.getvalue())
 
     def test_the_hint_and_the_help_name_the_key(self):
         with tempfile.TemporaryDirectory() as d:

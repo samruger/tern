@@ -2,7 +2,8 @@
 
 Live reports are worked out from the records each time: profile 1's variants, every profile's book side by side,
 one profile by settings period, the deleted profiles. Saved ones are the runtime folder's report-*.txt, shown as
-written. Reading a report changes nothing: no record, setting or profile folder is written.
+written; save() makes one (s on the screen, tern report --save, the weekly timer). Reading a report changes
+nothing: no record, setting or profile folder is written.
 """
 
 from __future__ import annotations
@@ -21,6 +22,7 @@ from .shadow import DESC, ORDER, RETIRED, Shadow, desc_of, table
 from .variants import describe
 
 SAVED = re.compile(r"^report-([^/\0]+)\.txt$")       # a saved report's file name in the runtime folder
+SAVED_AT = re.compile(r"^\d{4}-(\d\d-\d\d)-(\d\d)(\d\d)-(.+)$")   # what save() puts in it: day, time, which report
 SAVED_MAX = 1_000_000                               # bytes of one that are shown
 
 
@@ -174,7 +176,7 @@ class Entry:
 
 def index(runtime: str) -> list[Entry]:
     """Every report there is: the live ones, then the saved ones, newest first."""
-    out = [Entry("desk", "variants"), Entry("profiles", "side by side"), Entry("profile:1", profmod.Names(runtime).profile)]
+    out = [Entry("desk", "variants"), Entry("profiles", "profiles"), Entry("profile:1", profmod.Names(runtime).profile)]
     found = []
     for pid in profmod._ids(runtime):
         try:
@@ -184,13 +186,50 @@ def index(runtime: str) -> list[Entry]:
         except (OSError, ValueError, TypeError, KeyError, AttributeError):
             continue
     out += [Entry(f"profile:{pid}", name) for _, pid, name in sorted(found)]
-    out.append(Entry("deleted", "deleted profiles"))
+    out.append(Entry("deleted", "deleted"))
     try:
         names = os.listdir(runtime)
     except OSError:
         names = []
-    out += [Entry(f"saved:{n}", SAVED.match(n)[1], True) for n in sorted(filter(SAVED.match, names), reverse=True)]
-    return out
+    return out + [Entry(f"saved:{n}", SAVED_AT.sub(r"\1 \2:\3 \4", stem), True)
+                  for stem, n in sorted(((SAVED.match(n)[1], n) for n in names if SAVED.match(n)), reverse=True)]
+
+
+def command(rid: str) -> str:
+    """What prints a live report."""
+    kind, _, arg = rid.partition(":")
+    return "tern report" + (f" --profile {arg}" if kind == "profile" else
+                            {"profiles": " --profiles", "deleted": " --deleted"}.get(rid, ""))
+
+
+def save(runtime: str, rid: str, now: float | None = None) -> str:
+    """Keep a live report as it is now; returns its file's name in the runtime folder."""
+    label = next((e.label for e in index(runtime) if e.id == rid and not e.saved), None)
+    if label is None:
+        raise LookupError(f"no report {rid!r}")
+    return save_text(runtime, label, command(rid), lines(runtime, rid), now)
+
+
+def save_text(runtime: str, label: str, source: str, text: list[str], now: float | None = None) -> str:
+    """Write report-<day>-<time>-<label>.txt, never over one that is there; returns its name."""
+    at = dt.datetime.fromtimestamp(time.time() if now is None else now)
+    taken: set[str] = set()
+    while True:
+        tail = profmod.slug(label, taken)
+        name = f"report-{at:%Y-%m-%d-%H%M}-{tail}.txt"
+        path = os.path.join(runtime, name)
+        try:
+            fh = open(path, "x", encoding="utf-8")
+        except FileExistsError:
+            taken.add(tail)
+            continue
+        try:
+            with fh:
+                fh.write("\n".join([f"{at:%Y-%m-%d %H:%M} · {source}", "", *text]) + "\n")
+        except OSError:
+            os.remove(path)                           # no half of a report is left behind
+            raise
+        return name
 
 
 def lines(runtime: str, rid: str, room: int | None = None) -> list[str]:

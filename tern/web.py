@@ -5,7 +5,7 @@ drawing into a virtual terminal here; the cells go to the page, which paints the
 So the web view always looks and behaves like the screen, minus the keys that change anything:
 no quit, engine stop or start, paper reset, live, rule coins or picking a variant. The settings
 box (e) opens and its cursor moves, but only its log filter row changes (for that viewer). Reports (o)
-only read, so they work in full. The
+can be read but not saved. The
 profiles box (page 2) can show any profile; making, renaming, turning on/off or deleting one, its settings,
 and making, changing, renaming or deleting a variant, stay with the terminal. It sends
 no command files and never writes the screen's own view.json or dash.json. Its viewers' coins
@@ -48,11 +48,11 @@ NAMED = {"ArrowUp": curses.KEY_UP, "ArrowDown": curses.KEY_DOWN, "ArrowLeft": cu
 # keys that only change what this viewer sees: they reach the screen; everything else stops here
 VIEW_KEYS = set("12345678pjktTcvwgeoh?") | {"ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "PageUp", "PageDown",
                                        "Tab", "BackTab"}
-CONTROL_KEYS = {"q": "quit", "Q": "quit", "s": "engine start/stop", "R": "paper reset", "L": "live",
+CONTROL_KEYS = {"q": "quit", "Q": "quit", "S": "engine start/stop", "s": "saving a report", "R": "paper reset", "L": "live",
                 "r": "rule coins", "Enter": "picking a variant", "N": "renaming",
                 "n": "making a variant or profile", "E": "changing a rule", "D": "deleting"}
 # border hints whose key changes something: not drawn on the web (the profiles box keeps ⏎: it only views)
-CONTROL_HINTS = {"r", "L", "R", "s", "q", "⏎", "space", "n", "d", "D", "N", "E"}
+CONTROL_HINTS = {"r", "L", "R", "s", "S", "q", "⏎", "space", "n", "d", "D", "N", "E"}
 # what a hint on a border sends when clicked
 HINT_KEY = {"tab": "Tab", "any key": "Escape", "esc": "Escape", "↑↓": None, "←→": None, "⏎": "Enter"}
 PROFILE_ONLY = "view only: profiles are made, changed and deleted from the screen in the terminal"
@@ -206,6 +206,12 @@ class WebScreen(dash.Screen):
             return super().send_setting(row, value)
         self.say(PROFILE_ONLY if self.profile and row.key not in dash.DESK_KEYS else
                  "view only: settings are changed from the screen in the terminal")
+
+    def save_report(self) -> None:
+        self.say("view only: reports are saved from the screen in the terminal")
+
+    def engine_key(self) -> None:                # reached from the reports (o): elsewhere press() stops it
+        self.say("view only: engine start/stop is done from the screen in the terminal")
 
     def settings_lines(self) -> list:
         out = super().settings_lines()
