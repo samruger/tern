@@ -1097,8 +1097,8 @@ class Shadows(unittest.TestCase):
         self.assertIn("{variants}", prose); self.assertIn("{retired}", prose)
         for name in list(shadow.VARIANTS) + list(shadow.RETIRED):
             self.assertNotIn(f"  {name} ", prose)
-        s = dash.Screen.__new__(dash.Screen)                               # help_lines needs only these two
-        s.st, s.P = {}, type("P", (), {"__call__": lambda *a, **k: 0, "c": lambda *a: 0, "grey": 0})()
+        s = dash.Screen.__new__(dash.Screen)                               # help_lines needs only these three
+        s.st, s.raw, s.P = {}, {}, type("P", (), {"__call__": lambda *a, **k: 0, "c": lambda *a: 0, "grey": 0})()
         text = "\n".join(l if isinstance(l, str) else "".join(t for t, _ in l) for l in s.help_lines(120))
         for name, desc in list(shadow.DESC.items()) + list(shadow.RETIRED.items()):
             self.assertIn(f"{name:<8} {desc}", text)
@@ -2641,6 +2641,17 @@ class ScreenVariants(unittest.TestCase):
             self.press("E", self.curses.KEY_RIGHT)
             self.assertIsNone(scr.modal)
             self.assertEqual(len(self.run_cmds()), 1)
+
+    def test_help_says_the_rule_in_use_and_the_variant_keys(self):
+        with tempfile.TemporaryDirectory() as d:
+            k, p, scr = self.setup(d)
+            for key, v in (("band_lo", 0.69), ("band_hi", 0.83), ("cap", 1)):
+                k._command({"op": "variant_rule", "key": key, "value": v})
+            k._command({"op": "rename", "variant": "base-2", "name": "mine"}); self.sync()
+            text = " ".join(" ".join(l if isinstance(l, str) else "".join(t for t, _ in l) for l in scr.help_lines(120)).split())
+            for want in ("With mine, the variant in use", "mid is 69-83c", "1 a strike an hour", "the base rule (75-95c",
+                         "new variant: a copy", "change the highlighted variant's rule", "marked +", "tern report --profile NAME"):
+                self.assertIn(want, text)
 
     def test_off_can_be_stepped_and_typed(self):
         with tempfile.TemporaryDirectory() as d:

@@ -3,7 +3,7 @@
   tern                  the screen (starts the engine in paper if it is not running)
   tern run              run the engine in the foreground
   tern status           a plain-text summary
-  tern report           the rule's variants side by side (shadow records, paper only)
+  tern report           profile 1's variants side by side, built in and its own (shadow records, paper only)
   tern report --profile NAME
                         a profile's variants, split by settings period ("1" or "profile 1": the desk)
   tern report --profiles

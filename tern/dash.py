@@ -288,21 +288,23 @@ HELP = [
     ("", "tern trades Kalshi's hourly crypto above-or-below markets by itself. Every trade comes from the "
          "rule; there are no manual orders. The engine runs on its own (tern.service) and keeps trading "
          "with this screen closed."),
-    ("THE RULE", "Kalshi prices long shots too high and favorites too low. At {minutes} minutes before each "
-                 "hourly close, the rule buys the favorite side of every strike whose mid is {band} (spread "
-                 "{spread}c or less) at the ask, {contracts:g} contracts a strike and at most ${hour_cost:,.0f} an hour, "
-                 "and holds it to settlement. Over 67 days of BTC history it made +0.6c a contract on data it "
-                 "was not chosen on."),
-    ("VARIANTS", "Each variant runs on paper side by side with its own record and real fees, written down "
-                 "before it saw any data:\n"
+    ("THE RULE", "Kalshi prices long shots too high and favorites too low. With {variant}, the variant in use, the "
+                 "rule enters at {minutes} minutes before each "
+                 "hourly close: it buys the favorite side of every strike whose mid is {band} (spread "
+                 "{spread}c or less) at the ask, {contracts:g} contracts a strike and at most ${hour_cost:,.0f} an hour "
+                 "a coin ({rule_coins}){caps}, and holds it to settlement. Over 67 days of BTC history the base rule "
+                 "(75-95c, 25 20 15 10 minutes, 2c) made +0.6c a contract on data it was not chosen on."),
+    ("VARIANTS", "Each variant is a whole rule and runs on paper side by side with the others, with its own record and "
+                 "real fees. The built-in ones:\n"
                  "{variants}\n"
                  "The one marked ● in the variants box (page 2: p) is what the paper book trades, and live too once it "
                  "passes the gate. Highlight another with ↑↓ and press enter to switch; while live is on or armed "
                  "you type \"live\" to confirm. Open positions ride to settlement.\n"
                  "Make your own, marked +, in any profile: (n) in the variants box copies the highlighted one, (E) changes "
-                 "its rule, (D) deletes it. The built-in ones never change, and neither does one that has bought "
+                 "its rule, (D) deletes it, (N) renames it. The built-in ones never change, and neither does one that has bought "
                  "anything: changing its rule (E, or RULE in settings) makes a new variant with an empty record, and "
-                 "the book moves to it if it was the one in use.\n"
+                 "the book moves to it if it was the one in use. One with no entries yet changes in place. At most {max_own} in "
+                 "a profile; a deleted one's record stays on file.\n"
                  "Retired, records kept and listed by (tern report):\n"
                  "{retired}"),
     ("THE GATE", "(g) Live trades the variant in use only after its own paper record has {days:g} days of hours "
@@ -313,8 +315,8 @@ HELP = [
              "Caps: ${risk:,.0f} at risk at once and ${order:,.0f} per order; a loss of ${day:,.0f} since local midnight "
              "turns live off and leaves open positions to settle. Every order is immediate-or-cancel. Kalshi "
              "is the record: its positions overwrite the engine's every 15 seconds. (L) again disarms."),
-    ("COINS", "(tab) and shift+tab step through {coins}. (r) turns the rule on or off for the coin on "
-              "screen. The 67-day test was BTC only, so the rule trades BTC unless you turn others on."),
+    ("COINS", "(tab) and shift+tab step through {coins}. (r) turns the rule in use on or off for the coin on "
+              "screen; that is a rule change, so it can make a new variant. The 67-day test was BTC only, so the rule trades BTC unless you turn others on."),
     ("PAPER", "The paper book starts at ${paper:,.0f}. (R) wipes it and its record of the rule (it asks y "
               "first); the variants' records are kept."),
 ]
@@ -333,7 +335,7 @@ HELP_BOXES = [
     ("⁵", "log", "what the engine did, newest at the bottom; scroll back with ↑↓ (page 2: ⁴)"),
     ("¹", "variants", "page 2: each variant's hours, entries, P&L, ¢ a contract, win rate, t,"),
     ("", "", "  and gate progress (yellow: still short); ● in use; the highlighted"),
-    ("", "", "  one's P&L by hour below"),
+    ("", "", "  one's P&L by hour below; + is one you made in this profile"),
     ("²", "profiles", "page 2: profile 1 (the desk) and the profiles you made, each running"),
     ("", "", "  the built-in variants and its own, at its own size; ● is the one shown"),
     ("³", "equity", "page 2: that book's equity by the minute"),
@@ -390,7 +392,8 @@ HELP_KEYS = [
                 ("R", "reset the paper book (asks y)")]),
      ("profiles", [("enter", "view the highlighted profile (page 2)"),
                    ("space", "turn it on / off"),
-                   ("n", "new profile: profile 1's settings, empty"),
+                   ("n", "new profile: profile 1's settings and the"),
+                   ("", "variant it trades, empty records"),
                    ("d", "live trades its rule (L), past its own"),
                    ("", "gate; asks \"live\" while live is armed"),
                    ("D", "delete it (type delete); kept on disk"),
@@ -405,6 +408,9 @@ HELP_KEYS = [
      ("settings", [("↑↓", "pick a setting"),
                    ("←→  - +", "step it down / up, or flip it"),
                    ("enter 0-9", "type a value, enter saves"),
+                  ("book trades", "the variant in use"),
+                  ("RULE", "its rule; the line says whether a change"),
+                  ("", "goes into it or makes a new variant"),
                    ("esc", "close")]),
      ("in here", [("↑↓ PgUp PgDn", "scroll this help or the gate"),
                   ("Home End", "top / bottom"),
@@ -414,7 +420,9 @@ HELP_KEYS = [
 # command line, shown at the end of the help
 HELP_CLI = [
     ("tern", "this screen (starts the engine in paper if it is down)"),
-    ("tern report", "every variant's record, retired ones too"),
+    ("tern report", "every variant's record, deleted and retired ones too"),
+    ("tern report --profile NAME", "one profile's variants and their rules"),
+    ("tern report --profiles", "every profile's book side by side"),
     ("tern status", "a plain-text summary"),
     ("tern live-check", "test the Kalshi key: balance and positions, no orders"),
     ("systemctl --user status tern", "the engine's service"),
@@ -2047,7 +2055,11 @@ class Screen:
         G = st.get("gate_cfg") or cfgmod.Gate().__dict__
         L = st.get("live_cfg") or cfgmod.Live().__dict__
         mins = [str(m) for m in S.get("minutes", [])]
+        caps = (f", {S['cap']:g} a strike an hour" if S.get("cap") else "") + \
+            (f", no slot after an hour over {S['max_vol']:g} bp a minute" if S.get("max_vol") else "")
         fill = dict(
+            variant=self.vn(S["variant"]) if S.get("variant") else "base", caps=caps, max_own=varmod.MAX_OWN,
+            rule_coins=" ".join(cfgmod.SERIES.get(c, c).split("-")[0] for c in S.get("series") or []),
             minutes=", ".join(mins[:-1]) + " and " + mins[-1] if len(mins) > 1 else "".join(mins),
             band=f"{S['band_lo']*100:.0f}-{S['band_hi']*100:.0f}c", spread=f"{S['max_spread']*100:g}",
             contracts=S["contracts"], hour_cost=S["max_hour_cost"],

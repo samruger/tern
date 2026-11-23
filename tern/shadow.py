@@ -24,7 +24,7 @@ from .variants import VariantSet, as_rule, describe
 
 # name, (band_lo, band_hi, entries per strike per hour, slots, max spread, coins, max vol), what it does.
 # max vol is the coin's realized volatility over the last hour (vol() below, bp a minute); above it a slot is skipped.
-# None takes the configured value (coins: strategy.series, the r key) / no cap. The description is what
+# None takes the value under strategy in config.json (coins: strategy.series) / no cap. The description is what
 # people see; the comment is why the variant exists. A new variant's hours start when the engine
 # restarts with it, so say that date in its description.
 TABLE = [

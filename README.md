@@ -32,7 +32,7 @@ engine keeps running.
 | `python3 -m tern` | the screen; starts the engine in paper if it isn't running |
 | `python3 -m tern run` | the engine in the foreground |
 | `python3 -m tern status` | a plain-text summary |
-| `python3 -m tern report` | the variants side by side |
+| `python3 -m tern report` | profile 1's variants side by side, built in and its own |
 | `python3 -m tern report --profiles` | every profile's book side by side (`--deleted`: the deleted ones) |
 | `python3 -m tern report --profile NAME` | one profile's variants, by settings period |
 | `python3 -m tern live-check` | tests your Kalshi key: balance and positions, no orders |
@@ -49,7 +49,7 @@ At **25, 20, 15 and 10 minutes before each hourly close**, for every strike whos
 favorite side (YES or NO) has its mid between **75¢ and 95¢** and a spread of
 **2¢ or less**, tern buys **5 contracts** of the favorite at the ask
 (immediate-or-cancel) and holds to settlement. It puts at most **$60** into any
-one hour. It trades BTC by default; `r` on another coin's view adds that coin.
+one hour. It trades BTC by default; `r` on another coin's view adds that coin (a rule change, see Variants).
 These are the defaults, under `strategy` in `runtime/config.json`, which is
 re-read every 5 seconds. The screen never changes the band, slots, spread or coins there: a rule
 changed from the screen is a new variant (see Variants).
@@ -79,7 +79,7 @@ restores the page, and `p` restores it and flips.
 | ³ ladder | every strike, high to low: bid, ask, probability bar, spread, volume, your position. ★ marks strikes in the rule's band |
 | ⁴ book | equity, P&L, cash, at risk, fees, the rule's paper record, and open positions. `v` switches between paper and live |
 | ⁵ log | what the engine did (page 2: ⁴) |
-| ¹ variants (page 2) | each variant's record and gate progress, ● on the one in use, and the highlighted one's P&L by hour |
+| ¹ variants (page 2) | each variant's record and gate progress, ● on the one in use, + on the ones you made, and the highlighted one's P&L by hour |
 | ² profiles (page 2) | profile 1 and the profiles you made (see Profiles) |
 | ³ equity (page 2) | that book's equity by the minute |
 
@@ -91,7 +91,7 @@ page 2) with `↑↓` and `enter`. While live is on or armed, switching asks you
 
 | Variant | What it does |
 |---|---|
-| `base` | the rule as configured |
+| `base` | the rule under `strategy` in `config.json` |
 | `band90` | only favorites at 90–95¢ |
 | `cap1` | the rule, but at most one entry per strike per hour |
 | `band80` | only favorites at 80–90¢ |
