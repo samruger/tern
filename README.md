@@ -28,14 +28,11 @@ python3 -m unittest tests.test_tern
 
 ## Where the rule comes from
 
-tern is a trading bot. It might work or it might not, depending on how you configure and use it.
-
 The default rule comes from a study of Kalshi's hourly crypto markets, written up in
 [research/RESEARCH.md](research/RESEARCH.md). On 67 days of BTC history, 80–90¢ favorites won about
 2 points more often than their price said, and 5–20¢ long shots about 2 points less often. The rule
 buys the favorite. It was picked on the first 33 days and made **+0.6¢ a contract after fees on the
-next 34 days**, which it had not seen. Expect about 10 entries an hour; at the default size a favorite
-that fails costs about $4.
+next 34 days**. It makes about 10 entries an hour.
 
 <img width="1364" height="668" alt="tern: variants multi" src="docs/screenshots/03-variants-multi.png" />
 
@@ -47,8 +44,7 @@ favorite side (YES or NO) has its mid between **75¢ and 95¢** and a spread of
 (immediate-or-cancel) and holds to settlement. It puts at most **$60** into any
 one hour. All of this is under `strategy` in `runtime/config.json`, re-read
 every 5 seconds. It trades BTC only by default. `r` on another coin's view adds
-that coin, but ETH was only tested on 14 days and SOL, XRP, BNB and HYPE not at
-all; those four are there to watch.
+that coin. The study covered 67 days of BTC and 14 days of ETH.
 
 <img width="1364" height="668" alt="tern: book multi" src="docs/screenshots/04-book-multi.png" />
 
@@ -84,8 +80,7 @@ once it has. Press `L` again to return to paper. Once live:
 ## Variants
 
 The engine also runs these on paper, side by side, each with its own record
-and real fees. They were written down before seeing any data, so what they
-show after a few weeks is out of sample. `python3 -m tern report`, `g`, or the
+and real fees. `python3 -m tern report`, `g`, or the
 variants box (`p`, page 2) compares them. The paper and live books trade
 whichever one `strategy.variant` names (`base` by default). Pick it in the
 variants box with `↑↓` and `enter`. While live is on or armed, switching asks
@@ -298,9 +293,8 @@ because they are rewritten every second.
 
 <img width="1364" height="668" alt="tern: theme grape" src="docs/screenshots/11-theme-grape.png" />
 
-## Limits
+## Notes
 
-- Run paper for the full gate period before going live.
 - Live order handling follows Kalshi's V2 docs. Signing in has worked with a real
   key, but no real order has been sent yet. Start live with small caps and watch the first fills against
   kalshi.com.
