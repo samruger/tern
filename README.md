@@ -118,7 +118,8 @@ A record is always one rule's. The built-in variants never change from the scree
 has bought anything: changing its rule makes a new variant (`band80-2`) with an empty record, and the
 book moves to it if it was the one in use. A variant with no entries yet changes in place. The gate judges
 each on its own record, and a change to the rule live trades asks you to type `live` while live is armed.
-`r` is a rule change too. At most 12 in each profile, kept in `variants.json` beside its records.
+If the variant a profile was set to is missing from
+`variants.json`, its paper book trades `base` and live waits until you pick one. `r` is a rule change too. At most 12 in each profile, kept in `variants.json` beside its records.
 
 <img width="1364" height="668" alt="E on one of a profile's own variants: its rule" src="docs/screenshots/12-variant-rule.png" />
 
@@ -206,7 +207,7 @@ in the terminal.
 A profile from before variants could be made (2026-11-23) is converted once, when the engine starts: a rule
 it had changed becomes variants of its own with the entries they bought. The one its book traded and
 `base` keep running; the others are kept as deleted. The files as they were stay beside them
-as `*.pre-variants`.
+as `*.pre-variants`, and `variants-upgraded` marks it done.
 
 <img width="1364" height="668" alt="The book box, viewing profile 2" src="docs/screenshots/04-book-multi.png" />
 

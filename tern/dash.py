@@ -529,7 +529,7 @@ class Screen:
         self.edit_var: str | None = None       # E: the variant whose rule the settings box shows (None: the whole box)
         self.edit_id = ""                      # this opening of the settings box, for the engine
         self.set_back: int | None = None       # the settings row to go back to after E
-        self.var_new: tuple | None = None      # n asked for a variant: (the ones there were, when, which profile)
+        self.var_new: tuple | None = None      # n asked for a variant: (the command's id, when, which profile)
         self.set_sent: dict[str, tuple] = {}   # key -> (value, time) sent but not yet in the status
         self.log_filter = "all"                # what the log box shows: LOG_FILTERS
         self.ov_off, self.ov_room, self.ov_len = 0, 1, 0   # its scroll: first line shown, lines that fit, lines in all
@@ -593,6 +593,8 @@ class Screen:
             res = (self.st.get("results") or {}).get(cid)
             if res:
                 self.say(res); self.pending.pop(cid)
+                if self.var_new and self.var_new[0] == cid and ": new variant " not in res:
+                    self.var_new = None                  # refused
             elif time.time() - self.pending[cid] > 15:
                 self.say("no answer from the engine (is it running? press s)"); self.pending.pop(cid)
 
@@ -603,12 +605,13 @@ class Screen:
         if self.profile and isinstance(raw.get("profiles"), list) and \
                 self.profile not in [p.get("id") for p in raw["profiles"]]:
             self.profile, self.watch = None, None
+            self.forget_sent("all")
             self.save_prefs(); self.write_view()
             self.say("that profile is gone: back to profile 1")
         self.st = profile_overlay(raw, self.profile) if self.profile else raw
         if self.var_new:                             # n just made one: highlight it and open its rule
-            had, when, prof = self.var_new
-            new = next((v["name"] for v in self.st.get("variants") or [] if v["name"] not in had), None)
+            cid, when, prof = self.var_new
+            new = next((v["name"] for v in self.st.get("variants") or [] if v.get("by") == cid), None)
             if prof != self.profile or time.time() - when > 10:
                 self.var_new = None
             elif new:
@@ -619,6 +622,7 @@ class Screen:
             self.follow_edit()
             if self.vrow(self.edit_var) is None:     # deleted meanwhile, or another profile is shown
                 self.overlay, self.edit_var = None, None
+                self.forget_sent()
 
     def pname(self) -> str:
         return self.st.get("profile_name") or "profile 1"
@@ -764,7 +768,8 @@ class Screen:
             y += h
         return out
 
-    def send(self, **cmd) -> None:
+    def send(self, **cmd) -> str:
+        """Put a command where the engine picks it up; returns its id (its result comes back under it)."""
         cid = uuid.uuid4().hex[:12]
         cmd["id"] = cid
         cmd["ts"] = time.time()                      # the desk ignores commands older than a few seconds
@@ -773,6 +778,7 @@ class Screen:
             json.dump(cmd, fh)
         os.replace(path + ".tmp", path)
         self.pending[cid] = time.time()
+        return cid
 
     def say(self, msg: str) -> None:
         self.flash, self.flash_at = msg, time.time()
@@ -1308,12 +1314,16 @@ class Screen:
         # The bottom row says what the highlighted variant is doing, when it is the one in use or the one
         # watched. What w and enter do is on the top border; on a short box the row is the last variant's.
         if y + 1 + rows < y + h - 2:
-            if cur["name"] == active and st.get("profile_name"):
+            if cur.get("lost"):
+                self.put(y + h - 2, x + 2, f"{cur['lost']}: paper trades {self.vn(active)}, live waits · enter picks one"[:w - 4],
+                         P(YELLOW, bold=True))
+            elif cur["name"] == active and st.get("profile_name"):
                 tip = f"● {self.vn(active)} is {st['profile_name']}'s book (paper only) · every variant keeps running"
                 self.put(y + h - 2, x + 2, tip[:w - 4], P(GREEN, bold=True))
             elif cur["name"] == active and self.live_pid() != "1":
                 lp = next((p["name"] for p in self.prof_rows() if p.get("live")), "?")
                 tip = f"● {self.vn(active)} is in use on paper · live trades {lp}'s rule (L in profiles)"
+                self.put(y + h - 2, x + 2, tip[:w - 4], P(GREEN, bold=True))
             elif cur["name"] == active:
                 tip = f"● {self.vn(active)} is in use: paper now, live " + ("too" if (cur.get("gate") or {}).get("passed")
                                                                   else "once it passes the gate")
@@ -1344,8 +1354,9 @@ class Screen:
         active = next((v["name"] for v in vs if v.get("active")), None)
         if not cur:
             return
-        if cur["name"] == active:
+        if cur["name"] == active and not cur.get("lost"):
             self.say(f"{self.vn(active)} is already in use"); return
+        self.forget_sent("strategy.variant")
         if self.profile:                             # a profile's book: asks only if it is the live profile, armed
             self.profile_set("strategy.variant", cur["name"], f"its variant {self.vn(active)} → {self.vn(cur['name'])}"); return
         if self.st.get("mode") == "live" or self.st.get("live_enabled"):
@@ -1393,11 +1404,17 @@ class Screen:
         self.overlay, self.set_buf, self.edit_var = "settings", None, variant
         self.set_sub = 0
         self.edit_id = f"{time.time():.3f}-{os.getpid()}"      # what the engine knows this opening of the box by
-        self.set_sent = {k: v for k, v in self.set_sent.items() if not k.startswith("rule.")}
+        self.forget_sent()
         if variant is not None:
             self.set_back, self.set_sel = self.set_sel, 0
         elif self.set_back is not None:                        # back where e's box was left
             self.set_sel, self.set_back = self.set_back, None
+
+    def forget_sent(self, *keys: str) -> None:
+        """Values sent but not yet answered that are no longer about what the screen shows: the rule rows' (the
+        target changed), and keys. With "all", every one that is a profile's."""
+        self.set_sent = {k: v for k, v in self.set_sent.items()
+                         if not k.startswith("rule.") and k not in keys and ("all" not in keys or k in DESK_KEYS)}
 
     def follow_edit(self) -> None:
         """The variant E is on was copied by a change made there: the box goes on with the copy."""
@@ -1423,7 +1440,7 @@ class Screen:
         trades = not self.edit_var or name in (self.active(), self.set_value("strategy.variant"))
         self.live_or_send(cmd, trades, ("rule." + field, value), what)
 
-    def live_or_send(self, cmd: dict, trades: bool, sent: tuple, what: str) -> None:
+    def live_or_send(self, cmd: dict, trades: bool, sent: tuple | None, what: str) -> None:
         if trades and self.armed() and (self.profile or "1") == self.live_pid():
             self.modal = {"type": "livecmd", "title": "LIVE PROFILE" if self.profile else "LIVE IS ARMED", "color": RED,
                           "buf": "", "cmd": cmd, "sent": sent, "kept": f"{what} kept",
@@ -1433,7 +1450,8 @@ class Screen:
                                     "", "type live and press enter (esc cancels):", "> "]}
             return
         self.send(**cmd)
-        self.set_sent[sent[0]] = (sent[1], time.time())
+        if sent:
+            self.set_sent[sent[0]] = (sent[1], time.time())
 
     def in_profiles(self) -> bool:
         return self.shown("profiles")
@@ -1546,6 +1564,7 @@ class Screen:
         if pid == self.profile:
             self.say(f"{cur['name']} is already shown"); return
         self.profile, self.watch, self.var_sel, self.pos_off, self.set_sel = pid, None, None, 0, 0
+        self.forget_sent("all")
         self.save_prefs(); self.write_view(); self.apply_profile()
         self.say(f"viewing {cur['name']}" + (": its book is its variant's record, paper only" if pid else ": the desk"))
 
@@ -2268,7 +2287,9 @@ class Screen:
                 (f"  {why}: a change makes a new variant" if why else "  no entries yet: changes go into it", self.P(self.P.grey))]
 
     def set_choices(self, row) -> list:
-        return list(profmod.SLOT_CHOICES) if row.kind == "slots" else list(cfgmod.SERIES)
+        if row.kind == "coins":
+            return list(cfgmod.SERIES)
+        return sorted({*profmod.SLOT_CHOICES, *(self.set_value(row.key) or [])}, reverse=True)   # and config.json's own
 
     def send_setting(self, row, value) -> None:
         key = row.key
@@ -2291,7 +2312,7 @@ class Screen:
                 self.rule_set(row.name, value, f"{row.label} {self.set_fmt(row, self.set_value(key))} → {self.set_fmt(row, value)}")
             return
         if key == "strategy.variant":
-            self.set_sent = {k: v for k, v in self.set_sent.items() if not k.startswith("rule.")}
+            self.forget_sent()
             if not self.profile:
                 self.live_or_send({"op": "variant", "name": value}, True, (key, value),
                                   f"variant {self.vn(self.active())} → {self.vn(value)}")
@@ -2398,6 +2419,7 @@ class Screen:
             self.overlay = None
             if self.edit_var:
                 self.edit_var = None
+                self.forget_sent()
                 self.set_sel, self.set_back = self.set_back or 0, None
 
     def logs_shown(self) -> list:
@@ -2477,8 +2499,8 @@ class Screen:
             if m.get("type") in ("pname", "pdelete", "rename", "vname"):
                 if ch in (10, 13, curses.KEY_ENTER):
                     if m["type"] == "vname":
-                        self.var_new = ({v["name"] for v in self.st.get("variants") or []}, time.time(), self.profile)
-                        self.send(op="variant_new", profile=self.profile or "1", name=m["buf"].strip(), **{"from": m["from"]})
+                        cid = self.send(op="variant_new", profile=self.profile or "1", name=m["buf"].strip(), **{"from": m["from"]})
+                        self.var_new = (cid, time.time(), self.profile) if cid else None
                     elif m["type"] == "pname":
                         self.send(op="profile_new", name=m["buf"].strip())
                     elif m["type"] == "rename":
@@ -2594,13 +2616,16 @@ class Screen:
             self.series = order[(order.index(self.series) + step) % len(order)] if self.series in order else order[0]
             self.sel = None; self.write_view(); self.save_prefs(); self.say(f"viewing {cfgmod.SERIES[self.series]}")
         elif ch == ord("r"):
-            have = self.set_value("rule.series")     # the coins of the rule in use (a change makes a new variant)
-            if not have:
+            # The engine flips the coin in the rule in use as it stands when this arrives: a list made here could
+            # be out of date by then. (A change makes a new variant, as any rule change does.)
+            have = ((self.vrow(self.active()) or {}).get("rule") or {}).get("series")
+            if have is None:
                 self.say("no value from the engine yet"); return True
-            want = [c for c in have if c != self.series] if self.series in have else list(have) + [self.series]
-            if not want:
+            if have == [self.series]:
                 self.say("at least one of the coins stays on"); return True
-            self.rule_set("series", want, "its coins " + " ".join(cfgmod.SERIES[c].split("-")[0] for c in want))
+            coin = cfgmod.SERIES.get(self.series, self.series).split("-")[0]
+            self.live_or_send({"op": "series", "profile": self.profile or "1", "series": self.series}, True, None,
+                              f"{coin} " + ("off" if self.series in have else "on"))
         elif ch in (ord("t"), ord("T")):
             self.P.set_theme(themes.next_name(self.P.name, -1 if ch == ord("T") else 1))
             self.save_prefs()

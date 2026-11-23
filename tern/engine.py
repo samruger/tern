@@ -174,6 +174,8 @@ class Desk:
         self.names = profmod.Names(runtime)    # profile 1's name, the built-in variants' display names
         if self.shadow.own.damaged:
             self.log("variants.json has something unreadable in it: those variants are not running", "error")
+        if self._lost(self.cfg.strategy, self.shadow):
+            self.log(f"profile 1: {self._lost(self.cfg.strategy, self.shadow)}: paper trades base, live waits for a pick", "error")
         self._profiles_reload(force=True)
         for ev, close in self.shadow.pending(time.time()).items():
             self.closed[ev] = {"series": ev.split("-", 1)[0], "close": close}
@@ -200,6 +202,8 @@ class Desk:
                                              upgrade=True)
                     if p.shadow.own.damaged:
                         self.log(f"profile {p.name}: variants.json has something unreadable in it", "error")
+                    if self._lost(p.cfg.strategy, p.shadow):
+                        self.log(f"profile {p.name}: {self._lost(p.cfg.strategy, p.shadow)}: its book trades base", "error")
                 else:
                     for key, was, to in p.reload_cfg():
                         self.log(f"profile {p.name}: {key} {was} → {to} by hand (settings {p.log.sv})")
@@ -705,6 +709,12 @@ class Desk:
         v = self.cfg.strategy.variant
         return v if shadowmod.known(v, self.shadow.own) else "base"
 
+    @staticmethod
+    def _lost(S, shadow) -> str:
+        """Why the variant a profile was set to can't be what it trades, or "". Its paper then falls back to base;
+        live never does (live_target): it waits until one is picked."""
+        return "" if shadowmod.known(S.variant, shadow.own) else f"its variant {S.variant!r} is not there any more"
+
     def vname(self, name: str, own) -> str:
         """What the screen calls a variant: a profile's own (own: its VariantSet) or a built-in one."""
         return own.title(name) if own is not None and name in own.all else self.names.variant(name)
@@ -715,16 +725,17 @@ class Desk:
         Live never falls back to profile 1 on its own."""
         pid = str(self.cfg.live.profile or "1")
         if pid == "1":
-            lost = not shadowmod.known(self.cfg.strategy.variant, self.shadow.own) and self.shadow.own.damaged
+            lost = self._lost(self.cfg.strategy, self.shadow)
             return {"id": "1", "name": self.names.profile, "S": self.cfg.strategy, "variant": self.variant(),
-                    "shadow": self.shadow, "ok": not lost, "why": "variants.json is unreadable: pick a variant" if lost else ""}
+                    "shadow": self.shadow, "ok": not lost, "why": lost and f"{lost}: pick one (enter, page 2)"}
         p = self._profile(pid)
         if p is None:
             return {"id": pid, "name": pid, "S": self.cfg.strategy, "variant": self.variant(), "shadow": None,
                     "ok": False, "why": f"live profile {pid!r} is gone: pick one with d"}
-        if not shadowmod.known(p.cfg.strategy.variant, p.shadow.own) and p.shadow.own.damaged:
+        lost = self._lost(p.cfg.strategy, p.shadow)
+        if lost:
             return {"id": p.id, "name": p.name, "S": p.cfg.strategy, "variant": p.variant, "shadow": p.shadow,
-                    "ok": False, "why": f"{p.name}'s variants.json is unreadable: pick a variant"}
+                    "ok": False, "why": f"{p.name}: {lost}: pick one (enter, page 2)"}
         return {"id": p.id, "name": p.name, "S": p.cfg.strategy, "variant": p.variant, "shadow": p.shadow,
                 "ok": p.enabled, "why": "" if p.enabled else f"{p.name} is off (space turns it on)"}
 
@@ -984,13 +995,13 @@ class Desk:
             w = self._who(c.get("profile"))
             if isinstance(w, str):
                 return w
-            lst = shadowmod.params(w["variant"], w["S"], w["shadow"].own)[5]
+            lst = [x for x in shadowmod.params(w["variant"], w["S"], w["shadow"].own)[5] if x in cfgmod.SERIES]
             return self._rule_edit(w, "series", [x for x in lst if x != s] if s in lst else lst + [s])
         if op == "variant":
             name = c.get("name")
             if not shadowmod.known(name, self.shadow.own):
                 return f"unknown variant {name!r} (known: {', '.join(self.shadow.order())})"
-            if name == self.variant():
+            if name == self.cfg.strategy.variant:
                 return f"{name} is already in use"
             was = self.variant()
             self.cfg.strategy.variant = name; cfgmod.save(self.cfg, self.runtime)
@@ -1121,6 +1132,7 @@ class Desk:
         except ValueError as ex:
             return f"no new variant: {ex}"
         sh.changes += 1
+        sh.own.by[key] = str(c.get("id", ""))
         w["log"].append("variant", parent, key, bump=False)
         return f"{w['name']}: new variant {sh.own.title(key)}, {self.vname(parent, sh.own)}'s rule with an empty record"
 
@@ -1271,7 +1283,9 @@ class Desk:
         """A profile's variant summaries, recomputed only when its records change (status is written every step)."""
         key = (p.shadow.changes, p.shadow.own.changes, p.variant, repr(p.cfg.strategy))
         if getattr(p, "_sum", (None,))[0] != key:
-            p._sum = (key, [{**r, **self._vinfo(r["name"], p.cfg.strategy, p.shadow.own), "active": r["name"] == p.variant}
+            lost = self._lost(p.cfg.strategy, p.shadow)
+            p._sum = (key, [{**r, **self._vinfo(r["name"], p.cfg.strategy, p.shadow.own), "active": r["name"] == p.variant,
+                             **({"lost": lost} if lost and r["name"] == p.variant else {})}
                             for r in p.shadow.summary()])
         return p._sum[1]
 
@@ -1281,7 +1295,7 @@ class Desk:
         profile's own (then its display name and what it was copied from)."""
         out = {"desc": shadowmod.desc_of(name, own), "rule": shadowmod.rule_of(name, S, own), "own": name in own.all}
         if out["own"]:
-            out.update(title=own.title(name), parent=own.all[name]["from"],
+            out.update(title=own.title(name), parent=own.all[name]["from"], by=own.by.get(name, ""),
                        moved=[s for (s, _), k in own.moved.items() if k == name][-3:])
         return out
 
@@ -1313,7 +1327,8 @@ class Desk:
         return {"views": {n: {**p.shadow.view(n, r, mids, strikes, p.cfg.paper_capital),
                               "strategy": self._strat(n, p.cfg.strategy, p.shadow.own)} for n, r in rows.items()},
                 "strategy": self._strat(p.variant, p.cfg.strategy, p.shadow.own),
-                "settings": {r.key: (p.enabled if r.key == "enabled" else profmod._get(p.cfg, r.key))
+                "settings": {r.key: (p.enabled if r.key == "enabled" else p.variant if r.key == "strategy.variant" else
+                                     profmod._get(p.cfg, r.key))
                              for r in profmod.PROFILE_SETTINGS if r.sec != "rule"},   # (a rule's are in its variant's row)
                 "gate": self.checks(p.variant, rows[p.variant]),
                 "log": p.log.lines()[-20:]}
@@ -1374,7 +1389,9 @@ class Desk:
                     "trades": b.trades[-30:]}
         gate = gate or self.gate()
         shadow = self.shadow.summary()
+        lost = self._lost(self.cfg.strategy, self.shadow)
         variants = [{**r, **self._vinfo(r["name"], self.cfg.strategy, self.shadow.own), "active": r["name"] == self.variant(),
+                     **({"lost": lost} if lost and r["name"] == self.variant() else {}),
                      "gate": self.checks(r["name"], r)} for r in shadow]
 
         def strat(name: str) -> dict:

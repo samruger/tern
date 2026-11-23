@@ -1782,7 +1782,7 @@ class ScreenProfiles(unittest.TestCase):
             [c] = self.cmds()
             self.assertEqual(c["op"], "live_profile"); self.assertEqual(c["profile"], p.id)   # not armed: no question
             k._command(c); self.sync()
-            row = next(l for l in self.text().splitlines() if "profile 2" in l and " on " in l)
+            row = next(l for l in self.text().splitlines() if "profile 2" in l and " on " in l and "live trades" not in l)
             self.assertRegex(row, r"^│ [● ]L profile 2")                       # L marks the live profile
             k.cfg.live.enabled = True; self.sync()                             # armed
             self.press(self.curses.KEY_UP, "d")
@@ -1800,7 +1800,7 @@ class ScreenProfiles(unittest.TestCase):
             self.assertEqual(self.cmds(), [])
             self.press("r", *"live", 10)
             [c] = self.cmds()
-            self.assertEqual((c["op"], c["key"]), ("variant_rule", "series"))
+            self.assertEqual((c["op"], c["profile"], c["series"]), ("series", p.id, "KXETHD"))
 
     def test_profile_settings_send_profile_set(self):
         with tempfile.TemporaryDirectory() as d:
@@ -2495,6 +2495,7 @@ class RuleUpgrade(unittest.TestCase):
                 self.assertIn("cut short\n", fh.readlines())
 
     def test_it_happens_once_and_restarts_from_the_files_as_they_were(self):
+        from tern import profiles
         from tern.profiles import Profile, upgrade_rules
         with tempfile.TemporaryDirectory() as d:
             path = self.old(d)
@@ -2503,6 +2504,8 @@ class RuleUpgrade(unittest.TestCase):
             p = Profile.load(path, 0.07)
             rules = {k: v["rule"] for k, v in p.shadow.own.all.items()}
             os.remove(os.path.join(path, "variants.json"))                     # cut short before the last step
+            os.remove(os.path.join(path, profiles.DONE_FILE))
+            open(os.path.join(path, profiles.BUSY_FILE), "w").close()
             self.assertEqual(upgrade_rules(path), first)
             again = Profile.load(path, 0.07)
             self.assertEqual({k: v["rule"] for k, v in again.shadow.own.all.items()}, rules)
@@ -2516,7 +2519,7 @@ class RuleUpgrade(unittest.TestCase):
             p = profiles.create(d, "std", Config(), 0.07)
             os.remove(os.path.join(p.dir, "variants.json"))
             profiles.upgrade_rules(p.dir)
-            self.assertEqual(sorted(os.listdir(p.dir)), ["config.json", "profile.json", "settings-log.jsonl", "variants.json"])
+            self.assertEqual(sorted(os.listdir(p.dir)), ["config.json", "profile.json", "settings-log.jsonl", "variants-upgraded", "variants.json"])
 
     def test_reading_a_report_never_upgrades(self):
         from tern import profiles
@@ -2636,7 +2639,7 @@ class ScreenVariants(unittest.TestCase):
             self.assertEqual(scr.modal["type"], "livecmd")
             self.press(*"live", 10)
             [c] = self.run_cmds()
-            self.assertEqual((c["op"], c["key"]), ("variant_rule", "series"))
+            self.assertEqual((c["op"], c["series"]), ("series", "KXETHD"))
             self.press("p"); scr.focus = "variants"; scr.var_sel = "band80"    # not what live trades: no question
             self.press("E", self.curses.KEY_RIGHT)
             self.assertIsNone(scr.modal)
@@ -2670,6 +2673,288 @@ class ScreenVariants(unittest.TestCase):
             self.press("9", "7", 10)                                           # over band high: refused on the screen
             self.assertEqual(self.cmds(), [])
             self.assertIn("below 95", scr.flash)
+
+
+class VariantReviewFixes(unittest.TestCase):
+    """Findings from the 2026-11-23 code review of the own-variants work."""
+    T, desk, profile = EngineProfiles.T, EngineProfiles.desk, EngineProfiles.profile
+    old = RuleUpgrade.old
+    setup, sync, text, press, cmds, view2 = (ScreenProfiles.setup, ScreenProfiles.sync, ScreenProfiles.text,
+                                             ScreenProfiles.press, ScreenProfiles.cmds, ScreenProfiles.view2)
+    run_cmds = ScreenVariants.run_cmds
+
+    ROW = {"v": "base", "ts": 1.0, "event": "KXBTCD-X", "close": 2.0, "ticker": "x", "side": "yes", "n": 5,
+           "cost": 0.9, "fee": 0.02, "slot": 25, "pnl": 1.0, "sv": 9}
+
+    # 1
+    def test_losing_variants_json_never_rolls_a_converted_profile_back(self):
+        import json
+        from tern.profiles import Profile
+        with tempfile.TemporaryDirectory() as d:
+            path = self.old(d)
+            Profile.load(path, 0.07, upgrade=True)
+            settled = os.path.join(path, "shadow-settled.jsonl")
+            with open(settled, "a") as fh:
+                fh.write(json.dumps(self.ROW) + "\n")
+            with open(settled) as fh:
+                want = fh.read()
+            with open(os.path.join(path, "config.json")) as fh:
+                cfg = fh.read()
+            for _ in range(2):
+                if os.path.exists(os.path.join(path, "variants.json")):
+                    os.remove(os.path.join(path, "variants.json"))
+                Profile.load(path, 0.07, upgrade=True)
+                with open(settled) as fh:
+                    self.assertEqual(fh.read(), want)
+                with open(os.path.join(path, "config.json")) as fh:
+                    self.assertEqual(fh.read(), cfg)
+
+    def test_one_converted_before_the_marker_existed_is_marked_when_next_loaded(self):
+        import json
+        from tern.profiles import DONE_FILE, Profile
+        with tempfile.TemporaryDirectory() as d:
+            path = self.old(d)
+            Profile.load(path, 0.07, upgrade=True)
+            os.remove(os.path.join(path, DONE_FILE))                           # as the first version left them
+            Profile.load(path, 0.07, upgrade=True)
+            self.assertTrue(os.path.exists(os.path.join(path, DONE_FILE)))
+            settled = os.path.join(path, "shadow-settled.jsonl")
+            with open(settled, "a") as fh:
+                fh.write(json.dumps(self.ROW) + "\n")
+            os.remove(os.path.join(path, "variants.json"))
+            n = sum(1 for _ in open(settled))
+            Profile.load(path, 0.07, upgrade=True)
+            self.assertEqual(sum(1 for _ in open(settled)), n)
+
+    def test_one_converted_by_the_first_version_whose_variants_are_gone_is_left_alone(self):
+        from tern.profiles import DONE_FILE, Profile
+        with tempfile.TemporaryDirectory() as d:
+            path = self.old(d)
+            Profile.load(path, 0.07, upgrade=True)
+            for f in (DONE_FILE, "variants.json"):
+                os.remove(os.path.join(path, f))
+            def files():
+                return {f: open(os.path.join(path, f)).read() for f in sorted(os.listdir(path)) if f != DONE_FILE}
+            before = files()
+            p = Profile.load(path, 0.07, upgrade=True)
+            self.assertEqual(files(), before)                                  # records, settings and the kept files
+            self.assertEqual(p.cfg.strategy.variant, "multi-2")                # not quietly base: live waits for a pick
+
+    # 2
+    def test_live_never_trades_a_fallback_variant(self):
+        with tempfile.TemporaryDirectory() as d:
+            for how in ("bad", "list", "gone"):
+                k = self.desk(d)
+                k._command({"op": "variant", "name": "base"})
+                k._command({"op": "variant_rule", "key": "band_lo", "value": 0.80})
+                path = os.path.join(d, "variants.json")
+                if how == "gone":
+                    os.remove(path)
+                else:
+                    with open(path, "w") as fh:
+                        fh.write("{bad" if how == "bad" else "[]")
+                k = self.desk(d)
+                self.assertFalse(k.live_target()["ok"], how)
+                k._command({"op": "variant_new", "name": "n" + how, "from": "band80"})
+                self.assertFalse(k.live_target()["ok"], how)                   # an unrelated change does not lift it
+                self.assertFalse(self.desk(d).live_target()["ok"], how)        # nor does a restart after it
+                self.assertFalse(k.gate()["passed"])
+                self.assertNotIn("already", k._command({"op": "variant", "name": "base"}))   # picking one does
+                self.assertTrue(k.live_target()["ok"], how)
+
+    def test_live_profile_with_an_unknown_variant_is_held_too(self):
+        with tempfile.TemporaryDirectory() as d:
+            k = self.desk(d)
+            p = self.profile(k)
+            k._command({"op": "live_profile", "profile": p.id})
+            self.assertTrue(k.live_target()["ok"])
+            p.cfg.strategy.variant = "gone"
+            self.assertFalse(k.live_target()["ok"])
+
+    # 3
+    def test_a_lost_variants_key_and_record_are_never_taken_over(self):
+        with tempfile.TemporaryDirectory() as d:
+            k = self.desk(d)
+            k._command({"op": "variant_rule", "key": "band_lo", "value": 0.78})
+            k._shadow(); k.shadow.save()
+            self.assertTrue(k.shadow.bought("base-2"))
+            with open(os.path.join(d, "variants.json"), "w") as fh:
+                fh.write("{bad")
+            k = self.desk(d)
+            for name in ("", "base-2"):
+                k._command({"op": "variant_new", "name": name, "from": "base"})
+            self.assertNotIn("base-2", k.shadow.own.all)
+            self.assertFalse([v for v in k.shadow.own.active() if k.shadow.bought(v)])
+            k.shadow.save()
+            k = self.desk(d)                                                   # the damaged flag is gone by now
+            self.assertIn("base-2", {r["v"] for r in k.shadow.rows})           # its open entries still settle
+            k.shadow.settle({self.T: True})
+            self.assertEqual(k.shadow.summary(["base-2"])[0]["entries"], 1)
+
+    # 4, 6, 8, 10
+    def test_r_changes_only_the_rule_in_use(self):
+        with tempfile.TemporaryDirectory() as d:
+            k, p, scr = self.setup(d)
+            self.press("p"); scr.focus = "variants"; scr.var_sel = "band80"; self.cmds()
+            self.press("E")
+            scr.set_sel = [r.key for r in scr.set_rows()].index("rule.series"); scr.set_sub = 1
+            for c in (" ", 27, 9, 9, "r"):                                     # ETH into band80's copy, then SOL, r
+                scr.key(ord(c) if isinstance(c, str) else c)
+            self.run_cmds()
+            self.assertEqual(k.shadow.own.rule("band80-2")["series"], ["KXBTCD", "KXETHD"])
+            self.assertEqual(k.shadow.own.rule(k.variant())["series"], ["KXBTCD", "KXSOLD"])
+
+    def test_r_with_no_coins_or_one_tern_does_not_know(self):
+        for had in ([], ["KXBTCD", "KXFOOD"]):
+            with tempfile.TemporaryDirectory() as d:
+                k, p, scr = self.setup(d)
+                k.cfg.strategy.series = list(had); self.sync(); self.cmds()
+                self.press(9, "r")                                             # ETH
+                self.run_cmds()
+                self.assertEqual(k.shadow.own.rule(k.variant())["series"], [c for c in had if c != "KXFOOD"] + ["KXETHD"])
+
+    def test_pending_values_do_not_follow_to_another_profile_or_variant(self):
+        with tempfile.TemporaryDirectory() as d:
+            k, p, scr = self.setup(d)
+            self.press("e")
+            rows = [r.key for r in scr.set_rows()]
+            for key in ("strategy.contracts", "strategy.variant"):
+                scr.set_sel = rows.index(key); scr.key(self.curses.KEY_RIGHT)  # sent, not answered
+            scr.key(27)
+            scr.page, scr.focus, scr.prof_sel = 2, "profiles", p.id
+            scr.draw(); scr.view_profile()
+            self.assertNotIn("strategy.contracts", scr.set_sent)
+            self.assertNotIn("strategy.variant", scr.set_sent)
+
+    # 5
+    def test_a_damaged_shadow_json_does_not_stop_the_conversion(self):
+        import json
+        from tern.profiles import Profile
+        good = {k: v for k, v in {**self.ROW, "v": "multi", "sv": 3, "pnl": None}.items()}
+        for text in ("{cut", "[]", json.dumps({"rows": [{"ts": 1}, 5, good], "slots": {}}), json.dumps({"rows": None})):
+            with tempfile.TemporaryDirectory() as d:
+                path = self.old(d)
+                with open(os.path.join(path, "shadow.json"), "w") as fh:
+                    fh.write(text)
+                try:
+                    p = Profile.load(path, 0.07, upgrade=True)
+                except Exception as ex:
+                    self.fail(f"{text}: {ex!r}")
+                self.assertEqual(p.variant, "multi-2")
+
+    def test_a_strange_settings_log_does_not_stop_the_conversion(self):
+        from tern.profiles import Profile
+        with tempfile.TemporaryDirectory() as d:
+            path = self.old(d)
+            with open(os.path.join(path, "settings-log.jsonl"), "a") as fh:
+                fh.write('{"ts":1,"sv":3,"key":"strategy.minutes","from":null,"to":[25]}\n{"sv":[1],"key":"strategy.series"}\n')
+            Profile.load(path, 0.07, upgrade=True)
+
+    # 6
+    def test_a_rule_that_would_not_load_again_is_never_saved(self):
+        with tempfile.TemporaryDirectory() as d:
+            k = self.desk(d)
+            k.cfg.strategy.minutes = [25, 20]
+            self.assertIn("no new variant", k._command({"op": "variant_new", "name": "x", "from": "late"}))
+            self.assertIn("not changed", k._command({"op": "variant_rule", "key": "band_lo", "value": 0.8, "variant": "late"}))
+            self.assertEqual(k.shadow.own.all, {})
+            k._command({"op": "variant_rule", "key": "minutes", "value": [10], "variant": "late"})   # this gives it one
+            self.assertEqual(self.desk(d).shadow.own.active(), ["late-2"])
+
+    # 7, 14
+    def test_variants_json_by_hand_is_checked(self):
+        import json
+        with tempfile.TemporaryDirectory() as d:
+            k = self.desk(d)
+            k._command({"op": "variant_rule", "key": "band_lo", "value": 0.80})
+            path = os.path.join(d, "variants.json")
+            with open(path) as fh:
+                good = json.load(fh)["variants"]["base-2"]
+            def bad(**rule):
+                return {**good, "rule": {**good["rule"], **rule}}
+            items = {"base-2": good, "a1": bad(band_lo="0.80"), "a2": bad(band_lo=float("nan")), "a3": bad(band_lo=True),
+                     "a4": bad(max_vol="7"), "a5": bad(minutes=[float("inf")]), "a6": bad(cap=0.5), "a7": {**good, "deleted": "no"},
+                     "a8": bad(band_lo=0.97), "a9": 5, "Bad Key": good}
+            with open(path, "w") as fh:
+                json.dump({"variants": items}, fh)
+            k = self.desk(d)
+            self.assertEqual(list(k.shadow.own.all), ["base-2"])
+            self.assertTrue(k.shadow.own.damaged)
+            k._shadow(); k.seeded.add(self.T); k._status()
+            with open(path, "w") as fh:
+                json.dump({"variants": {"base-2": {**good, "title": 5, "from": None, "made": "x"}}}, fh)
+            self.assertEqual(self.desk(d).shadow.own.title("base-2"), "base-2")
+            for text in ("[]", "5", '{"variants": []}', "{}"):
+                with open(path, "w") as fh:
+                    fh.write(text)
+                k = self.desk(d)
+                self.assertTrue(k.shadow.own.damaged, text)
+                for f in [f for f in os.listdir(d) if ".damaged" in f]:
+                    os.remove(os.path.join(d, f))
+                k._command({"op": "variant_new", "name": "y", "from": "band80"})
+                self.assertTrue([f for f in os.listdir(d) if ".damaged" in f], text)   # kept, not written over
+
+    # 9
+    def test_toggling_a_slot_keeps_the_ones_the_box_does_not_list(self):
+        with tempfile.TemporaryDirectory() as d:
+            k, p, scr = self.setup(d)
+            k.cfg.strategy.minutes = [25, 20, 12]; self.sync()
+            self.press("e"); self.cmds()
+            row = next(r for r in scr.set_rows() if r.key == "rule.minutes")
+            scr.set_sel = scr.set_rows().index(row)
+            self.assertIn(12, scr.set_choices(row))
+            scr.set_sub = scr.set_choices(row).index(10)
+            self.press(" "); self.run_cmds()
+            self.assertEqual(k.shadow.own.rule("base-2")["minutes"], [25, 20, 12, 10])
+            self.assertIn("not changed", k._command({"op": "variant_rule", "key": "minutes", "value": [25, 13]}))
+
+    # 11
+    def test_a_viewed_profile_with_an_unknown_variant_has_a_working_settings_box(self):
+        with tempfile.TemporaryDirectory() as d:
+            k, p, scr = self.setup(d)
+            p.cfg.strategy.variant = "gone"; self.sync()
+            self.view2(); self.press("e")
+            self.assertNotIn("older than this screen", self.text())
+            self.assertEqual(scr.set_value("rule.band_lo"), 0.55)
+            self.press(27); scr.focus = "variants"; scr.var_sel = "base"; self.cmds()
+            self.press(10); self.run_cmds()                                    # enter on base is not "already in use"
+            self.assertEqual(p.cfg.strategy.variant, "base")
+
+    # 12
+    def test_a_refused_new_variant_opens_nothing(self):
+        with tempfile.TemporaryDirectory() as d:
+            k, p, scr = self.setup(d)
+            self.press("p"); scr.focus = "variants"; scr.var_sel = "band80"; self.cmds()
+            self.press("n", *"late", 10); self.run_cmds()                      # a name already taken
+            self.press(9, "r"); self.run_cmds()                                # makes base-2
+            self.assertEqual((k.shadow.own.active(), scr.overlay), (["base-2"], None))
+
+    # 13
+    def test_report_columns_line_up(self):
+        import contextlib, io
+        from unittest import mock
+        from tern import __main__ as cli, config as cfgmod
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(cfgmod, "RUNTIME", d):
+            k = self.desk(d)
+            k._command({"op": "variant_new", "name": "twelve-chars", "from": "base"})
+            k._command({"op": "variant_new", "name": "x1", "from": "base"})
+            k._shadow(); k.shadow.settle({self.T: True})
+            k._command({"op": "variant_delete", "variant": "x1"})
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                cli.main(["report"])
+            lines = out.getvalue().splitlines()
+            at = lines[0].index("hours") + len("hours")
+            row = next(l for l in lines if l.startswith("x1 ") and ":" not in l)
+            self.assertEqual(row[at - 1], "1"); self.assertEqual(row[at], " ")
+
+    # 15
+    def test_the_tip_says_when_live_trades_another_profile(self):
+        with tempfile.TemporaryDirectory() as d:
+            k, p, scr = self.setup(d)
+            k._command({"op": "live_profile", "profile": p.id})
+            self.press("p"); scr.focus = "variants"; scr.var_sel = "base"; self.sync()
+            self.assertIn("in use on paper · live trades profile 2's rule", self.text())
 
 
 class Net(unittest.TestCase):

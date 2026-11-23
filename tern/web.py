@@ -196,8 +196,9 @@ class WebScreen(dash.Screen):
     def write_view(self) -> None:                # the hub tells the engine, in view-web.json
         self.hub.publish()
 
-    def send(self, **cmd) -> None:               # unreachable: every key that sends is filtered out
+    def send(self, **cmd) -> str:                # unreachable: every key that sends is filtered out
         self.say("view only: the web screen sends no commands")
+        return ""
 
     def send_setting(self, row, value) -> None:  # the settings box shows, but only its log row changes here
         if row.key == "screen.log":              # just this viewer's log box, kept with its other prefs

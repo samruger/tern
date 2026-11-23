@@ -297,12 +297,13 @@ def _report_profiles(runtime: str, args: list[str]) -> int:
 
 def _side_by_side(rows: list[tuple]) -> None:
     w = max(len(r[0]) for r in rows)
-    print(f"{'profile':<{w}}  {'book':<8} {'set':>3} {'hours':>5} {'entries':>7} {'P&L':>9} {'¢/contract':>10} {'t':>6}")
+    b = max([8] + [len(r[1]) for r in rows])
+    print(f"{'profile':<{w}}  {'book':<{b}} {'set':>3} {'hours':>5} {'entries':>7} {'P&L':>9} {'¢/contract':>10} {'t':>6}")
     for name, variant, sv, sh in rows:
         r = sh.summary([variant])[0]
         pc = f"{r['per_contract'] * 100:+.2f}" if r["per_contract"] is not None else "-"
         t = f"{r['t']:+.2f}" if r["t"] is not None else "-"
-        print(f"{name:<{w}}  {variant:<8} {sv:>3} {r['hours']:>5} {r['entries']:>7} {r['pnl']:>+9.2f} {pc:>10} {t:>6}")
+        print(f"{name:<{w}}  {variant:<{b}} {sv:>3} {r['hours']:>5} {r['entries']:>7} {r['pnl']:>+9.2f} {pc:>10} {t:>6}")
 
 
 def main(argv: list[str]) -> int:
@@ -324,17 +325,22 @@ def main(argv: list[str]) -> int:
         from .shadow import DESC, RETIRED, Shadow, desc_of, table
         sh = Shadow(runtime)
         use = cfgmod.load(runtime).strategy.variant
-        print("\n".join(table(sh.summary())))
+        lost = sorted(sh.own.used() - set(shadow_names(sh)))      # records of variants variants.json no longer has
+        w = max(len(n) for n in shadow_names(sh) + lost)
+        print("\n".join(table(sh.summary(), w)))
         own = {n: (f"({sh.own.title(n)}) " if sh.own.title(n) != n else "") + desc_of(n, sh.own) for n in sh.own.active()}
         print("\n" + "\n".join(f"{n}: {d}" + ("  ← in use" if n == use else "") for n, d in {**DESC, **own}.items()))
         gone = [r for r in sh.summary(sh.own.deleted()) if r["entries"] or r["open"]] if sh.own.deleted() else []
         if gone:
             print("\ndeleted, kept for the record:")
-            print("\n".join(table(gone)[1:]))
+            print("\n".join(table(gone, w)[1:]))
+        if lost:
+            print("\nnot in variants.json any more, kept for the record:")
+            print("\n".join(table(sh.summary(lost), w)[1:]))
         old = [r for r in sh.summary(list(RETIRED)) if r["entries"]]
         if old:
             print("\nretired, kept for the record:")
-            print("\n".join(table(old)[1:]))
+            print("\n".join(table(old, w)[1:]))
             print("\n".join(f"{n}: {d}" for n, d in RETIRED.items()))
         print("\nt is by hour and shows after 10 hours.")
         return 0

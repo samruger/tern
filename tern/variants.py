@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import copy
 import json
+import math
 import os
 import re
 import time
@@ -22,6 +23,7 @@ from .config import SERIES, Setting
 FILE = "variants.json"
 MAX_OWN = 12                                     # of your own, in each profile
 NAME_MAX = 12                                    # a variant's key and display name
+KEY = re.compile(r"[a-z][a-z0-9-]{0,11}")
 SLOT_CHOICES = (30, 25, 20, 15, 10, 5)           # minutes before the close a rule may enter at
 
 # The rule rows of the settings box and of E in the variants box. Values are the rule's own; 0 is "off" in a cap.
@@ -50,7 +52,8 @@ def check(field: str, value, rule: dict):
     if r is None:
         raise ValueError(f"{field!r} is not part of a rule")
     if r.kind in ("slots", "coins"):
-        ok = SLOT_CHOICES if r.kind == "slots" else tuple(SERIES)
+        # a slot the rule already has (config.json's may be any minute) may stay, whether or not the screen offers it
+        ok = tuple(sorted({*SLOT_CHOICES, *rule["minutes"]}, reverse=True)) if r.kind == "slots" else tuple(SERIES)
         if not isinstance(value, list) or any(isinstance(x, bool) or x not in ok for x in value):
             raise ValueError(f"{r.label} must be chosen from {', '.join(map(str, ok))}")
         if not value:
@@ -100,21 +103,38 @@ def clean(name) -> str:
     return " ".join(name.split()) if isinstance(name, str) else ""
 
 
-def _valid(d) -> bool:
-    if not isinstance(d, dict) or not isinstance(d.get("rule"), dict) or set(d["rule"]) != set(FIELDS):
-        return False
-    try:
-        for f in FIELDS:
-            v = d["rule"][f]
-            if f in ("minutes", "series"):       # kept as they are: a built-in's slots may be any from config.json
-                want = (int, float) if f == "minutes" else str
-                if not isinstance(v, list) or not v or any(isinstance(x, bool) or not isinstance(x, want) for x in v):
-                    return False
-            elif v is not None or f not in ("cap", "max_vol"):
-                float(v)
-    except (TypeError, ValueError):
-        return False
-    return True
+def why_bad(rule) -> str:
+    """Why a rule can't run, or "". What add() saves and what loads are judged by this alone, so nothing is
+    saved that the next start would drop. It is looser than the screen's bounds: a copy of a built-in variant
+    may hold values only config.json can set."""
+    num = lambda v: isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)
+    if not isinstance(rule, dict) or set(rule) != set(FIELDS):
+        return "it is not a whole rule"
+    if not all(num(rule[f]) for f in ("band_lo", "band_hi", "max_spread")):
+        return "its band or spread is not a number"
+    if not rule["band_lo"] < rule["band_hi"]:
+        return "its band is empty"
+    if not isinstance(rule["minutes"], list) or not rule["minutes"] or not all(num(m) and m > 0 for m in rule["minutes"]):
+        return "it has no slots"
+    if not isinstance(rule["series"], list) or not rule["series"] or not all(isinstance(c, str) for c in rule["series"]):
+        return "it has no coins"
+    if rule["cap"] is not None and not (num(rule["cap"]) and rule["cap"] == int(rule["cap"]) >= 1):
+        return "its entries a strike is not a count"
+    if rule["max_vol"] is not None and not (num(rule["max_vol"]) and rule["max_vol"] > 0):
+        return "its most volatility is not a number"
+    return ""
+
+
+def _loaded(key, d) -> dict | None:
+    """One variant from variants.json, or None when it can't be used. Its name and dates are only for show."""
+    if not (isinstance(key, str) and KEY.fullmatch(key) and isinstance(d, dict)) or why_bad(d.get("rule")):
+        return None
+    if not isinstance(d.get("deleted", False), bool):
+        return None
+    title, made = clean(d.get("title")), d.get("made")
+    return {"rule": d["rule"], "title": title if 0 < len(title) <= NAME_MAX else key,
+            "from": d["from"] if isinstance(d.get("from"), str) else "",
+            "made": made if isinstance(made, (int, float)) else 0, "deleted": d.get("deleted", False)}
 
 
 class VariantSet:
@@ -126,13 +146,14 @@ class VariantSet:
         self.all: dict[str, dict] = {}           # key -> {rule, title, from, made, deleted}
         self.changes = 0                         # goes up with every change: the engine's summaries cache on it
         self.moved: dict[tuple, str] = {}        # (edit session, variant) -> the copy that session made of it
-        self.damaged = False
+        self.by: dict[str, str] = {}             # variant -> the id of the command that made it, since the start
+        self.used = lambda: set()                # keys that have records (Shadow sets it): never given to another
+        self.damaged = False                     # something in the file would not load: save() keeps a copy of it
         try:
             with open(self.path) as fh:
-                d = json.load(fh)
-            items = d["variants"] if isinstance(d, dict) else {}
-            self.all = {k: {"title": k, "from": "", "made": 0, "deleted": False, **v} for k, v in items.items()
-                        if k not in self.reserved and _valid(v)}
+                items = json.load(fh)["variants"]
+            got = {k: _loaded(k, v) for k, v in items.items() if k not in self.reserved}
+            self.all = {k: v for k, v in got.items() if v is not None}
             self.damaged = len(self.all) != len(items)
         except FileNotFoundError:
             pass
@@ -172,8 +193,8 @@ class VariantSet:
         """A key for records: lowercase letters, digits and dashes, starting with a letter, never used before."""
         base = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-") or "rule"
         base = ("v" + base if not base[0].isalpha() else base)[:NAME_MAX].strip("-")
-        out, i = base, 2
-        while out in self.all or out in self.reserved:
+        out, i, used = base, 2, self.used()
+        while out in self.all or out in self.reserved or out in used:
             tail = f"-{i}"
             out, i = base[:NAME_MAX - len(tail)].strip("-") + tail, i + 1
         return out
@@ -191,13 +212,16 @@ class VariantSet:
         """A new variant; returns its key. Without a name it is called after its parent: band80-2."""
         if not deleted and len(self.active()) >= MAX_OWN:
             raise ValueError(f"at most {MAX_OWN} variants of your own in a profile: delete one first (D)")
+        bad = why_bad(rule)
+        if bad:
+            raise ValueError(f"{parent or 'that rule'} can't be used as it is: {bad}")
         name = clean(name)
         if name:
             self._free(name, taken=taken)
             key = self._key(name)
         else:
             stem = (re.sub(r"-\d+$", "", parent) or "rule")[:NAME_MAX - 3]
-            low = {n.lower() for n in taken} | {v["title"].lower() for v in self.all.values()}
+            low = {n.lower() for n in taken} | {v["title"].lower() for v in self.all.values()} | self.used()
             # band80-2, band80-3 ...: the first number nothing has had
             i = 2
             while (cand := f"{stem}-{i}") in self.all or cand in self.reserved or cand in low:

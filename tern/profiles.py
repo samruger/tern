@@ -415,91 +415,143 @@ def delete(runtime: str, pid: str) -> str:
 
 
 # ------------------------------------------------------------ profiles from before own variants
+DONE_FILE = "variants-upgraded"                  # in a profile's folder: upgrade_rules is done with it, for good
+BUSY_FILE = "variants-upgrading"                 # ... has started writing: *.pre-variants are complete
+OLD = ".pre-variants"
+
+
+def _rows(path: str) -> tuple[dict, list[dict]] | None:
+    """shadow.json and its rows, or None when it can't be read (the load that follows makes do without it)."""
+    try:
+        with open(path) as fh:
+            d = json.load(fh)
+    except (OSError, ValueError):
+        return None
+    return (d, [r for r in d["rows"] if isinstance(r, dict)]) if isinstance(d, dict) and isinstance(d.get("rows"), list) else None
+
+
+def _put(path: str, text: str) -> None:
+    with open(path + ".tmp", "w") as fh:
+        fh.write(text)
+    os.replace(path + ".tmp", path)
+
+
 def upgrade_rules(dir: str) -> list[str]:
-    """Once per profile folder (until variants.json exists): the settings box used to change the rule every
-    built-in variant in a profile started from. Each rule that made into something else becomes a variant of
-    the profile's own with the entries it bought, and the built-in ones go back to their own rules, keeping
-    only what they bought under them. The one the book trades, and base, keep running; the others are listed
-    as deleted (their records stay). Files as they were are kept as *.pre-variants. Returns the new keys."""
+    """Once per profile folder: the settings box used to change the rule every built-in variant in a profile
+    started from. Each rule that made into something else becomes a variant of the profile's own with the entries
+    it bought, and the built-in ones go back to their own rules, keeping only what they bought under them. The one
+    the book trades, and base, keep running; the others are listed as deleted (their records stay). Files as they
+    were are kept as *.pre-variants. Returns the new keys.
+
+    DONE_FILE says it has happened (variants.json alone can't: losing it later must never bring the old files
+    back). Everything is worked out before anything is written. From the first write until it is done BUSY_FILE
+    is there, and only then does a new start begin again from the files as they were."""
     P = lambda n: os.path.join(dir, n)
     files = ("config.json", "shadow.json", "shadow-settled.jsonl", "settings-log.jsonl")
-    if os.path.exists(P(varmod.FILE)):
+    busy = os.path.exists(P(BUSY_FILE))
+    if os.path.exists(P(DONE_FILE)) or os.path.exists(P(varmod.FILE)):
+        # (variants.json is written last, so with it there the upgrade, or a new profile, is complete)
+        if not os.path.exists(P(DONE_FILE)):
+            _put(P(DONE_FILE), "")
+        if busy:
+            os.remove(P(BUSY_FILE))
         return []
+    if busy:
+        for n in files:
+            if os.path.exists(P(n) + OLD):
+                shutil.copy2(P(n) + OLD, P(n))
     with open(P("config.json")) as fh:
-        Config.from_dict(json.load(fh))          # unreadable: leave everything (the load that follows says so)
-    for n in files:                              # an upgrade cut short starts again from the files as they were
-        if os.path.exists(P(n) + ".pre-variants"):
-            shutil.copy2(P(n) + ".pre-variants", P(n))
-    cfg = cfgmod.load(dir)
-    S, std = cfg.strategy, Strategy()
-    if all(getattr(S, f) == getattr(std, f) for f in RULE_KEYS.values()) and \
-            not any(ln.get("key") in RULE_KEYS for ln in SettingsLog(P("settings-log.jsonl")).lines()):
-        own_set(dir).save()
+        cfg = Config.from_dict(json.load(fh))    # unreadable: leave everything (the load that follows says so)
+    S, std, log = cfg.strategy, Strategy(), SettingsLog(P("settings-log.jsonl"))
+    lines = [ln for ln in log.lines() if isinstance(ln.get("sv"), int)]
+    own = own_set(dir)
+    standard = all(getattr(S, f) == getattr(std, f) for f in RULE_KEYS.values())
+    if standard and not busy and os.path.exists(P("config.json") + OLD):
+        _put(P(DONE_FILE), "")                   # upgraded before there was a DONE_FILE, and its variants.json is gone
         return []
-    for n in files:
-        if os.path.exists(P(n)) and not os.path.exists(P(n) + ".pre-variants"):
-            shutil.copy2(P(n), P(n) + ".pre-variants.tmp")
-            os.replace(P(n) + ".pre-variants.tmp", P(n) + ".pre-variants")
+    if standard and \
+            not any(ln.get("key") in RULE_KEYS for ln in lines if isinstance(ln.get("key"), str)):
+        own.save()
+        _put(P(DONE_FILE), "")
+        return []
+
     # the rule in each settings version, walking the log back from what it is now
-    log = SettingsLog(P("settings-log.jsonl"))
     cur = {f: copy.copy(getattr(S, f)) for f in RULE_KEYS.values()}
     at = {log.sv: dict(cur)}
-    for ln in reversed(log.lines()):
-        at.setdefault(ln.get("sv"), dict(cur))
-        if ln.get("key") in RULE_KEYS and isinstance(ln.get("sv"), int):
+    for ln in reversed(lines):
+        at.setdefault(ln["sv"], dict(cur))
+        if isinstance(ln.get("key"), str) and ln["key"] in RULE_KEYS:
             cur[RULE_KEYS[ln["key"]]] = ln.get("from")
             at.setdefault(ln["sv"] - 1, dict(cur))
-    under = lambda name, sv: rule_of(name, Strategy(**{**std.__dict__, **at[sv]}))
-    own = own_set(dir)
-    keys: dict[tuple, str] = {}
 
-    def key_for(name: str, sv) -> str:
-        """The variant an entry by `name` in settings version sv belongs to now."""
-        if name not in VARIANTS or sv not in at:
-            return name
-        rule = under(name, sv)
-        if varmod.same(rule, rule_of(name, std)):
-            return name
-        for (n, k) in keys.items():
-            if n[0] == name and varmod.same(own.all[k]["rule"], rule):
-                return k
-        stem, i = name[:varmod.NAME_MAX - 3], 2
-        while (k := f"{stem}-{i}") in own.all or k in own.reserved:
-            i += 1
-        live = name in (S.variant, "base") and varmod.same(rule, under(name, log.sv))
-        own.all[k] = {"rule": rule, "title": k, "from": name, "made": round(time.time(), 3), "deleted": not live}
-        keys[(name, sv)] = k
-        return k
+    def under(name: str, sv) -> dict | None:
+        """A built-in variant's rule in settings version sv, when the log says one that can run."""
+        try:
+            rule = rule_of(name, Strategy(**{**std.__dict__, **at[sv]}))
+            return None if varmod.why_bad(rule) else rule
+        except (TypeError, ValueError, KeyError):
+            return None
 
-    book = key_for(S.variant if S.variant in VARIANTS else "base", log.sv)
-    key_for("base", log.sv)
+    open_rows = _rows(P("shadow.json"))
     try:
         with open(P("shadow-settled.jsonl")) as fh:
-            lines = fh.readlines()
-        with open(P("shadow-settled.jsonl.tmp"), "w") as fh:
-            for raw in lines:
-                try:
-                    r = json.loads(raw)
-                    k = key_for(r["v"], r.get("sv", 0))
-                    if k != r["v"]:
-                        r["v"] = k
-                        raw = json.dumps(r, separators=(",", ":")) + "\n"
-                except (ValueError, KeyError, TypeError):
-                    pass
-                fh.write(raw)
-        os.replace(P("shadow-settled.jsonl.tmp"), P("shadow-settled.jsonl"))
-    except FileNotFoundError:
-        pass
-    try:
-        with open(P("shadow.json")) as fh:
-            d = json.load(fh)
-        for r in d.get("rows", []):
-            r["v"] = key_for(r["v"], r.get("sv", 0))
-        with open(P("shadow.json.tmp"), "w") as fh:
-            json.dump(d, fh, separators=(",", ":"))
-        os.replace(P("shadow.json.tmp"), P("shadow.json"))
-    except FileNotFoundError:
-        pass
+            settled = fh.readlines()
+    except OSError:
+        settled = []
+    seen = {r["v"] for r in (open_rows[1] if open_rows else []) if isinstance(r.get("v"), str)}
+    for raw in settled:
+        try:
+            seen.add(str(json.loads(raw)["v"]))
+        except (ValueError, KeyError, TypeError):
+            continue
+    made: dict[str, list[str]] = {}              # built-in variant -> the keys its other rules became
+
+    def key_for(name, sv) -> str:
+        """The variant an entry by `name` in settings version sv belongs to now."""
+        if not isinstance(name, str) or name not in VARIANTS or not isinstance(sv, int) or sv not in at:
+            return name
+        rule = under(name, sv)
+        if rule is None or varmod.same(rule, rule_of(name, std)):
+            return name
+        for k in made.get(name, []):
+            if varmod.same(own.all[k]["rule"], rule):
+                return k
+        stem, i = name[:varmod.NAME_MAX - 3], 2
+        while (k := f"{stem}-{i}") in own.all or k in own.reserved or k in seen:
+            i += 1
+        now = under(name, log.sv)
+        live = name in (S.variant, "base") and now is not None and varmod.same(rule, now)
+        own.all[k] = {"rule": rule, "title": k, "from": name, "made": round(time.time(), 3), "deleted": not live}
+        made.setdefault(name, []).append(k)
+        return k
+
+    book = key_for(S.variant, log.sv)            # (a name nothing knows stays: the profile then waits for a pick)
+    key_for("base", log.sv)
+    out = []
+    for raw in settled:
+        try:
+            r = json.loads(raw)
+            k = key_for(r["v"], r.get("sv", 0))
+            if k != r["v"]:
+                r["v"] = k
+                raw = json.dumps(r, separators=(",", ":")) + "\n"
+        except (ValueError, KeyError, TypeError):
+            pass
+        out.append(raw)
+    if open_rows:
+        for r in open_rows[1]:
+            if "v" in r:
+                r["v"] = key_for(r["v"], r.get("sv", 0))
+
+    for n in files:                              # from here on it writes: first the files as they were
+        if os.path.exists(P(n)) and not busy:
+            shutil.copy2(P(n), P(n) + OLD + ".tmp")
+            os.replace(P(n) + OLD + ".tmp", P(n) + OLD)
+    _put(P(BUSY_FILE), "")
+    if settled:
+        _put(P("shadow-settled.jsonl"), "".join(out))
+    if open_rows:
+        _put(P("shadow.json"), json.dumps({**open_rows[0], "rows": open_rows[1]}, separators=(",", ":")))
     for key, f in RULE_KEYS.items():             # the built-in variants go back to their own rules
         was, now = getattr(S, f), copy.copy(getattr(std, f))
         if was != now:
@@ -509,5 +561,7 @@ def upgrade_rules(dir: str) -> list[str]:
         log.append("strategy.variant", S.variant, book, bump=False)
         S.variant = book
     cfgmod.save(cfg, dir)
-    own.save()                                   # last: until it exists the upgrade has not happened
+    own.save()
+    _put(P(DONE_FILE), "")
+    os.remove(P(BUSY_FILE))
     return own.active()

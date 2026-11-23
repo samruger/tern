@@ -140,6 +140,7 @@ class Shadow:
         self.done_path = os.path.join(runtime, "shadow-settled.jsonl")
         self.rate = fee_rate
         self.own = own_set(runtime)                # this profile's own variants
+        self.own.used = lambda: set(self.agg) | {r["v"] for r in self.rows if isinstance(r.get("v"), str)}
         self.rows: list[dict] = []                 # open entries
         self.slots: dict[str, list] = {}           # event -> slots taken
         self.agg: dict[str, dict[str, list]] = {}  # variant -> event -> [pnl, contracts, entries, wins, stops]
@@ -152,8 +153,10 @@ class Shadow:
         try:
             with open(self.open_path) as fh:
                 d = json.load(fh)
-            self.rows, self.slots = d.get("rows", []), d.get("slots", {})
-        except (OSError, json.JSONDecodeError):
+            rows, slots = (d.get("rows"), d.get("slots")) if isinstance(d, dict) else (None, None)
+            self.rows = [r for r in rows if isinstance(r, dict)] if isinstance(rows, list) else []
+            self.slots = slots if isinstance(slots, dict) else {}
+        except (OSError, ValueError):
             pass
         done = set()
         try:
@@ -171,8 +174,8 @@ class Shadow:
         # died in between, the row is in both: the settled file wins, so it is not settled twice.
         n = len(self.rows)
         # retired variants (stop20, arb) had no open rows when they stopped; any left would not settle right.
-        # One of the profile's own, deleted, may have: they settle.
-        self.rows = [r for r in self.rows if self._key(r) not in done and (self.own.damaged or r.get("v") in VARIANTS or r.get("v") in self.own.all)]
+        # One of the profile's own may have, deleted or lost from variants.json: those settle like any other.
+        self.rows = [r for r in self.rows if self._key(r) not in done and isinstance(r.get("v"), str) and r["v"] not in RETIRED]
         self.dirty = len(self.rows) != n
 
     @staticmethod
@@ -357,8 +360,9 @@ class Shadow:
                 "trades": trades[-30:], "curve": [[i, e] for i, e in enumerate(curve)], "hourly": True}
 
 
-def table(rows: list[dict]) -> list[str]:
-    w = max([8] + [len(r["name"]) for r in rows])
+def table(rows: list[dict], width: int = 8) -> list[str]:
+    """The records side by side under a header. width: at least this for the names (tables meant to line up)."""
+    w = max([width] + [len(r["name"]) for r in rows])
     out = [f"{'variant':<{w}} {'hours':>5} {'entries':>7} {'open':>4} {'P&L':>9} {'¢/contract':>10} {'win':>5} {'t':>6}"]
     for r in rows:
         pc = f"{r['per_contract']*100:+.2f}" if r["per_contract"] is not None else "-"
