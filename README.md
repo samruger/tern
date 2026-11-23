@@ -217,7 +217,7 @@ In the profiles box: `enter` view · `space` on/off · `n` new · `d` live trade
 
 `tern web` serves the screen at http://localhost:8787/ (`--port` to move it). It is not a copy of the
 screen: each browser tab runs the real screen code on a virtual terminal, and the page paints its cells
-with foot's colors and font. So it looks and behaves the same: `p` pages, box numbers, `c`
+with the colors and font from foot's config if there is one, or a built-in set. So it looks and behaves the same: `p` pages, box numbers, `c`
 chart span, `tab`/shift+tab coins, `t`/`T` themes, `v` paper/live, `w` watch a variant, `g` gate, `h`
 help, `↑↓ ←→` and the wheel. Clicking a key on a box border, a box's number, or a ladder or variant row
 does what the key would; on a phone, drag to scroll.
@@ -229,7 +229,7 @@ settings box (`e`) shows the settings but changes only what that browser's log b
 with the coins and strikes its viewers have up, so the engine sends those strikes' contract history
 too; the engine ignores the file 30 seconds after the last viewer leaves.
 
-**From outside the house.** Off localhost (`--host 0.0.0.0`) it will not start without a login and HTTPS:
+**Remote access.** Off localhost (`--host 0.0.0.0`) it will not start without a login and HTTPS:
 
 ```
 python3 -m tern web-password                # a password (enter none for a generated one)
@@ -243,15 +243,15 @@ lasts 30 days in an HttpOnly, Secure, SameSite=Strict cookie. Setting a new pass
 browser out, and `/logout` signs out the one you are on. Five wrong tries from one address make it wait
 15 minutes, and 30 from everyone make every sign-in wait. The certificate is self-signed, so each
 browser warns once. Check that the fingerprint it shows matches the one `web-cert` printed before you
-accept it. To reach it from the internet, open the port in the firewall (`sudo ufw allow 8787/tcp`) and
-forward TCP 8787 on the router to this machine.
+accept it. To reach it from another network, allow the port (8787 by default) through the host's firewall, and
+forward it to the host if there is NAT in between.
 
 **Settings box (`e`), WEB.** `web screen` turns it on and off, `port` moves it and `open to the
-network` switches between every address and this computer only. tern-web.service runs
+network` switches between every address and localhost only. tern-web.service runs
 `tern web --config`, which reads those from `config.json`'s `web` section and exits (and stays down)
 when it is off. The engine restarts or stops the service as soon as one changes, from the box or by
-hand in `config.json`, and the box shows whether it is running and where to open it. The firewall is
-not touched: a new port still needs `sudo ufw allow PORT/tcp` (and the router forward moved).
+hand in `config.json`, and the box shows whether it is running and where to open it. Firewall and
+port-forwarding rules are not touched: a new port needs its own.
 
 <img width="1364" height="668" alt="tern: theme mint chip" src="docs/screenshots/10-theme-mint-chip.png" />
 
@@ -295,8 +295,8 @@ because they are rewritten every second.
 
 ## Notes
 
-- Live order handling follows Kalshi's V2 docs. Signing in has worked with a real
-  key, but no real order has been sent yet. Start live with small caps and watch the first fills against
+- Live order handling follows Kalshi's V2 docs. It has not yet
+  been run with a real order. Start live with small caps and watch the first fills against
   kalshi.com.
 - If the engine isn't running, nothing is watched. Positions still settle on
   Kalshi, because nothing rests on the book.

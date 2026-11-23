@@ -50,7 +50,7 @@ variant run under those settings, and a log of every settings change.
   log an error and carry on.
 - A record that mixes settings without saying so.
 - Losing a deleted profile's records.
-- More Kalshi requests per step than now (the Wi-Fi is flaky).
+- More Kalshi requests per step than now.
 - A screen too busy to read; tern's look (btop-style, themed) stays.
 
 ## Approaches considered

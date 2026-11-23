@@ -4,9 +4,9 @@
 
 ## Why
 
-The user's tern window is about 111 columns × 33 rows (1000×660 px, foot size 11); maximized it is about
+A typical tern window is about 111 columns × 33 rows (1000×660 px, foot size 11); maximized it is about
 151 × 37. Box 3 holds three boxes (ladder → variants → profiles → hidden), so only one of them shows at a
-time, and at 111 columns the variants box loses its gate column. The user dislikes having to cycle through boxes;
+time, and at 111 columns the variants box loses its gate column. Cycling through boxes should not be needed;
 hiding a box with a key is fine. Ideally everything is on one screen. Where it can't be (all boxes at a readable
 size need about 50 rows), one plain switch is acceptable.
 

@@ -62,8 +62,7 @@ entries an hour in the backtest; at 5 contracts each and +0.6¢ a contract that 
 roughly 30¢ an hour, or about $7 a day, while one failed favorite loses about $4. tern runs it on paper
 and lets it trade live only after a paper record passes the gate.
 
-ETH was not run on 67 days. That download needed more memory than the machine had
-free.
+ETH was not run on 67 days: that download needs a lot of memory.
 
 ## Reproducing
 
