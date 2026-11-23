@@ -425,6 +425,7 @@ The major ones, newest first.
 
 | Date | Change |
 |---|---|
+| 2026-11-23 | **GPL license** (version 3 or later) instead of MIT. Copies from before this stay under MIT. |
 | 2026-11-23 | **Your own variants.** Make, change and delete them from the screen (`n`, `E`, `D`), in each profile. Changing a rule makes a new variant with its own record; the built-in ones never change. Profile 1's settings show its variant and rule. Profiles that had changed their rule are converted (see Profiles). |
 | 2026-11-23 | **Reports screen** (`o`): what `tern report` prints, from the records as they stand, and the saved `report-*.txt` files. `s` there saves one, and `tern report-timer` sets up a weekly one. `S` (was `s`) stops and starts the engine. |
 | 2026-11-23 | MIT license; README rewritten for anyone running it. |
@@ -444,4 +445,9 @@ The major ones, newest first.
 
 ## License
 
-[MIT](LICENSE)
+Copyright (C) 2026 samruger
+
+tern is free software: you can redistribute it and/or modify it under the terms of the GNU General Public License
+as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later
+version. It is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied
+warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See [LICENSE](LICENSE) for the details.
