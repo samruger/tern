@@ -2435,7 +2435,7 @@ class Screen:
             if self.not_here():
                 return True
             self.modal = {"type": "reset", "title": "reset paper", "lines": ["Wipe the paper book and the rule's paper record?",
-                                                                               "This also restarts the gate's clock.", "", "y resets · any other key keeps it"]}
+                                                                               "The variants' records and the gate are kept.", "", "y resets · any other key keeps it"]}
         elif ch == ord("L"):
             if self.not_here():
                 return True
