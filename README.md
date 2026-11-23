@@ -5,7 +5,7 @@ screen: braille charts, a strike ladder, and paper and live books.
 Every trade comes from the rule; there are no manual orders.
 It paper trades from the start and sends no real order until you arm live.
 
-<img width="1364" height="682" alt="screenshot-2026-11-21_17-46-09-tern" src="https://github.com/user-attachments/assets/9814d2f4-8def-486d-ad7b-99a3412f14e1" />
+<img width="1364" height="682" alt="tern: page1 trade" src="docs/screenshots/01-page1-trade.png" />
 
 Python 3.11+, standard library only. Kalshi request signing (Ed25519 and RSA-PSS)
 is written in pure Python and checked against openssl in the tests.
@@ -22,7 +22,7 @@ python3 -m tern service       # a systemd user service so the engine keeps runni
 python3 -m unittest tests.test_tern
 ```
 
-<img width="1364" height="682" alt="screenshot-2026-11-21_17-46-22-tern" src="https://github.com/user-attachments/assets/b7378d7a-d73a-44a6-8ee0-a264e34c64da" />
+<img width="1364" height="682" alt="tern: page2 compare" src="docs/screenshots/02-page2-compare.png" />
 
 ## Is there an edge?
 
@@ -42,7 +42,7 @@ Barely. The full write-up is [research/RESEARCH.md](research/RESEARCH.md). In sh
   default size, and single losses of about $4 when a favorite fails.
 - **Resting bids lose.** You get filled when price moves against you.
 
-<img width="1364" height="682" alt="screenshot-2026-11-21_17-46-50-tern" src="https://github.com/user-attachments/assets/ee8ac357-4425-492f-91d3-d9fdeb5d1415" />
+<img width="1364" height="682" alt="tern: variants multi" src="docs/screenshots/03-variants-multi.png" />
 
 ## The rule
 
@@ -55,7 +55,7 @@ every 5 seconds. It trades BTC only by default. `r` on another coin's view adds
 that coin, but ETH was only tested on 14 days and SOL, XRP, BNB and HYPE not at
 all; those four are there to watch.
 
-<img width="1364" height="682" alt="screenshot-2026-11-21_17-47-02-tern" src="https://github.com/user-attachments/assets/b8b0be7f-77f2-40b1-a825-020223802583" />
+<img width="1364" height="682" alt="tern: book multi" src="docs/screenshots/04-book-multi.png" />
 
 ## Paper and live
 
@@ -84,7 +84,7 @@ once it has. Press `L` again to return to paper. Once live:
   seconds. Each order carries a unique `client_order_id`. If the reply is lost,
   the engine looks the order up by that id instead of sending it again.
 
-<img width="1364" height="682" alt="screenshot-2026-11-21_17-47-55-tern" src="https://github.com/user-attachments/assets/ede6700a-221c-4e0f-9b6e-87c2758cb057" />
+<img width="1364" height="682" alt="tern: settings" src="docs/screenshots/05-settings.png" />
 
 ## Looking for a better edge
 
@@ -97,12 +97,14 @@ variants box with `↑↓` and `enter`. While live is on or armed, switching ask
 you to type `live`. Choosing whichever looks best after watching them flatters
 it; the gate is the check.
 
+<img width="1364" height="682" alt="tern: log shadow" src="docs/screenshots/06-log-shadow.png" />
+
 To look at a variant without trading it, highlight it and press `w`. The book,
 equity, ladder and band then show that variant's shadow record as if it traded
 (on a $1,000 paper start), and the status line says `watching X · trading Y`.
 Nothing about what trades changes. `w` again or `v` goes back to the real book.
 
-<img width="1364" height="682" alt="screenshot-2026-11-21_17-48-09-tern" src="https://github.com/user-attachments/assets/cbb7bd30-6a45-4c50-9b88-612ebf1c984e" />
+<img width="1364" height="682" alt="tern: gate" src="docs/screenshots/07-gate.png" />
 
 | Variant | What it does |
 |---|---|
@@ -125,8 +127,6 @@ It also records what it sees to `runtime/ticks/`: every 5 seconds, each
 near-the-money strike's bid, ask and sizes with spot, plus each hour's results
 (about 2 MB a day, gzipped). Kalshi keeps only minute candles, so this is the
 data for testing ideas the first research could not.
-
-<img width="1364" height="682" alt="screenshot-2026-11-21_17-48-45-tern" src="https://github.com/user-attachments/assets/41fada51-6dc4-4381-9249-3ed672e7d72d" />
 
 ## Profiles
 
@@ -188,6 +188,8 @@ chmod 600 ~/.config/tern/kalshi.env ~/.config/tern/kalshi.pem
 python3 -m tern live-check
 ```
 
+<img width="1364" height="682" alt="tern: help" src="docs/screenshots/08-help.png" />
+
 ## The screen
 
 The boxes sit on two pages, and `p` flips between them. Page 1 · trade has spot, contract, ladder, book
@@ -214,7 +216,7 @@ Keys: `p` page 1 / page 2 · `↑↓` / `PgUp PgDn` move in the focused box · `
 `c` chart range · `v` book · `L` arm/disarm live · `g` gate · `R` reset paper ·
 `s` start the engine · `?` help · `q` close (the engine keeps running).
 
-<img width="1364" height="682" alt="screenshot-2026-11-21_17-49-07-tern" src="https://github.com/user-attachments/assets/e3c5f332-30ae-41ac-bae7-a796b2ad9275" />
+<img width="1364" height="682" alt="tern: theme sunset" src="docs/screenshots/09-theme-sunset.png" />
 
 ## The web screen
 
@@ -255,6 +257,8 @@ when it is off. The engine restarts or stops the service as soon as one changes,
 hand in `config.json`, and the box shows whether it is running and where to open it. The firewall is
 not touched: a new port still needs `sudo ufw allow PORT/tcp` (and the router forward moved).
 
+<img width="1364" height="682" alt="tern: theme mint chip" src="docs/screenshots/10-theme-mint-chip.png" />
+
 ## Files
 
 `runtime/` (gitignored) holds `config.json`, `state.json` (the books as they
@@ -282,7 +286,7 @@ because they are rewritten every second.
 | `webauth.py` | tern web's password, sign-in cookie, wrong-guess limits and certificate |
 | `research/` | the scripts and data behind the numbers above |
 
-<img width="1364" height="682" alt="screenshot-2026-11-21_17-49-26-tern" src="https://github.com/user-attachments/assets/e5b7f060-8be7-4843-ab2b-88077bc40738" />
+<img width="1364" height="682" alt="tern: theme grape" src="docs/screenshots/11-theme-grape.png" />
 
 ## Limits
 
