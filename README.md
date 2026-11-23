@@ -120,6 +120,8 @@ book moves to it if it was the one in use. A variant with no entries yet changes
 each on its own record, and a change to the rule live trades asks you to type `live` while live is armed.
 `r` is a rule change too. At most 12 in each profile, kept in `variants.json` beside its records.
 
+<img width="1364" height="668" alt="E on one of a profile's own variants: its rule" src="docs/screenshots/12-variant-rule.png" />
+
 ### Watching one
 
 To look at a variant without trading it, highlight it and press `w`. The book,
@@ -127,7 +129,7 @@ equity, ladder and band then show that variant's shadow record as if it traded
 (on a $1,000 paper start), and the status line says `watching X · trading Y`.
 Nothing about what trades changes. `w` again or `v` goes back to the real book.
 
-<img width="1364" height="668" alt="The variants box zoomed to the whole screen" src="docs/screenshots/03-variants-multi.png" />
+<img width="1364" height="668" alt="The variants box zoomed to the whole screen, viewing profile 2: the built-in variants and its own, marked +" src="docs/screenshots/03-variants-multi.png" />
 
 The engine also records what it sees to `runtime/ticks/`: every 5 seconds, each near-the-money strike's
 bid, ask and sizes with spot, plus each hour's results (about 2 MB a day, gzipped). Kalshi keeps only
@@ -208,7 +210,7 @@ as `*.pre-variants`.
 
 <img width="1364" height="668" alt="The book box, viewing profile 2" src="docs/screenshots/04-book-multi.png" />
 
-<img width="1364" height="668" alt="A profile's settings box" src="docs/screenshots/05-settings.png" />
+<img width="1364" height="668" alt="A profile's settings box: the variant its book trades, that variant's rule, and its size" src="docs/screenshots/05-settings.png" />
 
 ## Paper and live
 
