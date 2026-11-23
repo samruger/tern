@@ -494,16 +494,22 @@ def _font_files() -> dict[str, str]:
     return out
 
 
+# The login page's source link. The AGPL asks whoever runs a changed tern for others to offer them its source:
+# point this at yours.
+SOURCE = "https://github.com/samruger/tern"
+
 LOGIN_PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1"><title>tern</title>
 <style>html,body{margin:0;height:100%;background:#1a1b26;color:#a9b1d6;font:16px monospace}
 body{display:flex;align-items:center;justify-content:center}
 form{display:flex;flex-direction:column;gap:12px;width:min(320px,calc(100% - 32px))}
 input,button{font:inherit;padding:10px;border-radius:4px;border:1px solid #414868;background:#16161e;color:#c0caf5}
-button{background:#7aa2f7;color:#1a1b26;border:0;cursor:pointer}p{margin:0;color:#f7768e;min-height:1.2em}</style>
+button{background:#7aa2f7;color:#1a1b26;border:0;cursor:pointer}p{margin:0;color:#f7768e;min-height:1.2em}
+a{color:#7aa2f7;align-self:center;font-size:14px}</style>
 </head><body><form method="post" action="/login"><b>tern</b>
 <input type="password" name="password" placeholder="password" autocomplete="current-password" autofocus required>
-<button>sign in</button><p>{msg}</p></form></body></html>"""
+<button>sign in</button><p>{msg}</p>
+<a href="{source}" target="_blank" rel="noopener noreferrer">source</a></form></body></html>"""
 
 LOOPBACK = ("127.0.0.1", "::1", "localhost")
 CSP = ("default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; "
@@ -654,7 +660,7 @@ def serve(runtime: str = cfgmod.RUNTIME, host: str = "127.0.0.1", port: int = 87
             return bool(m) and auth.valid(m.value)
 
         def login_page(self, msg: str = "", code: int = 200) -> None:
-            self.reply(code, LOGIN_PAGE.replace("{msg}", html.escape(msg)).encode(), "text/html; charset=utf-8")
+            self.reply(code, LOGIN_PAGE.replace("{source}", html.escape(SOURCE)).replace("{msg}", html.escape(msg)).encode(), "text/html; charset=utf-8")
 
         def do_GET(self):
             path = self.path.split("?", 1)[0]

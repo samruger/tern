@@ -3697,8 +3697,12 @@ class WebLogin(unittest.TestCase):
                 self.assertEqual((r.status, r.getheader("Location")), (303, "/login"))
                 self.assertEqual(ask("GET", "/look")[0].status, 401)
                 self.assertEqual(ask("POST", "/frame", b"{}")[0].status, 401)  # and the connection stays in step
-                r, _ = ask("POST", "/login", b"password=nope", {"Content-Type": "application/x-www-form-urlencoded"})
+                link = f'<a href="{web.SOURCE}" target="_blank" rel="noopener noreferrer">source</a>'.encode()
+                r, body = ask("GET", "/login")
+                self.assertIn(link, body)                                    # where this tern's code is (AGPL)
+                r, body = ask("POST", "/login", b"password=nope", {"Content-Type": "application/x-www-form-urlencoded"})
                 self.assertEqual(r.status, 401)
+                self.assertIn(link, body)
                 r, _ = ask("POST", "/login", b"password=correct+horse+battery",
                            {"Content-Type": "application/x-www-form-urlencoded"})
                 self.assertEqual(r.status, 303)

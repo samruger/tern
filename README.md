@@ -451,3 +451,6 @@ tern is free software: you can redistribute it and/or modify it under the terms 
 License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any
 later version. It is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied
 warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See [LICENSE](LICENSE) for the details.
+
+The web screen's login page links to this repository. If you run a changed tern for other people, point the link
+(`SOURCE` in `tern/web.py`) at your own source.
