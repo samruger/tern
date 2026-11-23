@@ -48,9 +48,10 @@ NAMED = {"ArrowUp": curses.KEY_UP, "ArrowDown": curses.KEY_DOWN, "ArrowLeft": cu
 VIEW_KEYS = set("12345678pjktTcvwgeh?") | {"ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "PageUp", "PageDown",
                                        "Tab", "BackTab"}
 CONTROL_KEYS = {"q": "quit", "Q": "quit", "s": "engine start/stop", "R": "paper reset", "L": "live",
-                "r": "rule coins", "Enter": "picking a variant", "N": "renaming"}
+                "r": "rule coins", "Enter": "picking a variant", "N": "renaming",
+                "n": "making a variant or profile", "E": "changing a rule", "D": "deleting"}
 # border hints whose key changes something: not drawn on the web (the profiles box keeps ⏎: it only views)
-CONTROL_HINTS = {"r", "L", "R", "s", "q", "⏎", "space", "n", "d", "D", "N"}
+CONTROL_HINTS = {"r", "L", "R", "s", "q", "⏎", "space", "n", "d", "D", "N", "E"}
 # what a hint on a border sends when clicked
 HINT_KEY = {"tab": "Tab", "any key": "Escape", "esc": "Escape", "↑↓": None, "⏎": "Enter"}
 PROFILE_ONLY = "view only: profiles are made, changed and deleted from the screen in the terminal"
@@ -209,6 +210,9 @@ class WebScreen(dash.Screen):
         if self.set_rows()[self.set_sel].key == "screen.log":
             return out                           # this row really is saved at once
         for line in out:                         # its "saved at once" hints don't hold here
+            if isinstance(line, list) and len(line) == 1 and "makes a new variant" in line[0][0]:
+                t = line[0][0]
+                line[0] = (t.replace("makes a new variant", "view only here").ljust(len(t)), line[0][1])
             if isinstance(line, list) and len(line) == 1 and "saved at once" in line[0][0]:
                 t = line[0][0]
                 line[0] = (t.replace("saved at once, logged", "view only here").replace("saved at once", "view only here")

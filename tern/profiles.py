@@ -2,9 +2,9 @@
 
 Profile 1 is the desk itself (runtime/), with its paper book, live, the gate and its variant records; nothing
 here moves or rewrites its files. Each other profile is a folder under runtime/profiles/ with its own
-settings (config.json: only its strategy and paper start are used), its own record for every variant run
-under those settings (shadow.json, shadow-settled.jsonl, as runtime/ has), and a log of every settings
-change (settings-log.jsonl). The engine runs every enabled profile's variants on the same snapshot it trades
+settings (config.json: only its strategy and paper start are used), its own variants (variants.json, as
+runtime/ may have), its own record for every variant it runs (shadow.json, shadow-settled.jsonl, as runtime/
+has), and a log of every settings change (settings-log.jsonl). The engine runs every enabled profile's variants on the same snapshot it trades
 profile 1 on, so a difference between profiles comes from their settings, not from timing.
 
 A profile never sends an order itself. Its "book" is the record of the variant it picked, shown on its paper
@@ -13,7 +13,8 @@ its own record of its variant passes the gate.
 
 Settings versions: each profile (profile 1 too) counts its settings, starting at 1. A change to a field that
 changes how records are made (RECORD_KEYS) bumps the version, and every new record row is stamped with it,
-so results can be split by settings period. Rows from before versions existed count as version 0.
+so results can be split by settings period. Rows from before versions existed count as version 0. Changing a
+rule from the screen never does that: it makes a new variant (variants.py) with its own record.
 """
 
 from __future__ import annotations
@@ -26,16 +27,17 @@ import shutil
 import time
 
 from . import config as cfgmod
+from . import variants as varmod
 from .config import SERIES, Config, Setting, Strategy
-from .shadow import ORDER, VARIANTS, Shadow
+from .shadow import ORDER, VARIANTS, Shadow, known, own_set, rule_of
+from .variants import SLOT_CHOICES
 
 MAX_PROFILES = 8                                 # besides profile 1
-SLOT_CHOICES = (30, 25, 20, 15, 10, 5)           # minutes before the close a profile may enter at
 PROFILES_DIR = "profiles"
 DELETED_DIR = "profiles-deleted"
 NAME_MAX = 40
-NAMES_FILE = "names.json"                        # runtime/: profile 1's name and the variants' display names
-VARIANT_NAME_MAX = 12
+NAMES_FILE = "names.json"                        # runtime/: profile 1's name and the built-in variants' display names
+VARIANT_NAME_MAX = varmod.NAME_MAX
 
 # fields that change how variant records are made: a change bumps the settings version
 RECORD_KEYS = ("strategy.band_lo", "strategy.band_hi", "strategy.minutes", "strategy.max_spread",
@@ -48,13 +50,24 @@ def _paper(key: str) -> Setting:
     return Setting(r.sec, r.name, r.label, r.lo, r.hi, r.step, r.kind, 0, r.what, "PAPER" if key == "strategy.contracts" else "")
 
 
+# "book trades": the settings box's first row for every profile, profile 1 included
+VARIANT_SETTING = Setting("strategy", "variant", "book trades", kind="variant", group="BOOK",
+                          what="the variant whose rule this profile trades; every variant keeps running")
+
 # The settings box's rows for profiles 2+. No live or gate rows: those are profile 1's, and live's caps and size
 # stay its own even when d makes a profile the live one (its rule is then what live trades).
 PROFILE_SETTINGS = [
-    Setting("strategy", "variant", "book trades", kind="variant", group="PROFILE",
-            what="the variant whose record this profile's book shows; every variant keeps running"),
-    Setting("", "enabled", "running", kind="bool",
+    VARIANT_SETTING,
+    *varmod.RULE_SETTINGS,
+    _paper("strategy.contracts"),
+    _paper("strategy.max_hour_cost"),
+    _paper("paper_capital"),
+    Setting("", "enabled", "running", kind="bool", group="PROFILE",
             what="off: no new entries, and the hours while off don't count; open ones still settle"),
+]
+# The rule the built-in variants start from, in config.json. The screen never changes these (a rule changed
+# there is a new variant); a hand edit still does, and is logged.
+BASE_RULE = [
     Setting("strategy", "band_lo", "band low", 0.50, 0.98, 0.01, kind="p", group="RULE",
             what="the favorite's mid must be at least this (a variant with its own band keeps it)"),
     Setting("strategy", "band_hi", "band high", 0.51, 0.99, 0.01, kind="p",
@@ -65,11 +78,9 @@ PROFILE_SETTINGS = [
             what="widest bid-ask spread a strike may have"),
     Setting("strategy", "series", "coins", kind="coins",
             what="the coins the rule trades (multi trades all of them); at least one stays on"),
-    _paper("strategy.contracts"),
-    _paper("strategy.max_hour_cost"),
-    _paper("paper_capital"),
 ]
-PSET = {r.key: r for r in PROFILE_SETTINGS}
+PSET = {r.key: r for r in PROFILE_SETTINGS + BASE_RULE}
+RULE_KEYS = {f"strategy.{f}": f for f in ("band_lo", "band_hi", "minutes", "max_spread", "series")}
 
 ROW_KEYS = ("v", "ts", "event", "close", "ticker", "side", "n", "cost", "fee", "slot")   # an open row needs every one
 load_errors: dict[str, str] = {}                 # folder -> why it would not load, from the last load_all()
@@ -133,6 +144,8 @@ def show(key: str, v) -> str:
         return "on" if v else "off"
     if kind == "p":
         return f"{v * 100:.0f}¢"
+    if kind == "cap":
+        return f"{v:g}" if v else "off"
     if isinstance(v, list):
         return " ".join(SERIES.get(x, str(x)).split("-")[0] if isinstance(x, str) else str(x) for x in v)
     if kind == "usd":
@@ -189,11 +202,18 @@ class Names:
     def variant(self, name: str) -> str:
         return self.variants.get(name, name)
 
-    def rename_variant(self, name: str, to: str) -> tuple[str, str]:
-        """(was, now). An empty name, or the variant's own, goes back to the variant's own name."""
+    def shown(self) -> list[str]:
+        """What the built-in variants are called on the screen: no own variant may be called that."""
+        return [self.variant(n) for n in ORDER]
+
+    def rename_variant(self, name: str, to: str, taken=()) -> tuple[str, str]:
+        """(was, now). An empty name, or the variant's own, goes back to the variant's own name. taken: what
+        the profiles' own variants are called."""
         if name not in VARIANTS:
             raise ValueError(f"unknown variant {name!r} (known: {', '.join(ORDER)})")
         to = _clean(to)
+        if any(to.lower() == t.lower() for t in taken):
+            raise ValueError(f"{to!r} is already a variant's name")
         if len(to) > VARIANT_NAME_MAX:
             raise ValueError(f"a variant's name is at most {VARIANT_NAME_MAX} characters")
         to = to or name
@@ -218,7 +238,10 @@ class Profile:
         self.shadow = Shadow(dir, fee)
 
     @classmethod
-    def load(cls, dir: str, fee: float) -> "Profile":
+    def load(cls, dir: str, fee: float, upgrade: bool = False) -> "Profile":
+        """upgrade: the engine's load, which first turns a rule set before own variants existed into some (upgrade_rules)."""
+        if upgrade:
+            upgrade_rules(dir)
         with open(os.path.join(dir, "profile.json")) as fh:
             meta = json.load(fh)
         if not isinstance(meta, dict) or not isinstance(meta.get("name"), str):
@@ -257,7 +280,7 @@ class Profile:
     @property
     def variant(self) -> str:
         v = self.cfg.strategy.variant
-        return v if v in VARIANTS else "base"
+        return v if known(v, self.shadow.own) else "base"
 
     def reload_cfg(self) -> list[tuple]:
         """Re-read config.json (a hand edit). Unreadable keeps the settings in use. Each changed record
@@ -280,7 +303,7 @@ class Profile:
     def check(self, key: str, value):
         """The value as it will be stored, or ValueError with a message the screen can show."""
         r = PSET.get(key)
-        if r is None:
+        if r is None or r.sec == "rule":
             raise ValueError(f"{key!r} is not a profile setting")
         S = self.cfg.strategy
         if r.kind == "bool":
@@ -288,8 +311,8 @@ class Profile:
                 raise ValueError(f"{r.label} must be on or off")
             return value
         if r.kind == "variant":
-            if value not in VARIANTS:
-                raise ValueError(f"unknown variant {value!r} (known: {', '.join(ORDER)})")
+            if not known(value, self.shadow.own):
+                raise ValueError(f"unknown variant {value!r} (known: {', '.join(self.shadow.order())})")
             return value
         if r.kind in ("slots", "coins"):
             ok = SLOT_CHOICES if r.kind == "slots" else tuple(SERIES)
@@ -366,6 +389,10 @@ def create(runtime: str, name: str, base: Config, fee: float) -> Profile:
     os.makedirs(d)
     cfg = Config(paper_capital=base.paper_capital, taker_fee=base.taker_fee,
                  strategy=Strategy(**copy.deepcopy(base.strategy.__dict__)))
+    own, theirs = own_set(d), own_set(runtime)
+    if theirs.has(cfg.strategy.variant):         # profile 1 trades one of its own: this one gets a copy of it
+        own.all[cfg.strategy.variant] = {**copy.deepcopy(theirs.all[cfg.strategy.variant]), "made": round(time.time(), 3)}
+    own.save()
     cfgmod.save(cfg, d)
     p = Profile(d, name, True, time.time(), cfg, fee)
     p.log.append("created", None, name, bump=False)
@@ -385,3 +412,102 @@ def delete(runtime: str, pid: str) -> str:
         to, i = f"{base}-{i}", i + 1
     shutil.move(os.path.join(_root(runtime), pid), to)
     return to
+
+
+# ------------------------------------------------------------ profiles from before own variants
+def upgrade_rules(dir: str) -> list[str]:
+    """Once per profile folder (until variants.json exists): the settings box used to change the rule every
+    built-in variant in a profile started from. Each rule that made into something else becomes a variant of
+    the profile's own with the entries it bought, and the built-in ones go back to their own rules, keeping
+    only what they bought under them. The one the book trades, and base, keep running; the others are listed
+    as deleted (their records stay). Files as they were are kept as *.pre-variants. Returns the new keys."""
+    P = lambda n: os.path.join(dir, n)
+    files = ("config.json", "shadow.json", "shadow-settled.jsonl", "settings-log.jsonl")
+    if os.path.exists(P(varmod.FILE)):
+        return []
+    with open(P("config.json")) as fh:
+        Config.from_dict(json.load(fh))          # unreadable: leave everything (the load that follows says so)
+    for n in files:                              # an upgrade cut short starts again from the files as they were
+        if os.path.exists(P(n) + ".pre-variants"):
+            shutil.copy2(P(n) + ".pre-variants", P(n))
+    cfg = cfgmod.load(dir)
+    S, std = cfg.strategy, Strategy()
+    if all(getattr(S, f) == getattr(std, f) for f in RULE_KEYS.values()) and \
+            not any(ln.get("key") in RULE_KEYS for ln in SettingsLog(P("settings-log.jsonl")).lines()):
+        own_set(dir).save()
+        return []
+    for n in files:
+        if os.path.exists(P(n)) and not os.path.exists(P(n) + ".pre-variants"):
+            shutil.copy2(P(n), P(n) + ".pre-variants.tmp")
+            os.replace(P(n) + ".pre-variants.tmp", P(n) + ".pre-variants")
+    # the rule in each settings version, walking the log back from what it is now
+    log = SettingsLog(P("settings-log.jsonl"))
+    cur = {f: copy.copy(getattr(S, f)) for f in RULE_KEYS.values()}
+    at = {log.sv: dict(cur)}
+    for ln in reversed(log.lines()):
+        at.setdefault(ln.get("sv"), dict(cur))
+        if ln.get("key") in RULE_KEYS and isinstance(ln.get("sv"), int):
+            cur[RULE_KEYS[ln["key"]]] = ln.get("from")
+            at.setdefault(ln["sv"] - 1, dict(cur))
+    under = lambda name, sv: rule_of(name, Strategy(**{**std.__dict__, **at[sv]}))
+    own = own_set(dir)
+    keys: dict[tuple, str] = {}
+
+    def key_for(name: str, sv) -> str:
+        """The variant an entry by `name` in settings version sv belongs to now."""
+        if name not in VARIANTS or sv not in at:
+            return name
+        rule = under(name, sv)
+        if varmod.same(rule, rule_of(name, std)):
+            return name
+        for (n, k) in keys.items():
+            if n[0] == name and varmod.same(own.all[k]["rule"], rule):
+                return k
+        stem, i = name[:varmod.NAME_MAX - 3], 2
+        while (k := f"{stem}-{i}") in own.all or k in own.reserved:
+            i += 1
+        live = name in (S.variant, "base") and varmod.same(rule, under(name, log.sv))
+        own.all[k] = {"rule": rule, "title": k, "from": name, "made": round(time.time(), 3), "deleted": not live}
+        keys[(name, sv)] = k
+        return k
+
+    book = key_for(S.variant if S.variant in VARIANTS else "base", log.sv)
+    key_for("base", log.sv)
+    try:
+        with open(P("shadow-settled.jsonl")) as fh:
+            lines = fh.readlines()
+        with open(P("shadow-settled.jsonl.tmp"), "w") as fh:
+            for raw in lines:
+                try:
+                    r = json.loads(raw)
+                    k = key_for(r["v"], r.get("sv", 0))
+                    if k != r["v"]:
+                        r["v"] = k
+                        raw = json.dumps(r, separators=(",", ":")) + "\n"
+                except (ValueError, KeyError, TypeError):
+                    pass
+                fh.write(raw)
+        os.replace(P("shadow-settled.jsonl.tmp"), P("shadow-settled.jsonl"))
+    except FileNotFoundError:
+        pass
+    try:
+        with open(P("shadow.json")) as fh:
+            d = json.load(fh)
+        for r in d.get("rows", []):
+            r["v"] = key_for(r["v"], r.get("sv", 0))
+        with open(P("shadow.json.tmp"), "w") as fh:
+            json.dump(d, fh, separators=(",", ":"))
+        os.replace(P("shadow.json.tmp"), P("shadow.json"))
+    except FileNotFoundError:
+        pass
+    for key, f in RULE_KEYS.items():             # the built-in variants go back to their own rules
+        was, now = getattr(S, f), copy.copy(getattr(std, f))
+        if was != now:
+            setattr(S, f, now)
+            log.append(key, was, now, bump=True)
+    if book != S.variant:
+        log.append("strategy.variant", S.variant, book, bump=False)
+        S.variant = book
+    cfgmod.save(cfg, dir)
+    own.save()                                   # last: until it exists the upgrade has not happened
+    return own.active()

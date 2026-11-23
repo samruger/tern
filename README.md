@@ -8,8 +8,8 @@ It paper trades from the start and sends no real order until you arm live.
 <img width="1364" height="668" alt="Page 1: spot and contract charts, strike ladder, book and log" src="docs/screenshots/01-page1-trade.png" />
 
 - **Paper and live books.** Live is off until you arm it, and has its own caps, gate and daily loss limit.
-- **Variants.** Ten versions of the rule run side by side on paper, each with its own record.
-- **Profiles.** Whole copies of the bot with their own settings, compared on the same prices.
+- **Variants.** Ten built-in versions of the rule run side by side on paper, each with its own record. Make your own from the screen.
+- **Profiles.** Whole copies of the bot with their own variants and settings, compared on the same prices.
 - **Runs unattended.** The engine is separate from the screen and can run as a systemd service.
 - **Web screen.** The same screen in a browser, view only.
 - **54 color themes.**
@@ -51,7 +51,8 @@ favorite side (YES or NO) has its mid between **75¢ and 95¢** and a spread of
 (immediate-or-cancel) and holds to settlement. It puts at most **$60** into any
 one hour. It trades BTC by default; `r` on another coin's view adds that coin.
 These are the defaults, under `strategy` in `runtime/config.json`, which is
-re-read every 5 seconds.
+re-read every 5 seconds. The screen never changes the band, slots, spread or coins there: a rule
+changed from the screen is a new variant (see Variants).
 
 The rule comes from a study of 67 days of BTC and 14 days of ETH markets. In the BTC data, 80–90¢
 favorites won about 2 points more often than their price said, and 5–20¢ long shots about 2 points less
@@ -84,7 +85,7 @@ restores the page, and `p` restores it and flips.
 
 ## Variants
 
-The engine runs these on paper, side by side, each with its own record and real fees. The paper and live
+The engine runs these built-in variants on paper, side by side, each with its own record and real fees. The paper and live
 books trade whichever one `strategy.variant` names (`base` by default). Pick it in the variants box (`p`,
 page 2) with `↑↓` and `enter`. While live is on or armed, switching asks you to type `live`.
 
@@ -102,6 +103,24 @@ page 2) with `↑↓` and `enter`. While live is on or armed, switching asks you
 | `calm` | skips a slot when the coin's realized volatility over the last hour (one-minute returns) is above 7.6 bp/min |
 
 Two earlier variants are retired: `stop20` (sell 20¢ under entry) and `arb` (a cross-strike pair under $1).
+
+### Your own
+
+A variant you make is a whole rule: band, slots, max spread, coins, entries a strike and most volatility.
+It belongs to the profile you are viewing and is marked `+` in the variants box. With that box focused:
+
+- **`n` makes one**, a copy of the highlighted variant under a name you type, with an empty record. Its rule opens next.
+- **`E` changes the highlighted one's rule.** The RULE rows in settings (`e`) do the same for the one in use.
+- **`D` deletes one** (it asks `y`). If it bought anything its record stays on file and open entries settle.
+- **`N` renames it**, `enter` uses it, `w` watches it, as with any variant.
+
+A record is always one rule's. The built-in variants never change from the screen, and neither does one that
+has bought anything: changing its rule makes a new variant (`band80-2`) with an empty record, and the
+book moves to it if it was the one in use. A variant with no entries yet changes in place. The gate judges
+each on its own record, and a change to the rule live trades asks you to type `live` while live is armed.
+`r` is a rule change too. At most 12 in each profile, kept in `variants.json` beside its records.
+
+### Watching one
 
 To look at a variant without trading it, highlight it and press `w`. The book,
 equity, ladder and band then show that variant's shadow record as if it traded
@@ -138,17 +157,16 @@ hour's P&L divided by its standard error. These are paper results.
 
 ## Profiles
 
-The variants all share one set of settings. A profile is a whole copy of the
-desk on paper with its own: band, slots, max spread, coins, contracts a strike,
-most an hour, paper start, and the variant its book trades. Every variant runs
-under each profile's settings, on the same prices at the same moment as the
-desk, so a difference between two profiles comes from their settings, not
-from timing.
+A profile is a whole copy of the desk on paper with its own variants, contracts a
+strike, most an hour, paper start, and the variant its book trades. The built-in
+variants and its own run in it, on the same prices at the same moment as the
+desk, so a difference between two profiles comes from their variants and
+settings, not from timing.
 
 - **Profile 1 is the desk:** the paper book, live and the gate, with its files
   directly in `runtime/`. Live trades profile 1's rule unless `d` picks another profile.
 - **Make one** in the profiles box (`p`, page 2; `←→` to focus it), then `n`. It starts
-  with profile 1's settings and empty records. `enter` views it: the book,
+  with profile 1's settings, the variant it trades and empty records. `enter` views it: the book,
   equity, variants box and settings box then show that profile. Viewing changes
   nothing about what trades. `space` turns one off (no new entries, open ones
   still settle) and on. `D` deletes it after you type `delete`; its folder moves
@@ -163,13 +181,14 @@ from timing.
 - **Rename** with `N`: in the profiles box it renames the highlighted profile
   (profile 1 too; an empty name gives "profile 1" back), in the variants box it
   gives the highlighted variant a display name (up to 12 characters; empty gives
-  its own back). A variant's record, the gate, `config.json` and `tern report`
+  its own back; a built-in one's shows in every profile). A variant's record, the gate, `config.json` and `tern report`
   keep its own name, so renaming never splits a record. Names live in
-  `runtime/names.json` (profile 1, variants) and each profile's `profile.json`.
+  `runtime/names.json` (profile 1, built-in variants) and each profile's `profile.json`
+  and `variants.json`.
 - **Change its settings** with `e` while viewing it. Every change is written
   down with its time (`runtime/profiles/<id>/settings-log.jsonl`;
-  `runtime/settings-log.jsonl` for profile 1), and a change to how records are
-  made starts a new settings period. Rows are stamped with their period, so
+  `runtime/settings-log.jsonl` for profile 1), and a change to the size or hourly budget
+  starts a new settings period. A rule change is a new variant instead. Rows are stamped with their period, so
   results can be split by it. ALERTS and WEB are for the whole desk and show under every profile;
   LIVE and GATE are under profile 1.
 - **Compare:** `python3 -m tern report --profiles` puts each profile's book
@@ -181,6 +200,11 @@ standard error; it shows after 10 hours.
 
 The web screen can view any profile. Making, changing and deleting them is done
 in the terminal.
+
+A profile from before variants could be made (2026-11-23) is converted once, when the engine starts: a rule
+it had changed becomes variants of its own with the entries they bought. The one its book traded and
+`base` keep running; the others are kept as deleted. The files as they were stay beside them
+as `*.pre-variants`.
 
 <img width="1364" height="668" alt="The book box, viewing profile 2" src="docs/screenshots/04-book-multi.png" />
 
@@ -261,6 +285,7 @@ Requests are signed (Ed25519 or RSA-PSS) in pure Python, checked against openssl
 | `h` or `?` | help |
 | `q` | close the screen; the engine keeps running |
 | `space` `n` `d` `D` | profiles box: on/off, new, live trades its rule, delete |
+| `n` `E` `D` | variants box: new, change its rule, delete |
 | `N` | rename the highlighted profile or variant |
 
 <img width="1364" height="668" alt="The help" src="docs/screenshots/08-help.png" />
@@ -282,8 +307,8 @@ chart span, `tab`/shift+tab coins, `t`/`T` themes, `v` paper/live, `w` watch a v
 help, `↑↓ ←→` and the wheel. Clicking a key on a box border, a box's number, or a ladder or variant row
 does what the key would; on a phone, drag to scroll.
 
-It is view only. `q`, `s`, `R`, `L`, `r`, `N` and `enter` on a variant do nothing there, nor do `space`,
-`n`, `d` and `D` in the profiles box, and their hints are not drawn. `enter` on a profile views it, and the
+It is view only. `q`, `s`, `R`, `L`, `r`, `N`, `E` and `enter` on a variant do nothing there, nor do `space`,
+`n`, `d` and `D` in the variants and profiles boxes, and their hints are not drawn. `enter` on a profile views it, and the
 settings box (`e`) shows the settings but changes only what that browser's log box shows.
 The web screen writes no command files and never touches the terminal's `dash.json` or `view.json`: each browser keeps its own settings. It writes `view-web.json` (in the same tmpfs folder)
 with the coins and strikes its viewers have up, so the engine sends those strikes' contract history
@@ -330,9 +355,9 @@ history files that are only ever appended to (`paper-trades.jsonl`,
 `paper-curve.jsonl`, `live-trades.jsonl`, `live-curve.jsonl`,
 `rule-entries.jsonl`), the variants' records (`shadow.json`, open entries, and
 `shadow-settled.jsonl`, append-only), `settings-log.jsonl`, `names.json` (display
-names, once something is renamed), `dash.json` (the screen's preferences), `ticks/`,
+names, once something is renamed), `variants.json` (your own variants, once there are any), `dash.json` (the screen's preferences), `ticks/`,
 `tern.log` and `cmd/` (settings commands from the screen). Each extra profile has a folder under
-`profiles/` with its own `profile.json`, `config.json`, variants' records and
+`profiles/` with its own `profile.json`, `config.json`, `variants.json`, variants' records and
 `settings-log.jsonl`; a deleted one moves to `profiles-deleted/`. The live
 status file and the screen's selection live in tmpfs (`$XDG_RUNTIME_DIR/tern-*`),
 because they are rewritten every second.
@@ -347,7 +372,8 @@ because they are rewritten every second.
 | `kalshi.py` | public and signed REST, V2 orders (`/portfolio/events/orders`) |
 | `sign.py` | Ed25519 and RSA-PSS signing, PEM/DER parsing |
 | `spot.py` | Coinbase ticker and candles |
-| `shadow.py` | the variants, each with its own paper record (also each one's gate) |
+| `shadow.py` | the built-in variants, and every variant's paper record (also each one's gate) |
+| `variants.py` | the variants you make: their rules, names and file |
 | `profiles.py` | profiles: their folders, settings, records and names |
 | `record.py` | writes quotes and results to `runtime/ticks/` |
 | `dash.py` | the curses screen |
@@ -363,6 +389,28 @@ because they are rewritten every second.
   small caps and watch the first fills against kalshi.com.
 - If the engine isn't running, nothing is watched. Positions still settle on
   Kalshi, because nothing rests on the book.
+
+## Changes
+
+The major ones, newest first.
+
+| Date | Change |
+|---|---|
+| 2026-11-23 | **Your own variants.** Make, change and delete them from the screen (`n`, `E`, `D`), in each profile. Changing a rule makes a new variant with its own record; the built-in ones never change. Profile 1's settings show its variant and rule. Profiles that had changed their rule are converted (see Profiles). |
+| 2026-11-23 | MIT license; README rewritten for anyone running it. |
+| 2026-11-22 | **Any profile can go live** (`d`), past its own gate on its own record. |
+| 2026-11-22 | Two pages (`p`), and a box's number zooms it to the whole screen. Hiding boxes is gone. |
+| 2026-11-22 | `N` renames profiles and variants. The web screen's on/off, port and network are in the settings box. |
+| 2026-11-21 | **Profiles:** copies of the desk with their own settings and records, and settings periods in the records. |
+| 2026-11-21 | The web screen is back, with a login and HTTPS. |
+| 2026-11-20 | Settings box (`e`), a size of its own for live, desktop alerts, log filter. |
+| 2026-11-19 | Variant `calm`. |
+| 2026-11-17 | The web screen, view only. |
+| 2026-11-16 | **Variants box:** pick what trades, each with its own gate. New: `band80`, `late`, `tight1`, `band75`, `early`, `multi`. Retired: `stop20`, `arb`. `w` watches one. |
+| 2026-11-16 | 54 color themes. History moves to append-only files, and HTTPS connections stay open. |
+| 2026-11-15 | Manual orders and the auto switch are gone: the rule always trades. SOL, XRP, BNB and HYPE added. Variant `cap1`. |
+| 2026-11-09 | Variants and the quote recorder. The daily loss limit measures realized plus open P&L, and the gate counts hours traded. |
+| 2026-11-08 | First version. |
 
 ## License
 

@@ -4,8 +4,9 @@ Each variant was written down before it saw any data, and each keeps its own rec
 so after a few weeks the comparison is out of sample. Nothing here touches the paper or live books;
 the engine trades whichever variant strategy.variant names, and that variant's record here is its gate.
 
-The variants are listed once, in TABLE below. The screen's variants box, its help, `tern report` and
-the gate all read that table; README.md repeats it for people, and a test fails if it falls behind.
+The built-in variants are listed once, in TABLE below. The screen's variants box, its help, `tern report` and
+the gate all read that table; README.md repeats it for people, and a test fails if it falls behind. The ones
+made on the screen are each profile's own (variants.py): a Shadow runs both.
 """
 
 from __future__ import annotations
@@ -19,6 +20,7 @@ from collections import deque
 from .book import taker_fee
 from .config import SERIES
 from .strategy import due_slot, signals
+from .variants import VariantSet, as_rule, describe
 
 # name, (band_lo, band_hi, entries per strike per hour, slots, max spread, coins, max vol), what it does.
 # max vol is the coin's realized volatility over the last hour (vol() below, bp a minute); above it a slot is skipped.
@@ -60,9 +62,18 @@ RETIRED = {
 }
 
 
-def params(name: str, S) -> tuple:
-    """(band_lo, band_hi, cap, slots, max_spread, coins, max_vol) for a variant on strategy S. An unknown name
-    is the rule as configured. A variant's slots are a subset of S.minutes; a slot it skips still counts as taken."""
+def own_set(dir: str) -> VariantSet:
+    """The variants a profile made itself, from its folder (runtime/ for profile 1)."""
+    return VariantSet(dir, (*VARIANTS, *RETIRED))
+
+
+def params(name: str, S, own: VariantSet | None = None) -> tuple:
+    """(band_lo, band_hi, cap, slots, max_spread, coins, max_vol) for a variant on strategy S. One of own's is
+    its own rule whatever S says. An unknown name is the rule as configured. A built-in variant's slots are a
+    subset of S.minutes; a slot it skips still counts as taken."""
+    mine = own.rule(name) if own is not None and name not in VARIANTS else None
+    if mine is not None:
+        return tuple(mine[f] for f in ("band_lo", "band_hi", "cap", "minutes", "max_spread", "series", "max_vol"))
     lo, hi, cap, slots, spread, coins, mvol = VARIANTS.get(name, (None,) * 7)
     mins = [m for m in S.minutes if slots is None or m in slots]
     return lo or S.band_lo, hi or S.band_hi, cap, mins, spread or S.max_spread, list(coins or S.series), mvol
@@ -84,11 +95,33 @@ def too_wild(mvol: float | None, v: float | None) -> bool:
     return mvol is not None and (v is None or v > mvol)
 
 
-def all_coins(S) -> list[str]:
+def rule_of(name: str, S, own: VariantSet | None = None) -> dict:
+    """A variant's whole rule (variants.FIELDS), built in or own."""
+    return as_rule(params(name, S, own))
+
+
+def desc_of(name: str, own: VariantSet | None = None) -> str:
+    mine = own.rule(name) if own is not None and name not in VARIANTS else None
+    return describe(mine) if mine is not None else DESC.get(name, "")
+
+
+def known(name, own: VariantSet | None = None) -> bool:
+    return name in VARIANTS or own is not None and own.has(name)
+
+
+def all_coins(S, own: VariantSet | None = None) -> list[str]:
     """Every series some variant trades: the engine fetches these and the shadow steps on them."""
     out = list(S.series)
-    for name in VARIANTS:
-        out += [c for c in params(name, S)[5] if c not in out]
+    for name in [*VARIANTS, *(own.active() if own else [])]:
+        out += [c for c in params(name, S, own)[5] if c not in out]
+    return out
+
+
+def all_minutes(S, own: VariantSet | None = None) -> list:
+    """Every slot some variant enters at: the configured ones and own variants' others."""
+    out = list(S.minutes)
+    for name in own.active() if own else []:
+        out += [m for m in own.rule(name)["minutes"] if m not in out]
     return out
 
 
@@ -106,6 +139,7 @@ class Shadow:
         self.open_path = os.path.join(runtime, "shadow.json")
         self.done_path = os.path.join(runtime, "shadow-settled.jsonl")
         self.rate = fee_rate
+        self.own = own_set(runtime)                # this profile's own variants
         self.rows: list[dict] = []                 # open entries
         self.slots: dict[str, list] = {}           # event -> slots taken
         self.agg: dict[str, dict[str, list]] = {}  # variant -> event -> [pnl, contracts, entries, wins, stops]
@@ -136,8 +170,9 @@ class Shadow:
         # A row is written to the settled file before shadow.json is saved without it. If the engine
         # died in between, the row is in both: the settled file wins, so it is not settled twice.
         n = len(self.rows)
-        # retired variants (stop20, arb) had no open rows when they stopped; any left would not settle right
-        self.rows = [r for r in self.rows if self._key(r) not in done and r.get("v") in VARIANTS]
+        # retired variants (stop20, arb) had no open rows when they stopped; any left would not settle right.
+        # One of the profile's own, deleted, may have: they settle.
+        self.rows = [r for r in self.rows if self._key(r) not in done and (self.own.damaged or r.get("v") in VARIANTS or r.get("v") in self.own.all)]
         self.dirty = len(self.rows) != n
 
     @staticmethod
@@ -174,6 +209,14 @@ class Shadow:
     def _fee(self, n: float, p: float) -> float:
         return taker_fee(n, p, self.rate)
 
+    def order(self) -> list[str]:
+        """The variants that run here: the built-in ones, then the profile's own, oldest first."""
+        return ORDER + self.own.active()
+
+    def bought(self, name: str) -> bool:
+        """Whether a variant has any entry, open or settled: its rule then never changes."""
+        return bool(self.agg.get(name)) or any(r["v"] == name for r in self.rows)
+
     # ------------------------------------------------------------ each engine step
     def step(self, event: str, close: float, markets: list[dict], S, now: float, vol: float | None = None,
              sv: int | None = None) -> list[str]:
@@ -181,13 +224,13 @@ class Shadow:
         sv, when given, is the settings version each new row is stamped with. Returns lines for the log."""
         done = self.slots.setdefault(event, [])
         self.closes[event] = close                 # settle() keeps an event's slots until it has closed
-        slot = due_slot(close - now, S.minutes, set(done))
+        slot = due_slot(close - now, all_minutes(S, self.own), set(done))
         if slot is None:
             return []
         done.append(slot); self.dirty = True; self.changes += 1
         series = event.split("-", 1)[0]
-        for name in VARIANTS:
-            lo, hi, cap, mins, spread, coins, mvol = params(name, S)
+        for name in self.order():
+            lo, hi, cap, mins, spread, coins, mvol = params(name, S, self.own)
             if slot not in mins or series not in coins or too_wild(mvol, vol):
                 continue
             mine = [r for r in self.rows if r["v"] == name and r["event"] == event]
@@ -255,7 +298,7 @@ class Shadow:
         """One record per variant. hours counts distinct closing hours; curve is the cumulative P&L
         after each of the last 240 of them, oldest first. With sv, only rows made under that settings version."""
         out = []
-        for name in names or ORDER:
+        for name in names or self.order():
             ev = self.agg.get(name, {}) if sv is None else self.by_sv.get((name, sv), {})
             by_hour: dict[str, float] = {}
             for e, a in ev.items():
@@ -315,10 +358,11 @@ class Shadow:
 
 
 def table(rows: list[dict]) -> list[str]:
-    out = [f"{'variant':<8} {'hours':>5} {'entries':>7} {'open':>4} {'P&L':>9} {'¢/contract':>10} {'win':>5} {'t':>6}"]
+    w = max([8] + [len(r["name"]) for r in rows])
+    out = [f"{'variant':<{w}} {'hours':>5} {'entries':>7} {'open':>4} {'P&L':>9} {'¢/contract':>10} {'win':>5} {'t':>6}"]
     for r in rows:
         pc = f"{r['per_contract']*100:+.2f}" if r["per_contract"] is not None else "-"
         win = f"{r['win']:.0%}" if r["win"] is not None else "-"
         t = f"{r['t']:+.2f}" if r["t"] is not None else "-"
-        out.append(f"{r['name']:<8} {r['hours']:>5} {r['entries']:>7} {r['open']:>4} {r['pnl']:>+9.2f} {pc:>10} {win:>5} {t:>6}")
+        out.append(f"{r['name']:<{w}} {r['hours']:>5} {r['entries']:>7} {r['open']:>4} {r['pnl']:>+9.2f} {pc:>10} {win:>5} {t:>6}")
     return out

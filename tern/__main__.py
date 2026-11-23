@@ -216,7 +216,7 @@ def _periods(name: str, sh, lines: list[dict], sv_now: int) -> list[str]:
             if ln.get("key") in profmod.RECORD_KEYS:
                 why.setdefault(sv, []).append(f"{profmod.label(ln['key'])} {profmod.show(ln['key'], ln.get('from'))}"
                                               f" → {profmod.show(ln['key'], ln.get('to'))}")
-    versions = sorted({v for n in shadow_names() for v in sh.versions(n)} | {sv_now})
+    versions = sorted({v for n in shadow_names(sh) for v in sh.versions(n)} | {sv_now})
     out = []
     for sv in versions:
         later = [starts[v] for v in starts if v > sv]
@@ -226,17 +226,28 @@ def _periods(name: str, sh, lines: list[dict], sv_now: int) -> list[str]:
         head = f"settings {sv}" + (f", {when}" if when else "") + (": " + ", ".join(why[sv]) if why.get(sv) else
                                                                      (": as created" if made else ": the settings in use when logging began")
                                                                      if sv == 1 else "")
-        rows = [r for r in sh.summary(sv=sv) if r["entries"] or r["open"]]
+        rows = [r for r in sh.summary(sh.order() + sh.own.deleted(), sv=sv) if r["entries"] or r["open"]]
         out += ["", head] + (["  " + l for l in table(rows)] if rows else ["  no entries yet"])
-    rows = [r for r in sh.summary() if r["entries"] or r["open"]]
+    rows = [r for r in sh.summary(sh.order() + sh.own.deleted()) if r["entries"] or r["open"]]
     if len(versions) > 1 and rows:
         out += ["", "all settings together"] + ["  " + l for l in table(rows)]
+    out += _own_lines(sh, rows)
     return out
 
 
-def shadow_names() -> list[str]:
+def _own_lines(sh, rows: list[dict]) -> list[str]:
+    """The profile's own variants: each one's rule, and whether it was deleted."""
+    from .variants import describe
+    have = {r["name"] for r in rows}
+    own = [(k, v) for k, v in sh.own.all.items() if not v["deleted"] or k in have]
+    return ["", "its own variants:"] + [
+        f"  {k}" + (f" ({v['title']})" if v["title"] != k else "") + f": {describe(v['rule'])}" +
+        (f", from {v['from']}" if v["from"] else "") + (" · deleted" if v["deleted"] else "") for k, v in own] if own else []
+
+
+def shadow_names(sh) -> list[str]:
     from .shadow import ORDER, RETIRED
-    return list(ORDER) + list(RETIRED)
+    return list(ORDER) + list(RETIRED) + list(sh.own.all)
 
 
 def _report_profiles(runtime: str, args: list[str]) -> int:
@@ -310,11 +321,16 @@ def main(argv: list[str]) -> int:
     if cmd == "report" and len(argv) > 1:
         return _report_profiles(runtime, argv[1:])
     if cmd == "report":
-        from .shadow import DESC, RETIRED, Shadow, table
+        from .shadow import DESC, RETIRED, Shadow, desc_of, table
         sh = Shadow(runtime)
         use = cfgmod.load(runtime).strategy.variant
         print("\n".join(table(sh.summary())))
-        print("\n" + "\n".join(f"{n}: {d}" + ("  ← in use" if n == use else "") for n, d in DESC.items()))
+        own = {n: (f"({sh.own.title(n)}) " if sh.own.title(n) != n else "") + desc_of(n, sh.own) for n in sh.own.active()}
+        print("\n" + "\n".join(f"{n}: {d}" + ("  ← in use" if n == use else "") for n, d in {**DESC, **own}.items()))
+        gone = [r for r in sh.summary(sh.own.deleted()) if r["entries"] or r["open"]] if sh.own.deleted() else []
+        if gone:
+            print("\ndeleted, kept for the record:")
+            print("\n".join(table(gone)[1:]))
         old = [r for r in sh.summary(list(RETIRED)) if r["entries"]]
         if old:
             print("\nretired, kept for the record:")
