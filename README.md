@@ -362,3 +362,7 @@ because they are rewritten every second.
   small caps and watch the first fills against kalshi.com.
 - If the engine isn't running, nothing is watched. Positions still settle on
   Kalshi, because nothing rests on the book.
+
+## License
+
+[MIT](LICENSE)
