@@ -4,7 +4,8 @@ The browser does not draw its own copy of the dash. Each browser tab gets a real
 drawing into a virtual terminal here; the cells go to the page, which paints them like foot does.
 So the web view always looks and behaves like the screen, minus the keys that change anything:
 no quit, engine stop or start, paper reset, live, rule coins or picking a variant. The settings
-box (e) opens and its cursor moves, but only its log filter row changes (for that viewer). The
+box (e) opens and its cursor moves, but only its log filter row changes (for that viewer). Reports (o)
+only read, so they work in full. The
 profiles box (page 2) can show any profile; making, renaming, turning on/off or deleting one, its settings,
 and making, changing, renaming or deleting a variant, stay with the terminal. It sends
 no command files and never writes the screen's own view.json or dash.json. Its viewers' coins
@@ -45,7 +46,7 @@ NAMED = {"ArrowUp": curses.KEY_UP, "ArrowDown": curses.KEY_DOWN, "ArrowLeft": cu
          "Home": curses.KEY_HOME, "End": curses.KEY_END, "Tab": 9, "BackTab": curses.KEY_BTAB,
          "Enter": 10, "Escape": 27, "Backspace": 127}
 # keys that only change what this viewer sees: they reach the screen; everything else stops here
-VIEW_KEYS = set("12345678pjktTcvwgeh?") | {"ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "PageUp", "PageDown",
+VIEW_KEYS = set("12345678pjktTcvwgeoh?") | {"ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "PageUp", "PageDown",
                                        "Tab", "BackTab"}
 CONTROL_KEYS = {"q": "quit", "Q": "quit", "s": "engine start/stop", "R": "paper reset", "L": "live",
                 "r": "rule coins", "Enter": "picking a variant", "N": "renaming",
@@ -53,7 +54,7 @@ CONTROL_KEYS = {"q": "quit", "Q": "quit", "s": "engine start/stop", "R": "paper 
 # border hints whose key changes something: not drawn on the web (the profiles box keeps ⏎: it only views)
 CONTROL_HINTS = {"r", "L", "R", "s", "q", "⏎", "space", "n", "d", "D", "N", "E"}
 # what a hint on a border sends when clicked
-HINT_KEY = {"tab": "Tab", "any key": "Escape", "esc": "Escape", "↑↓": None, "⏎": "Enter"}
+HINT_KEY = {"tab": "Tab", "any key": "Escape", "esc": "Escape", "↑↓": None, "←→": None, "⏎": "Enter"}
 PROFILE_ONLY = "view only: profiles are made, changed and deleted from the screen in the terminal"
 
 SESSION_IDLE = 120.0     # seconds without a request before a browser tab's screen is dropped
@@ -241,7 +242,7 @@ class WebScreen(dash.Screen):
 
     def hint(self, y, x, seg, border) -> None:
         if not isinstance(seg, str):
-            k = HINT_KEY.get(seg[0], seg[0])
+            k = HINT_KEY.get(seg[0], seg[0]) or (seg[2] if len(seg) > 2 and not seg[0] else None)   # ("", "rep", "o", "rts")
             if k:
                 self.hits.append((y, x + 1, x + 1 + sum(map(len, seg)), k))
         super().hint(y, x, seg, border)
@@ -297,7 +298,9 @@ class WebScreen(dash.Screen):
             self.say(f"view only: {CONTROL_KEYS[name]} is done from the screen in the terminal")
 
     def wheel_at(self, cy: int, cx: int, d: int) -> None:
-        if self.overlay:
+        if self.overlay == "reports":
+            self.wheel(cy, cx, d)
+        elif self.overlay:
             self.ov_off = max(0, self.ov_off + 3 * d)
         else:
             self.wheel(cy, cx, d)
@@ -309,6 +312,10 @@ class WebScreen(dash.Screen):
                     if by <= cy < by + bh and bx <= cx < bx + bw and name in dash.SCROLLS:
                         self.focus = name
                 self.press(k); return
+        if self.overlay == "reports":            # a listed report is picked; elsewhere a click focuses the box
+            if cx < dash.REPORT_LIST_W and cy in self.rep_rows:
+                self.pick_report(self.rep_rows[cy])
+            self.rep_focus = "reports" if cx < dash.REPORT_LIST_W else "report"; return
         if self.overlay:
             self.overlay = None; return
         for name, rows in self.rowmap.items():

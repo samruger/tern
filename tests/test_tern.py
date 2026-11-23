@@ -3276,6 +3276,226 @@ class Web(unittest.TestCase):
             self.assertEqual(k.web, {"series": [], "tickers": [], "profiles": []})
 
 
+class Reports(unittest.TestCase):
+    """The reports screen (o): the reports tern works out from its records, and the saved ones."""
+    T, desk, profile = EngineProfiles.T, EngineProfiles.desk, EngineProfiles.profile
+    setup, sync, text, press, cmds = (ScreenProfiles.setup, ScreenProfiles.sync, ScreenProfiles.text,
+                                      ScreenProfiles.press, ScreenProfiles.cmds)
+
+    def save(self, d, name, text):
+        with open(os.path.join(d, name), "w") as fh:
+            fh.write(text)
+
+    def until(self, what, where=None):
+        """Draw until `what` is on the screen: reports are worked out on a thread."""
+        import time
+        end = time.time() + 10
+        where = where or (lambda: (self.sync(), self.text())[1])
+        while time.time() < end:
+            if what in where():
+                return
+            time.sleep(0.02)
+        self.assertIn(what, where())
+
+    def test_index_lists_live_reports_then_saved_ones_newest_first(self):
+        from tern import reports
+        with tempfile.TemporaryDirectory() as d:
+            k = self.desk(d)
+            p = self.profile(k, "wide")
+            for n in ("report-2026-11-09.txt", "report-2026-11-23.txt", "notes.txt", "report-x.json"):
+                self.save(d, n, "x\n")
+            ix = reports.index(d)
+            self.assertEqual([r.id for r in ix], ["desk", "profiles", "profile:1", f"profile:{p.id}", "deleted",
+                                                  "saved:report-2026-11-23.txt", "saved:report-2026-11-09.txt"])
+            self.assertEqual([r.label for r in ix if r.saved], ["2026-11-23", "2026-11-09"])
+            self.assertIn("wide", [r.label for r in ix])
+
+    def test_the_screen_and_the_command_line_give_the_same_report(self):
+        import contextlib, io
+        from unittest import mock
+        from tern import __main__ as cli, config as cfgmod, reports
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(cfgmod, "RUNTIME", d):
+            k = self.desk(d)
+            p = self.profile(k, "wide")
+            k._shadow(); k.shadow.settle({self.T: True})
+            for argv, rid in (([], "desk"), (["--profiles"], "profiles"), (["--profile", "1"], "profile:1"),
+                              (["--profile", "wide"], f"profile:{p.id}"), (["--deleted"], "deleted")):
+                out = io.StringIO()
+                with contextlib.redirect_stdout(out):
+                    self.assertEqual(cli.main(["report", *argv]), 0)
+                self.assertEqual("\n".join(reports.lines(d, rid)) + "\n", out.getvalue(), rid)
+
+    def test_a_saved_report_is_shown_as_written(self):
+        from tern import reports
+        with tempfile.TemporaryDirectory() as d:
+            self.save(d, "report-2026-11-23.txt", "one\n\n  two\n")
+            self.assertEqual(reports.lines(d, "saved:report-2026-11-23.txt"), ["one", "", "  two"])
+
+    def test_a_saved_report_has_no_control_characters_and_stays_in_the_runtime_folder(self):
+        from tern import reports
+        with tempfile.TemporaryDirectory() as d:
+            self.save(d, "report-a.txt", "a\tb\x1b[31mc\x00\n")
+            self.assertEqual(reports.lines(d, "saved:report-a.txt"), ["a       b[31mc"])
+            for rid in ("saved:../report-a.txt", "saved:/etc/passwd", "saved:config.json", "saved:report-/../x.txt"):
+                with self.assertRaises(LookupError):
+                    reports.lines(d, rid)
+
+    def test_a_long_profile_name_is_cut_to_the_room(self):
+        from tern import reports
+        with tempfile.TemporaryDirectory() as d:
+            self.profile(self.desk(d), "a name that is forty characters long!!")
+            self.assertTrue(any("forty characters long" in l for l in reports.lines(d, "profiles")))
+            cut = reports.lines(d, "profiles", room=72)
+            table = cut[:cut.index("")]
+            self.assertLessEqual(max(map(len, table)), 72)
+            self.assertEqual(len({len(l) for l in table}), 1)                  # the columns still line up
+            self.assertTrue(any("…" in l for l in table))
+
+    def test_feed_works_out_a_report_again_only_when_its_files_change(self):
+        from unittest import mock
+        from tern import reports
+        with tempfile.TemporaryDirectory() as d:
+            feed = reports.Feed(check=0)
+            self.save(d, "report-a.txt", "first\n")
+            get = lambda: "\n".join((feed.get(d, "saved:report-a.txt") or reports.Report([], 0)).lines)
+            self.until("first", get)
+            with mock.patch.object(reports, "lines", side_effect=AssertionError("worked out again")):
+                for _ in range(5):
+                    self.assertEqual(get(), "first")
+            self.save(d, "report-a.txt", "second, longer\n")
+            self.until("second, longer", get)
+
+    def test_feed_says_why_a_report_cannot_be_read(self):
+        from tern import reports
+        with tempfile.TemporaryDirectory() as d:
+            feed = reports.Feed(check=0)
+            self.until("this report could not be read", lambda: "\n".join(
+                (feed.get(d, "profile:gone") or reports.Report([], 0)).lines))
+
+    def test_o_opens_the_reports_and_esc_closes_them(self):
+        with tempfile.TemporaryDirectory() as d:
+            k, p, scr = self.setup(d)
+            self.save(d, "report-2026-11-23.txt", "saved on a Monday\n")
+            k.shadow.settle({self.T: True})
+            status = "".join(scr.s.ch[39])
+            self.cmds(); self.press("o")
+            self.assertEqual(scr.overlay, "reports")
+            self.until("base: the rule")
+            for what in ("LIVE", "SAVED", "variants", "side by side", "profile 1", "profile 2", "deleted", "2026-11-23"):
+                self.assertIn(what, self.text())
+            self.assertEqual("".join(scr.s.ch[39])[:20], status[:20])          # the status line stays
+            for key in (27, "o", "q"):
+                self.press(key)
+                self.assertIsNone(scr.overlay, key)                            # q closes the reports, not the screen
+                self.press("o")
+            self.assertEqual(self.cmds(), [])
+
+    def test_arrows_pick_a_report_and_scroll_it(self):
+        with tempfile.TemporaryDirectory() as d:
+            k, p, scr = self.setup(d)
+            self.save(d, "report-2026-11-23.txt", "".join(f"line {i:03}\n" for i in range(200)))
+            c = self.curses
+            self.press("o", c.KEY_DOWN)
+            self.until("each profile's book")
+            self.press(c.KEY_END)                                              # the list: its last report
+            self.until("line 000")
+            self.press(c.KEY_RIGHT, c.KEY_DOWN)
+            self.assertNotIn("line 000", self.text())
+            self.assertIn("line 001", self.text())
+            self.press(c.KEY_END)
+            self.assertIn("line 199", self.text())
+            self.assertIn("of 200", self.text())
+            self.press(c.KEY_DOWN, c.KEY_DOWN, c.KEY_UP)                       # no slack built up past the end
+            self.assertNotIn("line 199", self.text())
+            self.press(c.KEY_HOME)
+            self.assertIn("line 000", self.text())
+            self.press(c.KEY_LEFT, c.KEY_NPAGE)                                # PgDn pages the report from the list too
+            self.assertNotIn("line 000", self.text())
+            self.press(c.KEY_UP)
+            self.until("no deleted profiles")                                     # a new pick starts at its top
+            self.assertEqual(scr.rep_off, 0)
+
+    def test_a_small_screen_shows_every_column_and_wraps_sentences(self):
+        from unittest import mock
+        from tern import dash, web
+        with tempfile.TemporaryDirectory() as d:
+            k = self.desk(d); k.seeded.add(self.T)
+            self.profile(k, "a name that is forty characters long!!")
+            with mock.patch.object(dash, "Pal", web.WebPal):
+                self.k, self.scr = k, dash.Screen(web.VTerm(30, 100), d)
+            self.sync(); self.press("o")
+            self.until("multi: every coin at once")
+            self.press(" ")
+            self.assertIn("2026-11-20)", self.text())                          # calm's description, wrapped, not cut
+            import curses
+            self.press(curses.KEY_DOWN)
+            self.until("each profile's book")
+            row = next(l for l in self.text().splitlines() if "a name that" in l and "base" in l)
+            self.assertIn("+0.00", row)
+
+    def test_the_wheel_scrolls_the_box_under_the_pointer(self):
+        with tempfile.TemporaryDirectory() as d:
+            k, p, scr = self.setup(d)
+            self.save(d, "report-2026-11-23.txt", "".join(f"line {i:03}\n" for i in range(200)))
+            self.press("o", self.curses.KEY_END)
+            self.until("line 000")
+            y, x, h, w = scr.rects["report"]
+            scr.wheel(y + 3, x + 3, 1); self.sync()
+            self.assertNotIn("line 000", self.text())
+            y, x, h, w = scr.rects["reports"]
+            scr.wheel(y + 3, x + 3, -1); self.sync()
+            self.until("no deleted profiles")
+
+    def test_a_report_that_is_gone_falls_back_to_the_first(self):
+        with tempfile.TemporaryDirectory() as d:
+            k, p, scr = self.setup(d)
+            self.save(d, "report-2026-11-23.txt", "old one\n")
+            self.press("o", self.curses.KEY_END)
+            self.until("old one")
+            os.remove(os.path.join(d, "report-2026-11-23.txt"))
+            scr.rep_at = 0
+            self.until("base: the rule")
+            self.assertEqual(scr.rep_sel, "desk")
+
+    def test_gains_are_green_and_losses_red(self):
+        from tern.dash import GREEN, RED
+        with tempfile.TemporaryDirectory() as d:
+            k, p, scr = self.setup(d)
+            spans = scr.report_spans(["variant  hours entries open       P&L ¢/contract   win      t",
+                                      "base         1       5    0     +1.82     +12.13  100%  -2.10"])
+            color = {t.strip(): a for t, a in spans[1]}
+            self.assertEqual(color["+1.82"], scr.P(GREEN, bold=True))
+            self.assertEqual(color["-2.10"], scr.P(RED, bold=True))
+            self.assertEqual("".join(t for t, _ in spans[1]), "base         1       5    0     +1.82     +12.13  100%  -2.10")
+            self.assertEqual(color["base"], scr.P(scr.P.c("variant"), bold=True))
+
+    def test_the_web_reads_reports_and_sends_nothing(self):
+        from tern.web import Hub
+        with tempfile.TemporaryDirectory() as d:
+            Web.status(self, d)
+            self.save(d, "report-2026-11-23.txt", "saved on a Monday\n")
+            hub = Hub(d)
+            sid = hub.handle({"w": 120, "h": 40})["sid"]
+            go = lambda **req: ["".join(t for t, _ in r) for r in hub.handle({"sid": sid, "w": 120, "h": 40, **req})["rows"]]
+            self.until("base: the rule", lambda: "\n".join(go(key="o") if not hub.sessions[sid][0].overlay else go()))
+            rows = go()
+            y = next(i for i, r in enumerate(rows) if "2026-11-23" in r[:24])
+            go(click={"y": y, "x": rows[y].index("2026-11-23")})               # a click picks it
+            self.until("saved on a Monday", lambda: "\n".join(go()))
+            rows = go()
+            go(click={"y": 0, "x": rows[0].index("close")})
+            self.assertIsNone(hub.sessions[sid][0].overlay)
+            self.assertEqual(os.listdir(os.path.join(d, "cmd")), [])
+            self.assertEqual(sorted(os.listdir(d)), ["cmd", "report-2026-11-23.txt"])
+
+    def test_the_hint_and_the_help_name_the_key(self):
+        with tempfile.TemporaryDirectory() as d:
+            k, p, scr = self.setup(d)
+            self.assertIn("─reports─", self.text())
+            text = "\n".join(l if isinstance(l, str) else "".join(t for t, _ in l) for l in scr.help_lines(200))
+            self.assertIn("reports: every record, live and saved", text)
+
+
 class WebLogin(unittest.TestCase):
     """tern web's login: the password, the signed cookie, the limits on wrong guesses, and the server."""
 

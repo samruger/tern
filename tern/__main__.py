@@ -201,109 +201,25 @@ def _service(runtime: str) -> int:
     return 0
 
 
-def _periods(name: str, sh, lines: list[dict], sv_now: int) -> list[str]:
-    """A profile's variants, one table per settings period, each headed with when it ran and what changed."""
-    import datetime as dt
-    from . import profiles as profmod
-    from .shadow import table
-    day = lambda ts: dt.datetime.fromtimestamp(ts).strftime("%m-%d %H:%M")
-    starts: dict[int, float] = {}
-    why: dict[int, list[str]] = {}
-    for ln in lines:
-        sv = ln.get("sv")
-        if isinstance(sv, int):
-            starts.setdefault(sv, ln.get("ts") or 0)
-            if ln.get("key") in profmod.RECORD_KEYS:
-                why.setdefault(sv, []).append(f"{profmod.label(ln['key'])} {profmod.show(ln['key'], ln.get('from'))}"
-                                              f" → {profmod.show(ln['key'], ln.get('to'))}")
-    versions = sorted({v for n in shadow_names(sh) for v in sh.versions(n)} | {sv_now})
-    out = []
-    for sv in versions:
-        later = [starts[v] for v in starts if v > sv]
-        when = (f"{day(starts[sv])} to {day(min(later)) if later else 'now'}" if sv in starts else
-                "before settings were logged" if sv == 0 else "")
-        made = any(ln.get("key") == "created" for ln in lines)
-        head = f"settings {sv}" + (f", {when}" if when else "") + (": " + ", ".join(why[sv]) if why.get(sv) else
-                                                                     (": as created" if made else ": the settings in use when logging began")
-                                                                     if sv == 1 else "")
-        rows = [r for r in sh.summary(sh.order() + sh.own.deleted(), sv=sv) if r["entries"] or r["open"]]
-        out += ["", head] + (["  " + l for l in table(rows)] if rows else ["  no entries yet"])
-    rows = [r for r in sh.summary(sh.order() + sh.own.deleted()) if r["entries"] or r["open"]]
-    if len(versions) > 1 and rows:
-        out += ["", "all settings together"] + ["  " + l for l in table(rows)]
-    out += _own_lines(sh, rows)
-    return out
-
-
-def _own_lines(sh, rows: list[dict]) -> list[str]:
-    """The profile's own variants: each one's rule, and whether it was deleted."""
-    from .variants import describe
-    have = {r["name"] for r in rows}
-    own = [(k, v) for k, v in sh.own.all.items() if not v["deleted"] or k in have]
-    return ["", "its own variants:"] + [
-        f"  {k}" + (f" ({v['title']})" if v["title"] != k else "") + f": {describe(v['rule'])}" +
-        (f", from {v['from']}" if v["from"] else "") + (" · deleted" if v["deleted"] else "") for k, v in own] if own else []
-
-
-def shadow_names(sh) -> list[str]:
-    from .shadow import ORDER, RETIRED
-    return list(ORDER) + list(RETIRED) + list(sh.own.all)
-
-
-def _report_profiles(runtime: str, args: list[str]) -> int:
-    from . import profiles as profmod
-    from .shadow import Shadow
-    cfg = cfgmod.load(runtime)
-    loaded = profmod.load_all(runtime, cfg.taker_fee)
-    if args[0] == "--deleted":
-        root = os.path.join(runtime, profmod.DELETED_DIR)
-        gone = []
-        for n in sorted(os.listdir(root)) if os.path.isdir(root) else []:
-            try:
-                gone.append(profmod.Profile.load(os.path.join(root, n), cfg.taker_fee))
-            except Exception as ex:
-                print(f"{n}: unreadable ({ex})")
-        if not gone:
-            print("no deleted profiles"); return 0
-        print(f"deleted profiles, kept in {root}:")
-        _side_by_side([(f"{p.name} ({p.id})", p.variant, p.log.sv, p.shadow) for p in gone])
-        return 0
-    one = profmod.Names(runtime).profile       # profile 1's name (N on the screen renames it)
-    if args[0] == "--profiles":
-        rows = [(one, cfg.strategy.variant, profmod.SettingsLog(os.path.join(runtime, "settings-log.jsonl")).sv,
-                 Shadow(runtime, cfg.taker_fee))]
-        rows += [(p.name + ("" if p.enabled else " (off)"), p.variant, p.log.sv, p.shadow) for p in loaded]
-        _side_by_side(rows)
-        print("\neach profile's book is its picked variant's record:")
-        print("look at entries and t (by hour, shows after 10 hours) as well as P&L.")
-        return 0
-    if args[0] == "--profile" and len(args) > 1:
-        want = " ".join(args[1:]).strip().lower()
-        if want in ("1", "profile 1", one.lower()):
-            log = profmod.SettingsLog(os.path.join(runtime, "settings-log.jsonl"))
-            print(f"{one} (profile 1, the desk): book trades {cfg.strategy.variant}, settings {log.sv}")
-            print("\n".join(_periods(one, Shadow(runtime, cfg.taker_fee), log.lines(), log.sv)))
-            return 0
-        p = next((p for p in loaded if want in (p.id, p.name.lower())), None)
-        if p is None:
-            print(f"no profile {' '.join(args[1:])!r}; known: {one} (1), " + ", ".join(f"{p.name} ({p.id})" for p in loaded))
+def _report(runtime: str, args: list[str]) -> int:
+    from . import reports
+    if not args:
+        out = reports.desk(runtime)
+    elif args[0] == "--profiles":
+        out = reports.side_by_side(runtime)
+    elif args[0] == "--deleted":
+        out = reports.deleted(runtime)
+    elif args[0] == "--profile" and len(args) > 1:
+        try:
+            out = reports.of_profile(runtime, reports.find(runtime, " ".join(args[1:])))
+        except LookupError as ex:
+            print(ex.args[0])
             return 2
-        print(f"{p.name} ({p.id}): {'on' if p.enabled else 'off'}, book trades {p.variant}, settings {p.log.sv}")
-        print("\n".join(_periods(p.name, p.shadow, p.log.lines(), p.log.sv)))
-        return 0
-    print("tern report [--profile NAME | --profiles | --deleted]")
-    return 2
-
-
-def _side_by_side(rows: list[tuple]) -> None:
-    w = max(len(r[0]) for r in rows)
-    b = max([8] + [len(r[1]) for r in rows])
-    print(f"{'profile':<{w}}  {'book':<{b}} {'set':>3} {'hours':>5} {'entries':>7} {'P&L':>9} {'¢/contract':>10} {'t':>6}")
-    for name, variant, sv, sh in rows:
-        r = sh.summary([variant])[0]
-        pc = f"{r['per_contract'] * 100:+.2f}" if r["per_contract"] is not None else "-"
-        t = f"{r['t']:+.2f}" if r["t"] is not None else "-"
-        print(f"{name:<{w}}  {variant:<{b}} {sv:>3} {r['hours']:>5} {r['entries']:>7} {r['pnl']:>+9.2f} {pc:>10} {t:>6}")
+    else:
+        print("tern report [--profile NAME | --profiles | --deleted]")
+        return 2
+    print("\n".join(out))
+    return 0
 
 
 def main(argv: list[str]) -> int:
@@ -319,31 +235,8 @@ def main(argv: list[str]) -> int:
         Desk(runtime, echo=True).run(once="--once" in argv); return 0
     if cmd == "status":
         return _status(runtime)
-    if cmd == "report" and len(argv) > 1:
-        return _report_profiles(runtime, argv[1:])
     if cmd == "report":
-        from .shadow import DESC, RETIRED, Shadow, desc_of, table
-        sh = Shadow(runtime)
-        use = cfgmod.load(runtime).strategy.variant
-        lost = sorted(sh.own.used() - set(shadow_names(sh)))      # records of variants variants.json no longer has
-        w = max(len(n) for n in shadow_names(sh) + lost)
-        print("\n".join(table(sh.summary(), w)))
-        own = {n: (f"({sh.own.title(n)}) " if sh.own.title(n) != n else "") + desc_of(n, sh.own) for n in sh.own.active()}
-        print("\n" + "\n".join(f"{n}: {d}" + ("  ← in use" if n == use else "") for n, d in {**DESC, **own}.items()))
-        gone = [r for r in sh.summary(sh.own.deleted()) if r["entries"] or r["open"]] if sh.own.deleted() else []
-        if gone:
-            print("\ndeleted, kept for the record:")
-            print("\n".join(table(gone, w)[1:]))
-        if lost:
-            print("\nnot in variants.json any more, kept for the record:")
-            print("\n".join(table(sh.summary(lost), w)[1:]))
-        old = [r for r in sh.summary(list(RETIRED)) if r["entries"]]
-        if old:
-            print("\nretired, kept for the record:")
-            print("\n".join(table(old, w)[1:]))
-            print("\n".join(f"{n}: {d}" for n, d in RETIRED.items()))
-        print("\nt is by hour and shows after 10 hours.")
-        return 0
+        return _report(runtime, argv[1:])
     if cmd == "web":
         from .web import serve
         from .webctl import host

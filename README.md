@@ -282,6 +282,7 @@ Requests are signed (Ed25519 or RSA-PSS) in pure Python, checked against openssl
 | `r` | the rule trades this coin, on / off |
 | `g` | the gate |
 | `e` | settings |
+| `o` | reports (below) |
 | `L` | arm / disarm live |
 | `R` | reset the paper book (asks `y`) |
 | `s` | stop (asks `y`) / start the engine |
@@ -290,6 +291,19 @@ Requests are signed (Ed25519 or RSA-PSS) in pure Python, checked against openssl
 | `space` `n` `d` `D` | profiles box: on/off, new, live trades its rule, delete |
 | `n` `E` `D` | variants box: new, change its rule, delete |
 | `N` | rename the highlighted profile or variant |
+
+### Reports
+
+`o` opens the reports over the whole screen; the status line stays. The list on the left has two parts:
+
+- **LIVE:** what `tern report` prints, worked out from the records as they stand: profile 1's variants, every
+  profile's book side by side, each profile by settings period, and the deleted profiles. A report is worked out
+  again when its records change; its bottom border says when it was.
+- **SAVED:** the files named `report-*.txt` in `runtime/`, newest first, shown as written. To save one:
+  `python3 -m tern report > runtime/report-$(date +%F).txt`.
+
+`←→` moves between the list and the report, `↑↓` picks or scrolls, `PgUp` `PgDn` page the report, and `esc` closes
+them. Reading one changes nothing, so the web screen has them too.
 
 <img width="1364" height="668" alt="The help" src="docs/screenshots/08-help.png" />
 
@@ -400,6 +414,7 @@ The major ones, newest first.
 | Date | Change |
 |---|---|
 | 2026-11-23 | **Your own variants.** Make, change and delete them from the screen (`n`, `E`, `D`), in each profile. Changing a rule makes a new variant with its own record; the built-in ones never change. Profile 1's settings show its variant and rule. Profiles that had changed their rule are converted (see Profiles). |
+| 2026-11-23 | **Reports screen** (`o`): what `tern report` prints, from the records as they stand, and the saved `report-*.txt` files. |
 | 2026-11-23 | MIT license; README rewritten for anyone running it. |
 | 2026-11-22 | **Any profile can go live** (`d`), past its own gate on its own record. |
 | 2026-11-22 | Two pages (`p`), and a box's number zooms it to the whole screen. Hiding boxes is gone. |

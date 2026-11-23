@@ -16,6 +16,7 @@ import uuid
 
 from . import config as cfgmod
 from . import profiles as profmod
+from . import reports
 from . import shadow as shadowmod
 from . import variants as varmod
 from . import themes
@@ -378,6 +379,8 @@ HELP_KEYS = [
                ("v", "book and equity: paper / live"),
                ("w", "watch the highlighted variant: book,"),
                ("", "equity and band as if it traded (view only)"),
+               ("o", "reports: every record, live and saved"),
+               ("", "(←→ ↑↓ move, PgUp PgDn page, esc closes)"),
                ("t T", "next / previous of {themes} color themes")])],
     [("trade", [("enter", "use the highlighted variant (page 2)"),
                 ("n", "new variant: a copy of the highlighted one"),
@@ -420,7 +423,7 @@ HELP_KEYS = [
 # command line, shown at the end of the help
 HELP_CLI = [
     ("tern", "this screen (starts the engine in paper if it is down)"),
-    ("tern report", "every variant's record, deleted and retired ones too"),
+    ("tern report", "every variant's record, deleted and retired ones too (o shows it here)"),
     ("tern report --profile NAME", "one profile's variants and their rules"),
     ("tern report --profiles", "every profile's book side by side"),
     ("tern status", "a plain-text summary"),
@@ -465,6 +468,26 @@ ORPHAN_DROP = ["t", "c", "R", "L", "v", "r", "", "h", "s", "g", "q", "tab"]   # 
 COMFY_H = {"spot": 10, "contract": 10, "ladder": 12, "book": 12, "equity": 8, "log": 8}   # sizes the merged view needs
 
 
+# the reports screen (o): the list's width, and the lines of a report that are a table's header, a table's row
+# (name, then whole-number columns and a P&L) and a name with what it is
+REPORT_LIST_W = 24
+REPORT_HEAD = re.compile(r"^\s*(?:variant|profile)\s.*\bhours\s+entries\b")
+REPORT_ROW = re.compile(r"^(\s*)(\S.*?)(\s+\d+\s+\d+(?:\s+\d+)?\s+[+-]\d+\.\d\d\s+\S.*)$")
+REPORT_NAME = re.compile(r"^(\s*)([a-z0-9][\w-]*(?: \([^)]*\))?)(: )(.+)$")
+
+
+def wrap_report(lines: list[str], w: int) -> list[str]:
+    """A report's lines at a width: sentences wrap, indented under themselves; a table's lines stay as they are."""
+    out: list[str] = []
+    for l in lines:
+        if len(l) <= w or REPORT_HEAD.match(l) or REPORT_ROW.match(l):
+            out.append(l)
+        else:
+            lead = " " * (len(l) - len(l.lstrip()))
+            out += textwrap.wrap(l, w, subsequent_indent=lead + "    ", drop_whitespace=True) or [l]
+    return out
+
+
 def view_boxes(view: str) -> list[str]:
     return [n for row in PAGES[view] for n in row]
 
@@ -476,7 +499,7 @@ PANEL_KEYS = {
                        ("c", "hart " + s.chart)],
     "book": lambda s: [("v", "iew"), ("L", "ive"), ("R", "eset")],
     "contract": lambda s: [("t", "heme ", s.P.name)],
-    "log": lambda s: [("g", "ate"), ("", "s", "e", "ttings"), ("s", "top" if s.alive else "tart"), ("h", "elp"), ("q", "uit")],
+    "log": lambda s: [("g", "ate"), ("", "s", "e", "ttings"), ("", "rep", "o", "rts"), ("s", "top" if s.alive else "tart"), ("h", "elp"), ("q", "uit")],
 }
 
 
@@ -555,6 +578,14 @@ class Screen:
         self.prof_sel: str | None = None       # the profile the cursor is on in the profiles box
         self.raw: dict = {}                    # status.json as the engine wrote it; self.st is it as the profile shows it
         self.set_sub = 0                       # in a slots / coins row of the settings box: the choice the cursor is on
+        self.rep_list: list = []               # o: the reports there are (reports.index), looked up every 2 s
+        self.rep_at = 0.0
+        self.rep_sel = "desk"                  # the report shown
+        self.rep_focus = "reports"             # which of its two boxes ↑↓ move in: reports (the list) or report
+        self.rep_top = 0                       # first row of the list shown
+        self.rep_off, self.rep_room, self.rep_len = 0, 1, 0   # the report's scroll: as ov_off, ov_room, ov_len
+        self.rep_rows: dict[int, str] = {}     # screen row -> the report listed there, as last drawn
+        self.rep_drawn: tuple = ()             # (what it was made from, its colored lines)
         try:
             with open(self.prefs_path) as fh:
                 d = json.load(fh)
@@ -814,7 +845,7 @@ class Screen:
         a = P(color)
         key = key or self.panel_key
         saved, self.clip = self.clip, None
-        focused = self.drawing == self.focus
+        focused = self.drawing == (self.rep_focus if self.overlay == "reports" else self.focus)
         if focused:
             a |= curses.A_BOLD
         tl, hz, tr, vt, bl, br = "╭─╮│╰╯"
@@ -1892,7 +1923,7 @@ class Screen:
     def wheel(self, my: int, mx: int, d: int) -> None:
         """Mouse wheel over a panel: d is -1 (up) or +1 (down)."""
         name = next((n for n, (y, x, h, w) in self.rects.items() if y <= my < y + h and x <= mx < x + w), None)
-        self.scroll(name, d)
+        self.scroll(name, 3 * d if name == "report" else d)
 
     def scroll(self, name: str | None, d: int) -> None:
         """Move one box d steps (negative is up). Boxes that don't scroll ignore it."""
@@ -1911,6 +1942,11 @@ class Screen:
                 self.prof_sel = ids[max(0, min(len(ids) - 1, i + d))]
         elif name == "book":
             self.pos_off = max(0, self.pos_off + d)    # book_panel clamps the far end
+        elif name == "reports":
+            ids = [r.id for r in self.rep_entries()]
+            self.pick_report(ids[max(0, min(len(ids) - 1, ids.index(self.rep_sel) + d))])
+        elif name == "report":
+            self.rep_off = max(0, min(self.rep_len - self.rep_room, self.rep_off + d))
         elif name == "log":
             r = self.rects.get("log")
             logs = self.log_rows(self.logs_shown(), r[3] if r else 100)
@@ -1950,14 +1986,16 @@ class Screen:
         flashing = bool(self.flash) and time.time() - self.flash_at < 8
         view = self.view(H, W)
         z = self.zoomed(H, W)
-        if z:                                                   # ─3 back─: the zoomed box's number restores
+        if self.overlay == "reports":                           # its own boxes have their hints
+            page_seg = ()
+        elif z:                                                 # ─3 back─: the zoomed box's number restores
             page_seg = (str(view_boxes(view).index(z) + 1), " back")
         else:
             page_seg = ("p", "age ", str(self.page), "/2") if view != "merged" else ()   # ─page 1/2─
         paged = not flashing and bool(page_seg)
         # page 2 shows only its own hints and the page one: page 1's keys are page 1's (they still work, and h
         # lists them); a zoomed box hides every other, so then theirs move here
-        orphans = [] if view == "page2" and not z else \
+        orphans = [] if view == "page2" and not z or self.overlay == "reports" else \
             [k for name, fn in PANEL_KEYS.items() if name not in self.rects for k in fn(self)]
         width = lambda segs: sum(sum(map(len, seg)) + 3 for seg in segs) - 1
         for key in ORPHAN_DROP:                       # too many for the row: the least needed go first, tab last
@@ -2160,6 +2198,147 @@ class Screen:
         out += ["", head("CAPS"), f"  ${L.get('capital_usd', 0):,.0f} at risk · ${L.get('max_order_usd', 0):,.0f} per order · "
                     f"-${L.get('max_daily_loss', 0):,.0f} a day turns live off"]
         return out
+
+    # ------------------------------------------------------------ reports (o)
+    def rep_entries(self) -> list:
+        """The reports there are; the one shown goes back to the first when it is gone."""
+        if not self.rep_list or not 0 <= time.time() - self.rep_at < 2:
+            self.rep_list, self.rep_at = reports.index(self.runtime), time.time()
+        if self.rep_sel not in [r.id for r in self.rep_list]:
+            self.pick_report(self.rep_list[0].id)
+        return self.rep_list
+
+    def pick_report(self, rid: str) -> None:
+        if rid != self.rep_sel:
+            self.rep_sel, self.rep_off = rid, 0
+
+    def reports_screen(self, H: int, W: int) -> None:
+        """Two boxes over the whole screen but the status line: the list, and the report picked in it."""
+        P = self.P
+        entries = self.rep_entries()
+        h, lw = H - 1, REPORT_LIST_W
+        self.panel_key = ""
+        # the list: LIVE, then SAVED
+        self.drawing = "reports"
+        self.rects["reports"] = (0, 0, h, lw)
+        self.box(0, 0, h, lw, "reports", P.border("book"), "", ["↑↓"])
+        rows: list = []                                   # a heading, "" or an entry
+        for saved, title in ((False, "LIVE"), (True, "SAVED")):
+            these = [r for r in entries if r.saved == saved]
+            rows += ([""] if rows else []) + [title] + (these or ["  none yet"])
+        room = h - 2
+        at = next(i for i, r in enumerate(rows) if not isinstance(r, str) and r.id == self.rep_sel)
+        self.rep_top = max(0, min(self.rep_top, len(rows) - room))
+        self.rep_top = min(max(self.rep_top, at - room + 1), max(0, at - 1))   # the first entry: its heading too
+        self.rep_rows = {}
+        for j, r in enumerate(rows[self.rep_top:self.rep_top + room]):
+            yy = 1 + j
+            if isinstance(r, str):
+                self.put(yy, 2, r, P(P.c("head"), bold=True) if r.isupper() else P(WHITE))
+                continue
+            sel = r.id == self.rep_sel
+            base = curses.A_REVERSE if sel else 0
+            name = r.label if len(r.label) <= lw - 6 else r.label[:lw - 7] + "…"
+            self.put(yy, 1, f"   {name}".ljust(lw - 2), P(P.pick("rows", entries.index(r) / max(1, len(entries) - 1)), bold=sel) | base)
+            self.rep_rows[yy] = r.id
+        if self.rep_top > 0:
+            self.put(1, lw - 1, "▲", P(YELLOW))
+        if self.rep_top + room < len(rows):
+            self.put(h - 2, lw - 1, "▼", P(YELLOW))
+        # the report
+        cur = next(r for r in entries if r.id == self.rep_sel)
+        x, w = lw, W - lw
+        self.drawing = "report"
+        self.rects["report"] = (0, x, h, w)
+        self.box(0, x, h, w, cur.label, P.border("ladder"), "",
+                 [("←→", " box"), ("↑↓", " scroll" if self.rep_focus == "report" else " pick"), ("esc", " close")])
+        self.drawing = ""
+        got = reports.FEED.get(self.runtime, cur.id, w - 4)
+        if got is None:
+            self.rep_room, self.rep_len = room, 0
+            self.put(2, x + 3, "reading the records…", P(WHITE)); return
+        key = (got, w, P.name, P.many)
+        if not self.rep_drawn or self.rep_drawn[0][0] is not got or self.rep_drawn[0][1:] != key[1:]:
+            self.rep_drawn = (key, self.report_spans(wrap_report(got.lines, w - 4)))
+        lines = self.rep_drawn[1]
+        self.rep_room, self.rep_len = room, len(lines)
+        self.rep_off = off = max(0, min(self.rep_off, len(lines) - room))
+        saved, self.clip = self.clip, x + w - 2
+        for j, spans in enumerate(lines[off:off + room]):
+            cx = x + 2
+            for text, attr in spans:
+                self.put(1 + j, cx, text, attr); cx += len(text)
+        self.clip = saved
+        # the bottom border: where it comes from, and the place in it
+        src = (f"runtime/{cur.id[len('saved:'):]}" if cur.saved else
+               "tern report" + ({"desk": "", "profiles": " --profiles", "deleted": " --deleted"}.get(cur.id)
+                                if ":" not in cur.id else f" --profile {cur.id[len('profile:'):]}") +
+               time.strftime(" · worked out %H:%M:%S", time.localtime(got.at)))
+        self.put(h - 1, x + 3, f" {src} ", P(P.c("ticker")))
+        if off > 0:
+            self.put(1, x + w - 1, "▲", P(YELLOW))
+        if off + room < len(lines):
+            self.put(h - 2, x + w - 1, "▼", P(YELLOW))
+        if len(lines) > room:
+            where = f" {off + 1}-{off + room} of {len(lines)} "
+            self.put(h - 1, x + w - 3 - len(where), where, P(P.c("key"), bold=True))
+
+    def report_spans(self, lines: list[str]) -> list[list[tuple[str, int]]]:
+        """A report's lines, colored: tables as in the variants box, headings, names, and what rich colors."""
+        P = self.P
+        out: list = []
+        tables = [i for i, l in enumerate(lines) if REPORT_HEAD.match(l)]
+        for i, l in enumerate(lines):
+            row, named = REPORT_ROW.match(l), REPORT_NAME.match(l)
+            if i in tables:
+                out.append([(l, P(P.c("head"), bold=True))])
+            elif row:                                     # a table's row: the name (and book), then the numbers
+                top = max([t for t in tables if t < i], default=i - 1)
+                end = next((j for j in range(i, len(lines)) if not REPORT_ROW.match(lines[j])), len(lines))
+                num = P(P.pick("rows", (i - top - 1) / max(1, end - top - 2)))
+                name, gap, book = re.match(r"(.*?)(\s{2,}|$)(.*)", row[2]).groups()
+                out.append([(row[1] + name, P(P.c("variant"), bold=True)), (gap, 0), (book, P(P.c("slot"), bold=True))])
+                for part in re.split(r"([+-]\d[\d.]*)", row[3]):
+                    out[-1].append((part, P(GREEN if part[0] == "+" else RED, bold=True) if re.match(r"[+-]\d", part) else num))
+            elif l.endswith(":") or l == "all settings together":
+                out.append([(l, P(P.c("head"), bold=True))])
+            elif re.match(r"settings \d+(?:, |: |$)", l):      # settings 2, when: what changed
+                m = re.match(r"(settings \d+)(.*)", l)
+                out.append([(m[1], P(P.c("head"), bold=True))] + self.log_spans(m[2], "", WHITE))
+            elif named and named[2] not in LOG_BOOK:      # base: the rule ...
+                body, use, after = named[4].partition("← in use")
+                out.append([(named[1] + named[2], P(P.c("variant"), bold=True)), (named[3], P(P.c("sep")))] +
+                           self.log_spans(body, "", WHITE) + [(use + after, P(GREEN, bold=True))])
+            elif i == 0 and "): " in l and "book trades" in l:   # profile 2 (no2): on, book trades ...
+                name, _, rest = l.partition(": ")
+                out.append([(name, P(P.c("key"), bold=True)), (": ", P(P.c("sep")))] + self.log_spans(rest, "", WHITE))
+            else:
+                out.append(self.rich(l))
+            out[-1] = [(t, a) for t, a in out[-1] if t]
+        return out
+
+    def reports_key(self, ch: int) -> None:
+        step = {curses.KEY_UP: -1, ord("k"): -1, curses.KEY_DOWN: 1, ord("j"): 1}.get(ch)
+        page = {curses.KEY_PPAGE: -1, curses.KEY_NPAGE: 1, ord(" "): 1}.get(ch)
+        if ch in (27, ord("o"), ord("q"), ord("Q")):
+            self.overlay = None
+        elif step:
+            self.scroll(self.rep_focus, step)
+        elif page:                                        # these page the report from either box
+            self.scroll("report", page * max(1, self.rep_room - 1))
+        elif ch in (curses.KEY_HOME, curses.KEY_END):
+            self.scroll(self.rep_focus, -10 ** 6 if ch == curses.KEY_HOME else 10 ** 6)
+        elif ch in (curses.KEY_LEFT, curses.KEY_RIGHT, 10, 13, curses.KEY_ENTER):
+            self.rep_focus = "reports" if ch == curses.KEY_LEFT else "report"
+        elif ch in (9, curses.KEY_BTAB):
+            self.rep_focus = "report" if self.rep_focus == "reports" else "reports"
+        elif ch in (ord("t"), ord("T")):
+            self.next_theme(-1 if ch == ord("T") else 1)
+
+    def next_theme(self, d: int) -> None:
+        self.P.set_theme(themes.next_name(self.P.name, d))
+        self.save_prefs()
+        self.say(f"theme {self.P.name}" + ("" if self.P.many else " (needs a 256-color terminal)"))
 
     # ------------------------------------------------------------ settings (e)
     def set_rows(self) -> list:
@@ -2446,6 +2625,10 @@ class Screen:
             self.put(0, 0, f"tern needs at least 100x30 (now {W}x{H})", self.P(RED, bold=True)); self.s.refresh(); return
         self.header(H, W)
         self.rects = {}
+        if self.overlay == "reports":
+            self.reports_screen(H, W)
+            self.footer(H, W)
+            self.s.refresh(); return
         boxes = self.layout(H, W)
         view = self.view(H, W)
         here = view_boxes(view)
@@ -2483,6 +2666,8 @@ class Screen:
             d = -1 if bs & curses.BUTTON4_PRESSED else 1 if bs & curses.BUTTON5_PRESSED else 0
             if d and self.overlay == "settings" and not self.modal:
                 self.set_sel = (self.set_sel + d) % len(self.set_rows())
+            elif d and self.overlay == "reports":
+                self.wheel(my, mx, d)
             elif d and self.overlay and not self.modal:
                 self.ov_off = max(0, self.ov_off + 3 * d)
             elif d and not self.modal:
@@ -2564,6 +2749,9 @@ class Screen:
         if self.overlay == "settings":
             self.settings_key(ch)
             return True
+        if self.overlay == "reports":
+            self.reports_key(ch)
+            return True
         if self.overlay:
             step = {curses.KEY_UP: -1, ord("k"): -1, curses.KEY_DOWN: 1, ord("j"): 1, curses.KEY_PPAGE: -(self.ov_room - 1),
                     curses.KEY_NPAGE: self.ov_room - 1, ord(" "): self.ov_room - 1,
@@ -2627,9 +2815,7 @@ class Screen:
             self.live_or_send({"op": "series", "profile": self.profile or "1", "series": self.series}, True, None,
                               f"{coin} " + ("off" if self.series in have else "on"))
         elif ch in (ord("t"), ord("T")):
-            self.P.set_theme(themes.next_name(self.P.name, -1 if ch == ord("T") else 1))
-            self.save_prefs()
-            self.say(f"theme {self.P.name}" + ("" if self.P.many else " (needs a 256-color terminal)"))
+            self.next_theme(-1 if ch == ord("T") else 1)
         elif ch == ord("c"):
             order = list(CHARTS)
             self.chart = order[(order.index(self.chart) + 1) % len(order)] if self.chart in order else "15m"
@@ -2646,6 +2832,8 @@ class Screen:
             self.overlay, self.ov_off = "gate", 0
         elif ch == ord("e"):
             self.open_settings()
+        elif ch == ord("o"):
+            self.overlay, self.rep_focus, self.rep_at = "reports", "reports", 0.0
         elif ch == ord("?") or ch == ord("h"):
             self.overlay, self.ov_off = "help", 0
         elif ch == ord("s"):
