@@ -415,6 +415,9 @@ HELP_CLI = [
 LOG_FILTERS = {"all": "everything", "no_shadow": "no shadow lines", "quiet": "live, warnings, commands",
                "trades": "trades only"}
 TRADE_LINE = re.compile(r"^(?:paper|live): (?:\d+m slot on .*, [1-9]\d* bought$|\S+ (?:settled|finalized) )")
+# rows for the whole desk, not one profile's: the settings box shows them whichever profile is viewed
+DESK_SETTINGS = [r for r in cfgmod.SETTINGS if r.sec == "web" or r.key == "alerts"]
+DESK_KEYS = {r.key for r in DESK_SETTINGS}
 SCREEN_SETTINGS = [cfgmod.Setting("screen", "log", "log shows", kind="choice", group="SCREEN",
                                   what="shadow: the variants' hourly results · quiet hides paper too · trades: buys and settlements only")]
 
@@ -2012,14 +2015,14 @@ class Screen:
     # ------------------------------------------------------------ settings (e)
     def set_rows(self) -> list:
         """The settings box's rows: the engine's (config.SETTINGS) and the screen's own; a profile's own
-        (profiles.PROFILE_SETTINGS) while one is shown."""
-        return (profmod.PROFILE_SETTINGS if self.profile else cfgmod.SETTINGS) + SCREEN_SETTINGS
+        (profiles.PROFILE_SETTINGS) and the desk-wide ones while one is shown."""
+        return (profmod.PROFILE_SETTINGS + DESK_SETTINGS if self.profile else cfgmod.SETTINGS) + SCREEN_SETTINGS
 
     def set_value(self, key: str):
         """What the setting is: the engine's value, or the one just sent until the engine shows it (10 s)."""
         if key == "screen.log":
             return self.log_filter
-        now_v = (self.st.get("settings") or {}).get(key)
+        now_v = ((self.raw if key in DESK_KEYS else self.st).get("settings") or {}).get(key)
         sent = self.set_sent.get(key)
         if sent and now_v != sent[0] and time.time() - sent[1] < 10:
             return sent[0]
@@ -2100,7 +2103,8 @@ class Screen:
             out += [[("", 0)]]
         if self.st.get("profile_wait"):
             out += [[("Waiting for the engine to send this profile's settings…", P(YELLOW, bold=True))]]
-        elif "settings" not in self.st or any(r.key not in self.st["settings"] for r in rows if r.sec != "screen"):
+        elif any(r.key not in ((self.raw if r.key in DESK_KEYS else self.st).get("settings") or {})
+                 for r in rows if r.sec != "screen"):
             out += [[("The engine running is older than this screen: restart it (s, s) to change these.", P(YELLOW, bold=True))]]
         elif armed:
             out += [[("Live is armed: raising a live limit or lowering a gate asks you to type \"live\".", P(YELLOW, bold=True))]]
@@ -2113,7 +2117,7 @@ class Screen:
         key = row.key
         if row.key == "screen.log":
             self.log_filter = value; self.log_anchor = None; self.save_prefs(); return
-        if self.profile:                              # a profile: paper only, checked again by the engine
+        if self.profile and key not in DESK_KEYS:     # a profile: paper only, checked again by the engine
             if row.kind in ("usd", "n", "p") and not row.lo <= value <= row.hi + 1e-9:
                 self.say(f"{row.label} must be {self.set_fmt(row, row.lo)} to {self.set_fmt(row, row.hi)}"); return
             if row.kind == "p":

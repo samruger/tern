@@ -1819,6 +1819,29 @@ class ScreenProfiles(unittest.TestCase):
             self.press(self.curses.KEY_RIGHT)
             self.assertEqual(self.cmds()[0]["value"], "band90")
 
+    def test_desk_settings_show_under_a_profile_and_change_the_desk(self):
+        from tern import config as cfgmod
+        with tempfile.TemporaryDirectory() as d:
+            k, p, scr = self.setup(d)
+            self.view2(); self.cmds()
+            self.press("e")
+            rows = [r.key for r in scr.set_rows()]
+            for key in ("alerts", "web.enabled", "web.port", "web.network"):
+                self.assertEqual(rows.count(key), 1, key)
+                self.assertEqual(scr.set_value(key), cfgmod.get_setting(k.cfg, key))   # the desk's value
+            self.assertFalse([key for key in rows if key.startswith(("live.", "gate."))])
+            self.assertEqual(rows[-1], "screen.log")
+            scr.set_sel = rows.index("web.port"); scr.draw()
+            self.assertIn("web screen now", self.text())
+            self.assertNotIn("older than this screen", self.text())
+            self.press(self.curses.KEY_RIGHT)
+            [c] = self.cmds()
+            self.assertEqual((c["op"], c["key"], c["value"]), ("set", "web.port", 8788))   # not profile_set
+            scr.set_sel = rows.index("alerts")
+            self.press(self.curses.KEY_RIGHT)
+            [c] = self.cmds()
+            self.assertEqual((c["op"], c["key"], c["value"]), ("set", "alerts", not k.cfg.alerts))
+
     def test_profile_box_keys(self):
         with tempfile.TemporaryDirectory() as d:
             k, p, scr = self.setup(d)

@@ -170,7 +170,8 @@ from timing.
   down with its time (`runtime/profiles/<id>/settings-log.jsonl`;
   `runtime/settings-log.jsonl` for profile 1), and a change to how records are
   made starts a new settings period. Rows are stamped with their period, so
-  results can be split by it.
+  results can be split by it. ALERTS and WEB are for the whole desk and show under every profile;
+  LIVE and GATE are under profile 1.
 - **Compare:** `python3 -m tern report --profiles` puts each profile's book
   side by side; `--profile <name>` shows one profile's variants period by
   period with what changed; `--deleted` lists the deleted ones.

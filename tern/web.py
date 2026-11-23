@@ -201,7 +201,8 @@ class WebScreen(dash.Screen):
     def send_setting(self, row, value) -> None:  # the settings box shows, but only its log row changes here
         if row.key == "screen.log":              # just this viewer's log box, kept with its other prefs
             return super().send_setting(row, value)
-        self.say(PROFILE_ONLY if self.profile else "view only: settings are changed from the screen in the terminal")
+        self.say(PROFILE_ONLY if self.profile and row.key not in dash.DESK_KEYS else
+                 "view only: settings are changed from the screen in the terminal")
 
     def settings_lines(self) -> list:
         out = super().settings_lines()
