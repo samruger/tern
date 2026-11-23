@@ -1,123 +1,140 @@
 # tern
 
-A desk for Kalshi's hourly crypto above-or-below markets (BTC, ETH, SOL, XRP, BNB, HYPE), with a btop-style
-screen: braille charts, a strike ladder, and paper and live books.
-Every trade comes from the rule; there are no manual orders.
+tern is a trading bot for Kalshi's hourly crypto above-or-below markets (BTC, ETH, SOL, XRP, BNB, HYPE),
+with a btop-style terminal screen: braille charts, a strike ladder, and paper and live books.
+Every trade comes from its rule; there are no manual orders.
 It paper trades from the start and sends no real order until you arm live.
 
-<img width="1364" height="668" alt="tern: page1 trade" src="docs/screenshots/01-page1-trade.png" />
+<img width="1364" height="668" alt="Page 1: spot and contract charts, strike ladder, book and log" src="docs/screenshots/01-page1-trade.png" />
 
-Python 3.11+, standard library only. Kalshi request signing (Ed25519 and RSA-PSS)
-is written in pure Python and checked against openssl in the tests.
+- **Paper and live books.** Live is off until you arm it, and has its own caps, gate and daily loss limit.
+- **Variants.** Ten versions of the rule run side by side on paper, each with its own record.
+- **Profiles.** Whole copies of the bot with their own settings, compared on the same prices.
+- **Runs unattended.** The engine is separate from the screen and can run as a systemd service.
+- **Web screen.** The same screen in a browser, view only.
+- **54 color themes.**
+
+## Quick start
+
+tern needs Linux and Python 3.11 or newer, and nothing from pip. Paper trading needs no Kalshi account.
 
 ```
-python3 -m tern               # the screen; starts the engine in paper if it isn't running
-python3 -m tern run           # the engine in the foreground
-python3 -m tern status        # plain-text summary
-python3 -m tern report        # the rule's variants side by side
-python3 -m tern report --profiles       # every profile's book side by side (--deleted: the deleted ones)
-python3 -m tern report --profile NAME   # one profile's variants, by settings period
-python3 -m tern live-check    # test your Kalshi key (balance, positions; no orders)
-python3 -m tern web           # the screen in a browser, view only: http://localhost:8787/
-python3 -m tern web-service   # a systemd user service for it (tern-web.service)
-python3 -m tern service       # a systemd user service so the engine keeps running
-python3 -m unittest tests.test_tern
+git clone https://github.com/samruger/tern.git
+cd tern
+python3 -m tern
 ```
 
-<img width="1364" height="668" alt="tern: page2 compare" src="docs/screenshots/02-page2-compare.png" />
+That opens the screen and starts the engine in paper. `h` shows the help and `q` closes the screen; the
+engine keeps running.
 
-## Where the rule comes from
-
-The default rule comes from a study of Kalshi's hourly crypto markets, written up in
-[research/RESEARCH.md](research/RESEARCH.md). On 67 days of BTC history, 80–90¢ favorites won about
-2 points more often than their price said, and 5–20¢ long shots about 2 points less often. The rule
-buys the favorite. It was picked on the first 33 days and made **+0.6¢ a contract after fees on the
-next 34 days**. It makes about 10 entries an hour.
-
-<img width="1364" height="668" alt="tern: variants multi" src="docs/screenshots/03-variants-multi.png" />
+| Command | What it does |
+|---|---|
+| `python3 -m tern` | the screen; starts the engine in paper if it isn't running |
+| `python3 -m tern run` | the engine in the foreground |
+| `python3 -m tern status` | a plain-text summary |
+| `python3 -m tern report` | the variants side by side |
+| `python3 -m tern report --profiles` | every profile's book side by side (`--deleted`: the deleted ones) |
+| `python3 -m tern report --profile NAME` | one profile's variants, by settings period |
+| `python3 -m tern live-check` | tests your Kalshi key: balance and positions, no orders |
+| `python3 -m tern service` | writes a systemd user service that keeps the engine running |
+| `python3 -m tern web` | the screen in a browser: http://localhost:8787/ |
+| `python3 -m tern web-service` | writes a systemd user service for the web screen |
+| `python3 -m tern web-password` | sets the web screen's password |
+| `python3 -m tern web-cert` | makes a self-signed certificate for the web screen |
+| `python3 -m unittest tests.test_tern` | the tests |
 
 ## The rule
 
 At **25, 20, 15 and 10 minutes before each hourly close**, for every strike whose
 favorite side (YES or NO) has its mid between **75¢ and 95¢** and a spread of
-**2¢ or less**, it buys **5 contracts** of the favorite at the ask
+**2¢ or less**, tern buys **5 contracts** of the favorite at the ask
 (immediate-or-cancel) and holds to settlement. It puts at most **$60** into any
-one hour. All of this is under `strategy` in `runtime/config.json`, re-read
-every 5 seconds. It trades BTC only by default. `r` on another coin's view adds
-that coin. The study covered 67 days of BTC and 14 days of ETH.
+one hour. It trades BTC by default; `r` on another coin's view adds that coin.
+These are the defaults, under `strategy` in `runtime/config.json`, which is
+re-read every 5 seconds.
 
-<img width="1364" height="668" alt="tern: book multi" src="docs/screenshots/04-book-multi.png" />
+The rule comes from a study of 67 days of BTC and 14 days of ETH markets. In the BTC data, 80–90¢
+favorites won about 2 points more often than their price said, and 5–20¢ long shots about 2 points less
+often. The rule was picked on the first 33 days and made +0.6¢ a contract after fees on the next 34.
+The write-up is [research/RESEARCH.md](research/RESEARCH.md).
 
-## Paper and live
+## The screen
 
-Paper fills at the touch, limited to the size shown there, and pays the taker
-fee rounded up per order, as Kalshi charges. Paper always runs the rule, even
-while live is on, so its record keeps growing.
+The boxes sit on two pages, and `p` flips between them. Page 1 · trade has spot, contract, ladder, book
+and log. Page 2 · compare has variants across the full width, then profiles and equity, then log. Each
+page fits itself to the terminal: tables keep all their rows and the charts give up height first. A screen big
+enough for every box (about 150×45) shows them all as one page. Each page numbers its boxes in reading order
+(page 1: 1–5, log is 5; page 2: 1 variants, 2 profiles, 3 equity, 4 log), and `page 1/2` at the log's bottom
+right says which page it is. A box's number zooms it to the whole screen; the same number again (the bottom border says `3 back`)
+restores the page, and `p` restores it and flips.
 
-**Going live:** press `L` and type `live`. That sets `live.enabled` in the
-config. The engine then authenticates with your key, and the header turns red
-once it has. Press `L` again to return to paper. Once live:
+<img width="1364" height="668" alt="Page 2: variants, profiles, equity and log" src="docs/screenshots/02-page2-compare.png" />
 
-- **The variant in use goes live only after its own shadow record passes the
-  gate** (`g`): 14 days, 300 settled entries, and P&L ≥ $0 after fees. Days are
-  counted as hours it actually traded ÷ 24, so time with the engine off does
-  not count. Switching variants never skips this: the new one needs its own record.
-  14, 300 and $0 are the defaults; the settings box (`e`) changes them.
-  Set `live.auto_needs_gate` to `false` to skip the gate.
-- **Caps:** `live.capital_usd` ($100) is the most at risk at once.
-  `live.max_order_usd` ($25) is the largest single order. Orders that only
-  reduce a position are exempt from both.
-- **Kill switch:** a live loss of `live.max_daily_loss` ($30) since local
-  midnight turns live off. Open positions are left to settle. Every order is
-  immediate-or-cancel, so nothing is left resting on the book.
-- **Kalshi is the record.** Every 15 seconds the engine reads your positions
-  and overwrites its own when they differ. It reads the balance every 10
-  seconds. Each order carries a unique `client_order_id`. If the reply is lost,
-  the engine looks the order up by that id instead of sending it again.
-
-<img width="1364" height="668" alt="tern: settings" src="docs/screenshots/05-settings.png" />
+| Box | What it shows |
+|---|---|
+| status line | paper/live, spot and 1-hour change, the event and its countdown, the rule's next slot, engine health |
+| ¹ spot | Coinbase spot (a BRTI constituent), over 5 minutes, 15 minutes, 1 hour or 24 hours (`c`), with the selected strike as a dotted line |
+| ² contract | the selected strike's YES price this hour, seeded from Kalshi's minute candles, with the rule's band edges marked |
+| ³ ladder | every strike, high to low: bid, ask, probability bar, spread, volume, your position. ★ marks strikes in the rule's band |
+| ⁴ book | equity, P&L, cash, at risk, fees, the rule's paper record, and open positions. `v` switches between paper and live |
+| ⁵ log | what the engine did (page 2: ⁴) |
+| ¹ variants (page 2) | each variant's record and gate progress, ● on the one in use, and the highlighted one's P&L by hour |
+| ² profiles (page 2) | profile 1 and the profiles you made (see Profiles) |
+| ³ equity (page 2) | that book's equity by the minute |
 
 ## Variants
 
-The engine also runs these on paper, side by side, each with its own record
-and real fees. `python3 -m tern report`, `g`, or the
-variants box (`p`, page 2) compares them. The paper and live books trade
-whichever one `strategy.variant` names (`base` by default). Pick it in the
-variants box with `↑↓` and `enter`. While live is on or armed, switching asks
-you to type `live`.
+The engine runs these on paper, side by side, each with its own record and real fees. The paper and live
+books trade whichever one `strategy.variant` names (`base` by default). Pick it in the variants box (`p`,
+page 2) with `↑↓` and `enter`. While live is on or armed, switching asks you to type `live`.
 
-<img width="1364" height="668" alt="tern: log shadow" src="docs/screenshots/06-log-shadow.png" />
+| Variant | What it does |
+|---|---|
+| `base` | the rule as configured |
+| `band90` | only favorites at 90–95¢ |
+| `cap1` | the rule, but at most one entry per strike per hour |
+| `band80` | only favorites at 80–90¢ |
+| `late` | only the 15m and 10m slots |
+| `tight1` | only strikes with a 1¢ spread |
+| `band75` | only favorites at 75–80¢; with `band80` and `band90` it splits the band in three |
+| `early` | only the 25m and 20m slots, the other half of `late` |
+| `multi` | the rule on every coin at once, each coin's hour with its own budget. Its dollars are up to six times `base`'s, so compare it by ¢/contract and t |
+| `calm` | skips a slot when the coin's realized volatility over the last hour (one-minute returns) is above 7.6 bp/min |
+
+Two earlier variants are retired: `stop20` (sell 20¢ under entry) and `arb` (a cross-strike pair under $1).
 
 To look at a variant without trading it, highlight it and press `w`. The book,
 equity, ladder and band then show that variant's shadow record as if it traded
 (on a $1,000 paper start), and the status line says `watching X · trading Y`.
 Nothing about what trades changes. `w` again or `v` goes back to the real book.
 
-<img width="1364" height="668" alt="tern: gate" src="docs/screenshots/07-gate.png" />
+<img width="1364" height="668" alt="The variants box zoomed to the whole screen" src="docs/screenshots/03-variants-multi.png" />
 
-The gate (`g`), here with stricter settings than the defaults: 1000 entries and $100.
+The engine also records what it sees to `runtime/ticks/`: every 5 seconds, each near-the-money strike's
+bid, ask and sizes with spot, plus each hour's results (about 2 MB a day, gzipped). Kalshi keeps only
+minute candles, so this is finer data for testing ideas.
 
-| Variant | What it does |
-|---|---|
-| `base` | the rule as configured |
-| `band90` | only favorites at 90–95¢ |
-| `cap1` | the rule, but at most one entry per strike per hour (its hours start 2026-11-15) |
-| `band80` | only favorites at 80–90¢, where the 67-day study found the bias (from 2026-11-16) |
-| `late` | only the 15m and 10m slots (from 2026-11-16) |
-| `tight1` | only strikes with a 1¢ spread (from 2026-11-16) |
-| `band75` | only favorites at 75–80¢; with `band80` and `band90` it splits the band in three (from 2026-11-16) |
-| `early` | only the 25m and 20m slots, the other half of `late` (from 2026-11-16) |
-| `multi` | the rule on every coin at once, each coin's hour with its own budget. Its dollars are up to six times `base`'s, so compare it by ¢/contract and t (from 2026-11-16) |
-| `calm` | skips a slot when the coin's realized volatility over the last hour (one-minute returns) is above 7.6 bp/min, the 75th percentile of `base`'s entry slots 11-09..11-18 (from 2026-11-20) |
+## Two weeks on paper
 
-Retired 2026-11-16, records kept in `runtime/shadow-settled.jsonl` and listed by `report`:
-`stop20` (sell 20¢ under entry: −$191 over 165 hours, t −3.0) and `arb`
-(cross-strike pair under $1: never fired in 165 hours).
+`python3 -m tern report` after two weeks, taken 2026-11-23. The paper book went from $1,000.00 to
+$1,220.26, with $166.38 paid in fees. Each variant's record, after fees, from the day it was added:
 
-It also records what it sees to `runtime/ticks/`: every 5 seconds, each
-near-the-money strike's bid, ask and sizes with spot, plus each hour's results
-(about 2 MB a day, gzipped). Kalshi keeps only minute candles, so this is the
-data for testing ideas the first research could not.
+| Variant | Since | Hours | Entries | P&L | ¢/contract | Win | t |
+|---|---|--:|--:|--:|--:|--:|--:|
+| `base` | 11-09 | 323 | 3,853 | +$252.23 | +1.34 | 90% | +1.59 |
+| `band90` | 11-09 | 323 | 1,972 | +$90.70 | +0.92 | 95% | +1.25 |
+| `cap1` | 11-15 | 197 | 1,463 | +$72.03 | +0.99 | 89% | +0.91 |
+| `band80` | 11-16 | 155 | 952 | +$27.30 | +0.57 | 87% | +0.35 |
+| `late` | 11-16 | 156 | 931 | +$30.07 | +0.64 | 89% | +0.47 |
+| `tight1` | 11-16 | 157 | 1,854 | +$21.14 | +0.23 | 89% | +0.18 |
+| `band75` | 11-16 | 140 | 366 | −$20.45 | −1.13 | 78% | −0.50 |
+| `early` | 11-16 | 155 | 1,291 | −$26.87 | −0.42 | 88% | −0.29 |
+| `multi` | 11-16 | 157 | 4,134 | −$66.04 | −0.33 | 89% | −0.27 |
+| `calm` | 11-20 | 47 | 501 | +$50.51 | +2.05 | 91% | +0.96 |
+| `stop20` (retired 11-16) | 11-09 | 165 | 2,140 | −$190.72 | −1.82 | 68% | −3.01 |
+
+Hours are the hours a variant traded. `multi` trades all six coins and the rest trade BTC. t is the average
+hour's P&L divided by its standard error. These are paper results.
 
 ## Profiles
 
@@ -129,7 +146,7 @@ desk, so a difference between two profiles comes from their settings, not
 from timing.
 
 - **Profile 1 is the desk:** the paper book, live and the gate, with its files
-  where they always were. Live trades profile 1's rule unless `d` picks another profile.
+  directly in `runtime/`. Live trades profile 1's rule unless `d` picks another profile.
 - **Make one** in the profiles box (`p`, page 2; `←→` to focus it), then `n`. It starts
   with profile 1's settings and empty records. `enter` views it: the book,
   equity, variants box and settings box then show that profile. Viewing changes
@@ -161,15 +178,52 @@ from timing.
 When comparing, look at entries and t as well as P&L. t is the average hour's P&L divided by its
 standard error; it shows after 10 hours.
 
-The web screen can view any profile; making, changing and deleting them stays
-with the terminal.
+The web screen can view any profile. Making, changing and deleting them is done
+in the terminal.
 
-<img width="1364" height="668" alt="tern: help" src="docs/screenshots/08-help.png" />
+<img width="1364" height="668" alt="The book box, viewing profile 2" src="docs/screenshots/04-book-multi.png" />
+
+<img width="1364" height="668" alt="A profile's settings box" src="docs/screenshots/05-settings.png" />
+
+## Paper and live
+
+Paper fills at the touch, limited to the size shown there, and pays the taker
+fee rounded up per order, as Kalshi charges. Paper always runs the rule, even
+while live is on, so its record keeps growing.
+
+**Going live:** press `L` and type `live`. That sets `live.enabled` in the
+config. The engine then authenticates with your Kalshi key, and the status line turns red
+once Kalshi accepts it. Press `L` again to return to paper. Once live:
+
+- **The variant in use goes live only after its own shadow record passes the
+  gate** (`g`): 14 days, 300 settled entries, and P&L ≥ $0 after fees. Days are
+  counted as hours it actually traded ÷ 24, so time with the engine off does
+  not count. Switching variants never skips this: the new one needs its own record.
+  14, 300 and $0 are the defaults; the settings box (`e`) changes them.
+  Set `live.auto_needs_gate` to `false` to skip the gate.
+- **Caps:** `live.capital_usd` ($100) is the most at risk at once.
+  `live.max_order_usd` ($25) is the largest single order. Orders that only
+  reduce a position are exempt from both.
+- **Kill switch:** a live loss of `live.max_daily_loss` ($30) since local
+  midnight turns live off. Open positions are left to settle. Every order is
+  immediate-or-cancel, so nothing is left resting on the book.
+- **Kalshi is the record.** Every 15 seconds the engine reads your positions
+  and overwrites its own when they differ. It reads the balance every 10
+  seconds. Each order carries a unique `client_order_id`. If the reply is lost,
+  the engine looks the order up by that id instead of sending it again.
+
+<img width="1364" height="668" alt="The log: paper settlements and each variant's running record" src="docs/screenshots/06-log-shadow.png" />
+
+The gate box (`g`) shows the checks, the variants and the live caps. Here it has been set stricter than
+the defaults, to 1000 entries and $100:
+
+<img width="1364" height="668" alt="The gate box" src="docs/screenshots/07-gate.png" />
 
 ## Kalshi key
 
-At kalshi.com, under Account → API keys, create a key and download the private
-key file. Ed25519 is Kalshi's default; RSA works too. Then:
+Only live trading needs a key. At kalshi.com, under Account → API keys, create one and download the private
+key file. Ed25519 is Kalshi's default; RSA works too. Make the folder, save the file in it as `kalshi.pem`,
+and write your key ID next to it:
 
 ```
 mkdir -p ~/.config/tern && chmod 700 ~/.config/tern
@@ -181,37 +235,42 @@ chmod 600 ~/.config/tern/kalshi.env ~/.config/tern/kalshi.pem
 python3 -m tern live-check
 ```
 
-## The screen
+Requests are signed (Ed25519 or RSA-PSS) in pure Python, checked against openssl in the tests.
 
-The boxes sit on two pages, and `p` flips between them. Page 1 · trade has spot, contract, ladder, book
-and log. Page 2 · compare has variants across the full width, then profiles and equity, then log. Each
-page fits itself to the terminal: tables keep all their rows and the charts give up height first. A screen big
-enough for every box (about 150×45) shows them all as one page. Each page numbers its boxes in reading order
-(page 1: 1–5, log is 5; page 2: 1 variants, 2 profiles, 3 equity, 4 log), and `page 1/2` at the log's bottom
-right says which page it is. A box's number zooms it to the whole screen; the same number again (the bottom border says `3 back`)
-restores the page, and `p` restores it and flips.
+## Keys
 
-| Box | What it shows |
+| Key | What it does |
 |---|---|
-| status line | paper/live, spot and 1-hour change, the event and its countdown, the rule's next slot, engine health |
-| ¹ spot | Coinbase spot (a BRTI constituent), over 5 minutes, 15 minutes, 1 hour or 24 hours (`c`), with the selected strike as a dotted line |
-| ² contract | the selected strike's YES price this hour, seeded from Kalshi's minute candles, with the rule's band edges marked |
-| ³ ladder | every strike, high to low: bid, ask, probability bar, spread, volume, your position. ★ marks strikes in the rule's band |
-| ⁴ book | equity, P&L, cash, at risk, fees, the rule's paper record, and open positions. `v` switches between paper and live |
-| ⁵ log | what the engine did (page 2: ⁴) |
-| ¹ variants (page 2) | each variant's record and gate progress, ● on the one in use, and the highlighted one's P&L by hour |
-| ² profiles (page 2) | profile 1 and the profiles you made (see Profiles) |
-| ³ equity (page 2) | that book's equity by the minute |
+| `p` | page 1 / page 2 |
+| `1`–`5` | zoom a box to the whole screen; the same number goes back (`1`–`4` on page 2, `1`–`8` on one big screen) |
+| `←→` | move between boxes |
+| `↑↓` `j` `k` `PgUp` `PgDn` | move in the focused box; the mouse wheel scrolls the box under the pointer |
+| `tab` / shift+tab | next / previous coin |
+| `c` | chart span: 5m, 15m, 1h, 24h |
+| `t` / `T` | next / previous color theme |
+| `v` | paper / live book |
+| `w` | watch the highlighted variant (view only) |
+| `enter` | use the highlighted variant, or view the highlighted profile |
+| `r` | the rule trades this coin, on / off |
+| `g` | the gate |
+| `e` | settings |
+| `L` | arm / disarm live |
+| `R` | reset the paper book (asks `y`) |
+| `s` | stop (asks `y`) / start the engine |
+| `h` or `?` | help |
+| `q` | close the screen; the engine keeps running |
+| `space` `n` `d` `D` | profiles box: on/off, new, live trades its rule, delete |
+| `N` | rename the highlighted profile or variant |
 
-Keys: `p` page 1 / page 2 · `↑↓` / `PgUp PgDn` move in the focused box · `←→` focus · `1`–`5` (page 1), `1`–`4` (page 2) or `1`–`8` (one big screen) zoom a box to the whole screen, the same number goes back · `enter` use the highlighted variant or view the highlighted profile (whichever box has focus) · `w` watch a variant (view only) · `tab` / shift+tab next / previous coin · `r` rule trades this coin ·
-`c` chart span · `t` / `T` next / previous of 54 color themes · `v` book · `L` arm/disarm live · `g` gate · `e` settings · `R` reset paper ·
-`s` stop (asks `y`) / start the engine · `h` or `?` help · `q` close (the engine keeps running).
-`j` / `k` move like `↓` / `↑`, and the mouse wheel scrolls the box under the pointer.
+<img width="1364" height="668" alt="The help" src="docs/screenshots/08-help.png" />
 
-In the profiles box: `enter` view · `space` on/off · `n` new · `d` live trades its rule · `D` delete ·
-`N` rename (in the variants box, `N` renames a variant). See Profiles.
+## Themes
 
-<img width="1364" height="668" alt="tern: theme sunset" src="docs/screenshots/09-theme-sunset.png" />
+`t` and `T` step through 54 color themes. Full color needs a 256-color terminal. Sunset and mint chip:
+
+<img width="1364" height="668" alt="The sunset theme" src="docs/screenshots/09-theme-sunset.png" />
+
+<img width="1364" height="668" alt="The mint chip theme" src="docs/screenshots/10-theme-mint-chip.png" />
 
 ## The web screen
 
@@ -224,27 +283,35 @@ does what the key would; on a phone, drag to scroll.
 
 It is view only. `q`, `s`, `R`, `L`, `r`, `N` and `enter` on a variant do nothing there, nor do `space`,
 `n`, `d` and `D` in the profiles box, and their hints are not drawn. `enter` on a profile views it, and the
-settings box (`e`) shows the settings but changes only what that browser's log box shows. It writes no command files and never touches the screen's `dash.json` or
-`view.json`: each browser keeps its own settings. It writes `view-web.json` (in the same tmpfs folder)
+settings box (`e`) shows the settings but changes only what that browser's log box shows.
+The web screen writes no command files and never touches the terminal's `dash.json` or `view.json`: each browser keeps its own settings. It writes `view-web.json` (in the same tmpfs folder)
 with the coins and strikes its viewers have up, so the engine sends those strikes' contract history
 too; the engine ignores the file 30 seconds after the last viewer leaves.
 
-**Remote access.** Off localhost (`--host 0.0.0.0`) it will not start without a login and HTTPS:
+<img width="1364" height="668" alt="The grape theme" src="docs/screenshots/11-theme-grape.png" />
+
+**Remote access.** Off localhost (`--host 0.0.0.0`) it will not start without a password and a TLS certificate.
 
 ```
-python3 -m tern web-password                # a password (enter none for a generated one)
-python3 -m tern web-cert                    # a self-signed certificate; prints its fingerprint
-python3 -m tern web-service --host 0.0.0.0  # then: systemctl --user enable --now tern-web
-                                            # (--host sets the settings box's "open to the network")
+python3 -m tern web-password
+python3 -m tern web-service --host 0.0.0.0
+systemctl --user daemon-reload
+systemctl --user enable --now tern-web
 ```
 
-Both live in `~/.config/tern/`, never in the repo. The password is stored as a PBKDF2 hash. A sign-in
-lasts 30 days in an HttpOnly, Secure, SameSite=Strict cookie. Setting a new password signs every
-browser out, and `/logout` signs out the one you are on. Five wrong tries from one address make it wait
-15 minutes, and 30 from everyone make every sign-in wait. The certificate is self-signed, so each
-browser warns once. Check that the fingerprint it shows matches the one `web-cert` printed before you
-accept it. To reach it from another network, allow the port (8787 by default) through the host's firewall, and
-forward it to the host if there is NAT in between.
+The certificate can be either of these, put in place before the service starts:
+
+- **Your own**, from Let's Encrypt or any other authority: save the full chain as
+  `~/.config/tern/web-cert.pem` and its private key, without a passphrase, as `~/.config/tern/web-key.pem`
+  (`chmod 600` both). Restart `tern-web` after renewing it.
+- **Self-signed:** `python3 -m tern web-cert` makes one (it needs openssl) and prints its fingerprint.
+  Browsers warn about a self-signed certificate; check that the fingerprint they show matches.
+
+The password is stored as a PBKDF2 hash in `~/.config/tern/web.json`. A sign-in lasts 30 days in an HttpOnly,
+Secure, SameSite=Strict cookie. After a new password, restart `tern-web`: every browser is then signed out.
+`/logout` signs out the one you are on. Five wrong tries from one address make it wait 15 minutes, and 30 from
+everyone make every sign-in wait. To reach it from another network, allow the port (8787 by default) through
+the host's firewall, and forward it to the host if there is NAT in between.
 
 **Settings box (`e`), WEB.** `web screen` turns it on and off, `port` moves it and `open to the
 network` switches between every address and localhost only. tern-web.service runs
@@ -252,8 +319,6 @@ network` switches between every address and localhost only. tern-web.service run
 when it is off. The engine restarts or stops the service as soon as one changes, from the box or by
 hand in `config.json`, and the box shows whether it is running and where to open it. Firewall and
 port-forwarding rules are not touched: a new port needs its own.
-
-<img width="1364" height="668" alt="tern: theme mint chip" src="docs/screenshots/10-theme-mint-chip.png" />
 
 ## Files
 
@@ -289,14 +354,11 @@ because they are rewritten every second.
 | `web.py`, `web.html` | the same screen in a browser, view only |
 | `webctl.py` | starts, stops and asks about tern-web.service for the settings box's WEB rows |
 | `webauth.py` | tern web's password, sign-in cookie, wrong-guess limits and certificate |
-| `research/` | the scripts and data behind the numbers above |
-
-<img width="1364" height="668" alt="tern: theme grape" src="docs/screenshots/11-theme-grape.png" />
+| `research/` | the study's scripts and write-up |
 
 ## Notes
 
-- Live order handling follows Kalshi's V2 docs. It has not yet
-  been run with a real order. Start live with small caps and watch the first fills against
-  kalshi.com.
+- Live order handling follows Kalshi's V2 docs. It has not yet been run with a real order. Start live with
+  small caps and watch the first fills against kalshi.com.
 - If the engine isn't running, nothing is watched. Positions still settle on
   Kalshi, because nothing rests on the book.

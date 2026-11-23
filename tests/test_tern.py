@@ -1087,7 +1087,8 @@ class Shadows(unittest.TestCase):
         root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         with open(os.path.join(root, "README.md")) as fh:
             readme = fh.read()
-        rows = re.findall(r"^\| `(\w+)` \|", readme, re.M)                  # the README's variants table
+        section = readme.split("\n## Variants\n", 1)[1].split("\n## ", 1)[0]
+        rows = re.findall(r"^\| `(\w+)` \|", section, re.M)                 # the README's variants table
         self.assertEqual(rows, shadow.ORDER)
         for name in shadow.RETIRED:
             self.assertIn(f"`{name}`", readme)

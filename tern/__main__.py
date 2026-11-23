@@ -320,7 +320,7 @@ def main(argv: list[str]) -> int:
             print("\nretired, kept for the record:")
             print("\n".join(table(old)[1:]))
             print("\n".join(f"{n}: {d}" for n, d in RETIRED.items()))
-        print("\nt is by hour and shows after 10 hours; under about 2 it is still noise.")
+        print("\nt is by hour and shows after 10 hours.")
         return 0
     if cmd == "web":
         from .web import serve

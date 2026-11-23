@@ -2,9 +2,9 @@
 
 Done 2026-11-08 on Kalshi's public API, with Binance 1-second prices as the spot
 proxy. Every profit figure below is after Kalshi's taker fee (0.07 × P × (1−P)
-per contract) and pays the spread. Result in one line: **the market prices spot
-moves very quickly, and long shots on the hourly markets are overpriced: buying the
-favorite made about half a cent a contract.**
+per contract) and pays the spread. Result in one line: **Kalshi's prices
+follow spot in under a second, and long shots on the hourly markets are overpriced: buying
+the favorite made about half a cent a contract.**
 
 ## Data
 
