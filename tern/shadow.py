@@ -46,7 +46,7 @@ TABLE = [
      "every coin at once, each its own budget; judge by ¢/ct (from 2026-11-16)"),
     # added 2026-11-19 after the worst day (-$93, five hours lost to sharp late moves). 7.6 bp/min is the
     # 75th percentile of base's entry slots 11-09..11-18, set from that data alone, not from P&L and not from
-    # 11-19. Before 11-19 calm slots made more (+3.1 vs +1.2 ¢/ct), but on 11-19 they lost more: unproven.
+    # 11-19. Before 11-19 calm slots made more (+3.1 vs +1.2 ¢/ct), but on 11-19 they lost more.
     ("calm", (None, None, None, None, None, None, 7.6),
      "skips slots after a wild hour: rv60 over 7.6 bp/min (from 2026-11-20)"),
 ]

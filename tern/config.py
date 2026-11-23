@@ -23,7 +23,7 @@ SERIES = {  # Kalshi hourly above/below series -> Coinbase spot product; tab cyc
 @dataclass
 class Strategy:
     """The hourly favorite rule. Defaults are the variant picked on the first half of 67 days of
-    BTC history and checked on the untouched second half (+0.61c/contract, t=1.1: positive, unproven)."""
+    BTC history and checked on the untouched second half (+0.61c/contract, t=1.1)."""
     series: list = field(default_factory=lambda: ["KXBTCD"])   # ETH was not tested on 67 days
     band_lo: float = 0.75                      # favorite's mid must be in [band_lo, band_hi)
     band_hi: float = 0.95

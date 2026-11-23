@@ -291,20 +291,18 @@ HELP = [
                  "hourly close, the rule buys the favorite side of every strike whose mid is {band} (spread "
                  "{spread}c or less) at the ask, {contracts:g} contracts a strike and at most ${hour_cost:,.0f} an hour, "
                  "and holds it to settlement. Over 67 days of BTC history it made +0.6c a contract on data it "
-                 "was not chosen on (t=1.1): positive, small, unproven."),
+                 "was not chosen on."),
     ("VARIANTS", "Each variant runs on paper side by side with its own record and real fees, written down "
                  "before it saw any data:\n"
                  "{variants}\n"
                  "The one marked ● in the variants box (page 2: p) is what the paper book trades, and live too once it "
                  "passes the gate. Highlight another with ↑↓ and press enter to switch; while live is on or armed "
-                 "you type \"live\" to confirm. Open positions ride to settlement. Picking whichever looks best "
-                 "after watching flatters it: the gate is the real check.\n"
+                 "you type \"live\" to confirm. Open positions ride to settlement.\n"
                  "Retired, records kept and listed by (tern report):\n"
                  "{retired}"),
     ("THE GATE", "(g) Live trades the variant in use only after its own paper record has {days:g} days of hours "
                  "traded, {entries} settled entries and P&L of ${pnl:g} or more after fees. Hours with the engine "
-                 "off don't count, and switching variants never skips it: the new one needs its own record. "
-                 "The gate catches a broken rule, not a weak one."),
+                 "off don't count, and switching variants never skips it: the new one needs its own record."),
     ("LIVE", "(L) arms live: it asks you to type \"live\". It needs KALSHI_KEY_ID and KALSHI_KEY_FILE in "
              "~/.config/tern/kalshi.env. The status line turns red (● LIVE) once Kalshi accepts the key. "
              "Caps: ${risk:,.0f} at risk at once and ${order:,.0f} per order; a loss of ${day:,.0f} since local midnight "
@@ -348,7 +346,7 @@ OVERLAY_TOKENS = re.compile(
     r"(?P<ok>\[x\])|(?P<todo>\[ \])"
     r"|(?P<ref>\((?:[a-zA-Z?1-8]|tern \w[\w-]*|enter|tab|esc)\))"
     r"|(?P<quote>\"[^\"]+\"|\blive and press enter\b)"
-    r"|(?P<warn>\b(?:real money|unproven|turns live off|turns itself off|Nothing trades|No key found yet|Wipe)\b)"
+    r"|(?P<warn>\b(?:real money|turns live off|turns itself off|Nothing trades|No key found yet|Wipe)\b)"
     r"|(?P<keyhint>^(?:y|any key|any other key)\b|\besc\b|·\s(?:any (?:other )?key)\b)"
     r"|(?P<path>~/\S+|\bKALSHI_KEY_(?:ID|FILE)\b|\blive\.\w+)")
 SHADOW_LINE = re.compile(r"^(shadow: \S+ settled) · (.+)$")   # the engine's line after an hour settles

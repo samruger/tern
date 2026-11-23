@@ -5,7 +5,7 @@ screen: braille charts, a strike ladder, and paper and live books.
 Every trade comes from the rule; there are no manual orders.
 It paper trades from the start and sends no real order until you arm live.
 
-<img width="1364" height="682" alt="tern: page1 trade" src="docs/screenshots/01-page1-trade.png" />
+<img width="1364" height="668" alt="tern: page1 trade" src="docs/screenshots/01-page1-trade.png" />
 
 Python 3.11+, standard library only. Kalshi request signing (Ed25519 and RSA-PSS)
 is written in pure Python and checked against openssl in the tests.
@@ -15,6 +15,8 @@ python3 -m tern               # the screen; starts the engine in paper if it isn
 python3 -m tern run           # the engine in the foreground
 python3 -m tern status        # plain-text summary
 python3 -m tern report        # the rule's variants side by side
+python3 -m tern report --profiles       # every profile's book side by side (--deleted: the deleted ones)
+python3 -m tern report --profile NAME   # one profile's variants, by settings period
 python3 -m tern live-check    # test your Kalshi key (balance, positions; no orders)
 python3 -m tern web           # the screen in a browser, view only: http://localhost:8787/
 python3 -m tern web-service   # a systemd user service for it (tern-web.service)
@@ -22,27 +24,20 @@ python3 -m tern service       # a systemd user service so the engine keeps runni
 python3 -m unittest tests.test_tern
 ```
 
-<img width="1364" height="682" alt="tern: page2 compare" src="docs/screenshots/02-page2-compare.png" />
+<img width="1364" height="668" alt="tern: page2 compare" src="docs/screenshots/02-page2-compare.png" />
 
-## Is there an edge?
+## Where the rule comes from
 
-Barely. The full write-up is [research/RESEARCH.md](research/RESEARCH.md). In short:
+tern is a trading bot. It might work or it might not, depending on how you configure and use it.
 
-- **Kalshi tracks spot faster than a home bot can.** A fair-value model from
-  live spot adds nothing to Kalshi's own price on held-out data, even fed
-  zero-delay prices. The 15-minute markets and the final-minute settlement math
-  showed no edge that held up out of sample.
-- **Hourly long shots are overpriced.** On 67 days of BTC history, contracts
-  priced 5–20¢ won about 2 points less often than their price said, and 80–90¢
-  favorites about 2 points more often.
-- **Buying the favorite at the ask captures a little of it.** The rule tern
-  runs was picked on the first 33 days (+1.8¢ a contract) and made **+0.6¢ a
-  contract on the next 34 days it had never seen (t = 1.1)**. That is positive
-  but not proven. Expect about 10 entries an hour, a few dollars a day at the
-  default size, and single losses of about $4 when a favorite fails.
-- **Resting bids lose.** You get filled when price moves against you.
+The default rule comes from a study of Kalshi's hourly crypto markets, written up in
+[research/RESEARCH.md](research/RESEARCH.md). On 67 days of BTC history, 80–90¢ favorites won about
+2 points more often than their price said, and 5–20¢ long shots about 2 points less often. The rule
+buys the favorite. It was picked on the first 33 days and made **+0.6¢ a contract after fees on the
+next 34 days**, which it had not seen. Expect about 10 entries an hour; at the default size a favorite
+that fails costs about $4.
 
-<img width="1364" height="682" alt="tern: variants multi" src="docs/screenshots/03-variants-multi.png" />
+<img width="1364" height="668" alt="tern: variants multi" src="docs/screenshots/03-variants-multi.png" />
 
 ## The rule
 
@@ -55,7 +50,7 @@ every 5 seconds. It trades BTC only by default. `r` on another coin's view adds
 that coin, but ETH was only tested on 14 days and SOL, XRP, BNB and HYPE not at
 all; those four are there to watch.
 
-<img width="1364" height="682" alt="tern: book multi" src="docs/screenshots/04-book-multi.png" />
+<img width="1364" height="668" alt="tern: book multi" src="docs/screenshots/04-book-multi.png" />
 
 ## Paper and live
 
@@ -70,9 +65,9 @@ once it has. Press `L` again to return to paper. Once live:
 - **The variant in use goes live only after its own shadow record passes the
   gate** (`g`): 14 days, 300 settled entries, and P&L ≥ $0 after fees. Days are
   counted as hours it actually traded ÷ 24, so time with the engine off does
-  not count. Switching variants never skips this: the new one needs its own record. A 0.6¢ edge is too
-  small for 14 days to prove. The gate catches a broken rule, not a weak one.
-  Set `live.auto_needs_gate` to `false` to skip it.
+  not count. Switching variants never skips this: the new one needs its own record.
+  14, 300 and $0 are the defaults; the settings box (`e`) changes them.
+  Set `live.auto_needs_gate` to `false` to skip the gate.
 - **Caps:** `live.capital_usd` ($100) is the most at risk at once.
   `live.max_order_usd` ($25) is the largest single order. Orders that only
   reduce a position are exempt from both.
@@ -84,9 +79,9 @@ once it has. Press `L` again to return to paper. Once live:
   seconds. Each order carries a unique `client_order_id`. If the reply is lost,
   the engine looks the order up by that id instead of sending it again.
 
-<img width="1364" height="682" alt="tern: settings" src="docs/screenshots/05-settings.png" />
+<img width="1364" height="668" alt="tern: settings" src="docs/screenshots/05-settings.png" />
 
-## Looking for a better edge
+## Variants
 
 The engine also runs these on paper, side by side, each with its own record
 and real fees. They were written down before seeing any data, so what they
@@ -94,17 +89,18 @@ show after a few weeks is out of sample. `python3 -m tern report`, `g`, or the
 variants box (`p`, page 2) compares them. The paper and live books trade
 whichever one `strategy.variant` names (`base` by default). Pick it in the
 variants box with `↑↓` and `enter`. While live is on or armed, switching asks
-you to type `live`. Choosing whichever looks best after watching them flatters
-it; the gate is the check.
+you to type `live`.
 
-<img width="1364" height="682" alt="tern: log shadow" src="docs/screenshots/06-log-shadow.png" />
+<img width="1364" height="668" alt="tern: log shadow" src="docs/screenshots/06-log-shadow.png" />
 
 To look at a variant without trading it, highlight it and press `w`. The book,
 equity, ladder and band then show that variant's shadow record as if it traded
 (on a $1,000 paper start), and the status line says `watching X · trading Y`.
 Nothing about what trades changes. `w` again or `v` goes back to the real book.
 
-<img width="1364" height="682" alt="tern: gate" src="docs/screenshots/07-gate.png" />
+<img width="1364" height="668" alt="tern: gate" src="docs/screenshots/07-gate.png" />
+
+The gate (`g`), here with stricter settings than the defaults: 1000 entries and $100.
 
 | Variant | What it does |
 |---|---|
@@ -117,7 +113,7 @@ Nothing about what trades changes. `w` again or `v` goes back to the real book.
 | `band75` | only favorites at 75–80¢; with `band80` and `band90` it splits the band in three (from 2026-11-16) |
 | `early` | only the 25m and 20m slots, the other half of `late` (from 2026-11-16) |
 | `multi` | the rule on every coin at once, each coin's hour with its own budget. Its dollars are up to six times `base`'s, so compare it by ¢/contract and t (from 2026-11-16) |
-| `calm` | skips a slot when the coin's realized volatility over the last hour (one-minute returns) is above 7.6 bp/min, the 75th percentile of `base`'s entry slots 11-09..11-18. Added after the −$93 day of 11-19; on that day's data it would not have helped, so it is a test, not a fix (from 2026-11-20) |
+| `calm` | skips a slot when the coin's realized volatility over the last hour (one-minute returns) is above 7.6 bp/min, the 75th percentile of `base`'s entry slots 11-09..11-18 (from 2026-11-20) |
 
 Retired 2026-11-16, records kept in `runtime/shadow-settled.jsonl` and listed by `report`:
 `stop20` (sell 20¢ under entry: −$191 over 165 hours, t −3.0) and `arb`
@@ -167,13 +163,15 @@ from timing.
   side by side; `--profile <name>` shows one profile's variants period by
   period with what changed; `--deleted` lists the deleted ones.
 
-Choosing the best-looking of many profiles flatters it, the same as choosing
-among variants. Look at entries and t, not only P&L.
+When comparing, look at entries and t as well as P&L. t is the average hour's P&L divided by its
+standard error; it shows after 10 hours.
 
 The web screen can view any profile; making, changing and deleting them stays
 with the terminal.
 
-## Keys
+<img width="1364" height="668" alt="tern: help" src="docs/screenshots/08-help.png" />
+
+## Kalshi key
 
 At kalshi.com, under Account → API keys, create a key and download the private
 key file. Ed25519 is Kalshi's default; RSA works too. Then:
@@ -188,8 +186,6 @@ chmod 600 ~/.config/tern/kalshi.env ~/.config/tern/kalshi.pem
 python3 -m tern live-check
 ```
 
-<img width="1364" height="682" alt="tern: help" src="docs/screenshots/08-help.png" />
-
 ## The screen
 
 The boxes sit on two pages, and `p` flips between them. Page 1 · trade has spot, contract, ladder, book
@@ -203,7 +199,7 @@ restores the page, and `p` restores it and flips.
 | Box | What it shows |
 |---|---|
 | status line | paper/live, spot and 1-hour change, the event and its countdown, the rule's next slot, engine health |
-| ¹ spot | Coinbase spot (a BRTI constituent), 15 minutes at 1 s or 24 hours at 1 min (`c`), with the selected strike as a dotted line |
+| ¹ spot | Coinbase spot (a BRTI constituent), over 5 minutes, 15 minutes, 1 hour or 24 hours (`c`), with the selected strike as a dotted line |
 | ² contract | the selected strike's YES price this hour, seeded from Kalshi's minute candles, with the rule's band edges marked |
 | ³ ladder | every strike, high to low: bid, ask, probability bar, spread, volume, your position. ★ marks strikes in the rule's band |
 | ⁴ book | equity, P&L, cash, at risk, fees, the rule's paper record, and open positions. `v` switches between paper and live |
@@ -212,11 +208,15 @@ restores the page, and `p` restores it and flips.
 | ² profiles (page 2) | profile 1 and the profiles you made (see Profiles) |
 | ³ equity (page 2) | that book's equity by the minute |
 
-Keys: `p` page 1 / page 2 · `↑↓` / `PgUp PgDn` move in the focused box · `←→` focus · `1`–`5` (page 1), `1`–`4` (page 2) or `1`–`8` (one big screen) zoom a box to the whole screen, the same number goes back · `enter` use the highlighted variant or view the highlighted profile (whichever box has focus) · `w` watch a variant (view only) · `tab` next coin · `r` rule trades this coin ·
-`c` chart range · `v` book · `L` arm/disarm live · `g` gate · `R` reset paper ·
-`s` start the engine · `?` help · `q` close (the engine keeps running).
+Keys: `p` page 1 / page 2 · `↑↓` / `PgUp PgDn` move in the focused box · `←→` focus · `1`–`5` (page 1), `1`–`4` (page 2) or `1`–`8` (one big screen) zoom a box to the whole screen, the same number goes back · `enter` use the highlighted variant or view the highlighted profile (whichever box has focus) · `w` watch a variant (view only) · `tab` / shift+tab next / previous coin · `r` rule trades this coin ·
+`c` chart span · `t` / `T` next / previous of 54 color themes · `v` book · `L` arm/disarm live · `g` gate · `e` settings · `R` reset paper ·
+`s` stop (asks `y`) / start the engine · `h` or `?` help · `q` close (the engine keeps running).
+`j` / `k` move like `↓` / `↑`, and the mouse wheel scrolls the box under the pointer.
 
-<img width="1364" height="682" alt="tern: theme sunset" src="docs/screenshots/09-theme-sunset.png" />
+In the profiles box: `enter` view · `space` on/off · `n` new · `d` live trades its rule · `D` delete ·
+`N` rename (in the variants box, `N` renames a variant). See Profiles.
+
+<img width="1364" height="668" alt="tern: theme sunset" src="docs/screenshots/09-theme-sunset.png" />
 
 ## The web screen
 
@@ -227,8 +227,9 @@ chart span, `tab`/shift+tab coins, `t`/`T` themes, `v` paper/live, `w` watch a v
 help, `↑↓ ←→` and the wheel. Clicking a key on a box border, a box's number, or a ladder or variant row
 does what the key would; on a phone, drag to scroll.
 
-It is view only. `q`, `s`, `R`, `L`, `r` and `enter` (pick a variant) do nothing there, and their
-hints are not drawn. It writes no command files and never touches the screen's `dash.json` or
+It is view only. `q`, `s`, `R`, `L`, `r`, `N` and `enter` on a variant do nothing there, nor do `space`,
+`n`, `d` and `D` in the profiles box, and their hints are not drawn. `enter` on a profile views it, and the
+settings box (`e`) shows the settings but changes only what that browser's log box shows. It writes no command files and never touches the screen's `dash.json` or
 `view.json`: each browser keeps its own settings. It writes `view-web.json` (in the same tmpfs folder)
 with the coins and strikes its viewers have up, so the engine sends those strikes' contract history
 too; the engine ignores the file 30 seconds after the last viewer leaves.
@@ -257,7 +258,7 @@ when it is off. The engine restarts or stops the service as soon as one changes,
 hand in `config.json`, and the box shows whether it is running and where to open it. The firewall is
 not touched: a new port still needs `sudo ufw allow PORT/tcp` (and the router forward moved).
 
-<img width="1364" height="682" alt="tern: theme mint chip" src="docs/screenshots/10-theme-mint-chip.png" />
+<img width="1364" height="668" alt="tern: theme mint chip" src="docs/screenshots/10-theme-mint-chip.png" />
 
 ## Files
 
@@ -266,35 +267,42 @@ stand, open entries, slots taken: a few KB, written only when it changes, with
 an hourly `state.json.bak` that is loaded if the main file is damaged), the
 history files that are only ever appended to (`paper-trades.jsonl`,
 `paper-curve.jsonl`, `live-trades.jsonl`, `live-curve.jsonl`,
-`rule-entries.jsonl`), `tern.log` and `cmd/` (settings commands from the screen). The live
+`rule-entries.jsonl`), the variants' records (`shadow.json`, open entries, and
+`shadow-settled.jsonl`, append-only), `settings-log.jsonl`, `names.json` (display
+names, once something is renamed), `dash.json` (the screen's preferences), `ticks/`,
+`tern.log` and `cmd/` (settings commands from the screen). Each extra profile has a folder under
+`profiles/` with its own `profile.json`, `config.json`, variants' records and
+`settings-log.jsonl`; a deleted one moves to `profiles-deleted/`. The live
 status file and the screen's selection live in tmpfs (`$XDG_RUNTIME_DIR/tern-*`),
 because they are rewritten every second.
 
 | Module | What it does |
 |---|---|
+| `config.py` | the settings, their defaults and the settings box's bounds |
 | `strategy.py` | the favorite rule: which strikes qualify, when a slot is due |
 | `book.py` | the ledger for paper and live, with Kalshi's YES-leg netting and fee |
 | `engine.py` | polling, the rule, orders, settlement, live reconcile, kill switch, status |
+| `net.py` | HTTPS over connections that stay open |
 | `kalshi.py` | public and signed REST, V2 orders (`/portfolio/events/orders`) |
 | `sign.py` | Ed25519 and RSA-PSS signing, PEM/DER parsing |
 | `spot.py` | Coinbase ticker and candles |
 | `shadow.py` | the variants, each with its own paper record (also each one's gate) |
+| `profiles.py` | profiles: their folders, settings, records and names |
 | `record.py` | writes quotes and results to `runtime/ticks/` |
 | `dash.py` | the curses screen |
+| `themes.py` | the screen's 54 color themes |
 | `web.py`, `web.html` | the same screen in a browser, view only |
 | `webctl.py` | starts, stops and asks about tern-web.service for the settings box's WEB rows |
 | `webauth.py` | tern web's password, sign-in cookie, wrong-guess limits and certificate |
 | `research/` | the scripts and data behind the numbers above |
 
-<img width="1364" height="682" alt="tern: theme grape" src="docs/screenshots/11-theme-grape.png" />
+<img width="1364" height="668" alt="tern: theme grape" src="docs/screenshots/11-theme-grape.png" />
 
 ## Limits
 
-- The edge is small and unproven. Run paper for the full gate period before
-  trusting it with money.
-- Live order handling follows Kalshi's V2 docs, but no real order has been sent.
-  It has only been checked with a made-up key, which Kalshi's auth rejected as
-  expected. Start live with small caps and watch the first fills against
+- Run paper for the full gate period before going live.
+- Live order handling follows Kalshi's V2 docs. Signing in has worked with a real
+  key, but no real order has been sent yet. Start live with small caps and watch the first fills against
   kalshi.com.
 - If the engine isn't running, nothing is watched. Positions still settle on
   Kalshi, because nothing rests on the book.

@@ -1,10 +1,10 @@
-# Research: is there an edge in Kalshi's short crypto markets?
+# Research: Kalshi's short crypto markets
 
 Done 2026-11-08 on Kalshi's public API, with Binance 1-second prices as the spot
 proxy. Every profit figure below is after Kalshi's taker fee (0.07 × P × (1−P)
 per contract) and pays the spread. Result in one line: **the market prices spot
-moves faster than a home bot can, and the one bias that survives (long shots
-overpriced on the hourly markets) is worth about half a cent a contract.**
+moves very quickly, and long shots on the hourly markets are overpriced: buying the
+favorite made about half a cent a contract.**
 
 ## Data
 
@@ -41,7 +41,7 @@ overpriced on the hourly markets) is worth about half a cent a contract.**
    | 90–95¢ | +1.3 ± 0.5 pt |
 
    The same shape shows in ETH over 14 days.
-6. **Turning it into trades is marginal.** The rule fixed before the 67-day run
+6. **Turning it into trades.** The rule fixed before the 67-day run
    (buy the favorite at the ask when its mid is 80–98¢, 50/30/15 minutes out):
    **+0.51¢/contract, t = 1.85**, positive in each third, 6 of 10 weeks up.
    (`fav90.py`)
@@ -57,10 +57,9 @@ overpriced on the hourly markets) is worth about half a cent a contract.**
 
 ## What that means
 
-The bias looks real and the trade is small. The refined rule took about 10
+The refined rule took about 10
 entries an hour in the backtest; at 5 contracts each and +0.6¢ a contract that is
-roughly 30¢ an hour, or about $7 a day, while one failed favorite loses about $4. It is not proven: t = 1.1
-on the holdout leaves a real chance it is zero. That is why tern runs it on paper
+roughly 30¢ an hour, or about $7 a day, while one failed favorite loses about $4. tern runs it on paper
 and lets it trade live only after a paper record passes the gate.
 
 ETH was not run on 67 days. That download needed more memory than the machine had

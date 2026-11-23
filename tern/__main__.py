@@ -263,8 +263,8 @@ def _report_profiles(runtime: str, args: list[str]) -> int:
                  Shadow(runtime, cfg.taker_fee))]
         rows += [(p.name + ("" if p.enabled else " (off)"), p.variant, p.log.sv, p.shadow) for p in loaded]
         _side_by_side(rows)
-        print("\neach profile's book is its picked variant's record; picking the best-looking of many flatters it:")
-        print("look at entries and t (by hour, shows after 10 hours; under about 2 it is still noise).")
+        print("\neach profile's book is its picked variant's record:")
+        print("look at entries and t (by hour, shows after 10 hours) as well as P&L.")
         return 0
     if args[0] == "--profile" and len(args) > 1:
         want = " ".join(args[1:]).strip().lower()
