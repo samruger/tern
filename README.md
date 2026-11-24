@@ -241,7 +241,7 @@ Requests are signed (Ed25519 or RSA-PSS) in pure Python, checked against openssl
 |---|---|---|
 | everywhere | `1`–`9` `0` `h` `tab` shift+tab | show a box |
 | everywhere | `↑↓` `j` `k` `PgUp` `PgDn` `Home` `End` | move in the box; so does the mouse wheel |
-| everywhere | click | show the tab, press the border's key, highlight the row, use the theme, paper / live in the book; again on a highlighted variant or setting: `enter`. A click that changes something asks `y`. Shift+drag selects text |
+| everywhere | click | what the key there does: see Mouse |
 | everywhere | `t` / `T` | next / previous color theme |
 | everywhere | `P` | pause / start the engine (asks `y`) |
 | everywhere | `q` | close the screen; the engine keeps running |
@@ -256,6 +256,33 @@ Requests are signed (Ed25519 or RSA-PSS) in pure Python, checked against openssl
 | reports | `s` | save the one shown |
 | settings | `←→` `enter` | step / type a value |
 | themes | `↑↓` `←→` | pick one |
+
+### Mouse
+
+The terminal screen takes the mouse, in any terminal emulator that reports it, and so does the web screen:
+
+| Click | What it does |
+|---|---|
+| a tab | shows that box |
+| a key on a border | presses it; each of `↑↓` `←→` `PgUp PgDn` is its own |
+| a ladder, variants, reports or help row | highlights it |
+| the highlighted variant, again | `enter`: selects it |
+| a setting, in the settings or a variant's | highlights it; again: `enter`. Each slot and coin is its own |
+| a theme | uses it |
+| paper / live in the book | shows that one |
+
+The wheel scrolls what it is over, and shift+drag selects text. A click does no more than its key: going live still has
+`live` typed.
+
+**Stray clicks.** What changes something asks first, and only `y` goes ahead; any other key leaves it, and clicks do nothing
+while a question is up. Turning a variant on or off, starting and pausing the engine and deleting a variant ask whether
+they are clicked or pressed. Turning live off, changing a desk setting, discarding an edit and closing the screen ask
+when they are clicked; their keys are at once, so `L` is still the quick way out of live.
+
+<img width="1364" height="668" alt="Turning a variant off asks first" src="docs/screenshots/17-question.png" />
+
+The bare Linux console is not a terminal emulator: ncurses gets the mouse from gpm there, if it is built with it, and the
+console's fonts have no braille for the charts.
 
 ### Reports
 
@@ -292,22 +319,23 @@ accent, and color only for gains, losses and warnings. Full color needs a 256-co
 
 <img width="1364" height="668" alt="The mint chip theme" src="docs/screenshots/10-theme-mint-chip.png" />
 
+<img width="1364" height="668" alt="The grape theme" src="docs/screenshots/11-theme-grape.png" />
+
 ## The web screen
 
 `tern web` serves the screen at http://localhost:8787/ (`--port` to move it). It is not a copy of the
 screen: each browser tab runs the real screen code on a virtual terminal, and the page paints its cells
 with the colors and font from foot's config if there is one, or a built-in set. So it looks and behaves the same: the tabs, `c`
 chart span, `C` coins, `t`/`T` themes, `V` paper/live, `enter` selects a variant (for that browser),
-themes, `↑↓ ←→` and the wheel. Clicking a tab, a key on a box's border, or a ladder or variant row
-does what the key would; on a phone, drag to scroll.
+themes, `↑↓ ←→`, the wheel and clicks (see Mouse). Phones get pages of their own: see Phones.
+
+<img width="1364" height="668" alt="The spot box in a browser" src="docs/screenshots/16-web-screen.png" />
 
 It is view only. `q`, `P`, `L`, `r`, `D`, `space` and `e` do nothing there, and their
 hints are not drawn. The settings box shows the settings but changes only what that browser's log box shows.
 The web screen writes no command files and never touches the terminal's `dash.json` or `view.json`: each browser keeps its own settings. It writes `view-web.json` (in the same tmpfs folder)
 with the coins and strikes its viewers have up, so the engine sends those strikes' contract history
 too; the engine ignores the file 30 seconds after the last viewer leaves.
-
-<img width="1364" height="668" alt="The grape theme" src="docs/screenshots/11-theme-grape.png" />
 
 **Remote access.** Off localhost (`--host 0.0.0.0`) it will not start without a password and a TLS certificate.
 
@@ -332,17 +360,36 @@ Secure, SameSite=Strict cookie. After a new password, restart `tern-web`: every 
 everyone make every sign-in wait. To reach it from another network, allow the port (8787 by default) through
 the host's firewall, and forward it to the host if there is NAT in between.
 
-**Phones** get pages of their own: one at a time, with a menu button at the bottom that lists them (home, spot, ladder,
-book, variants, log, gate, reports, themes). Tap a strike or a variant to open it; hold a chart to read it. They are
-picked by the browser's headers, so tablets and computers get the screen; `full screen` in the menu, and `phone pages`
-on the screen there, switch, and the browser remembers it (`/ui/full`, `/ui/phone`). Behind the same login, view only.
-
 **Settings box (`9`), WEB.** `web screen` turns it on and off, `port` moves it and `open to the
 network` switches between every address and localhost only. tern-web.service runs
 `tern web --config`, which reads those from `config.json`'s `web` section and exits (and stays down)
 when it is off. The engine restarts or stops the service as soon as one changes, from the box or by
 hand in `config.json`, and the box shows whether it is running and where to open it. Firewall and
 port-forwarding rules are not touched: a new port needs its own.
+
+### Phones
+
+A phone gets pages made for it, one at a time. The bar along the bottom has the menu button, the coin's price and whether
+the desk is on paper or live; the menu lists the pages, with how things stand beside them.
+
+<p>
+<img width="200" alt="Home on a phone" src="docs/screenshots/18-phone-home.png" />
+<img width="200" alt="The menu" src="docs/screenshots/19-phone-menu.png" />
+<img width="200" alt="The ladder" src="docs/screenshots/20-phone-ladder.png" />
+<img width="200" alt="A strike" src="docs/screenshots/21-phone-contract.png" />
+<img width="200" alt="The variants" src="docs/screenshots/22-phone-variants.png" />
+<img width="200" alt="One variant" src="docs/screenshots/23-phone-variant.png" />
+<img width="200" alt="The spot chart" src="docs/screenshots/24-phone-spot.png" />
+<img width="200" alt="The themes" src="docs/screenshots/25-phone-themes.png" />
+</p>
+
+- **Pages:** home, spot, ladder, book, variants, log, gate, reports and themes. Tap a strike for its price this hour, a variant
+  for its record, a slot in the log for who bought. Hold a chart and slide to read it. The phone's back button goes back, and closes the menu.
+- **Which browsers:** the server picks by the browser's headers (`Sec-CH-UA-Mobile`, else the user agent). Tablets and
+  computers get the screen. `full screen` in the menu, and `phone pages` on the screen there, switch; a cookie remembers it
+  (`/ui/full`, `/ui/phone`).
+- **View only**, behind the same login. The coin, chart, variant and theme picked are that browser's own. The settings box and making variants
+  are the terminal's.
 
 ## Files
 
