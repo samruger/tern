@@ -116,7 +116,7 @@ variants box. The editor explains each setting, with examples from the values on
 **Limits.** Paper and live both keep to a variant's limits, so its record is how live would trade. A buy over the largest
 order, or that would pass most at risk, is cut to fit. Down by the daily loss limit since midnight, paper takes no new
 entries until the next one; live turns off until `L`. The built-in variants, and your own from before 2026-11-24, kept
-their paper as it was: only live keeps to their limits ($100, $25 and $30, from `config.json`).
+their paper as it was: only live keeps to their limits ($100, $25 and $30, from `config.json`; `live.limits` there gives a built-in variant its own).
 
 - **`e` edits the highlighted one**, built in or your own: its settings open as a draft in the variants box, with the changes so far beside them. Change as many as you like; nothing is sent yet, and a changed one shows as `19 → 10 *`.
 - **`s` there saves the draft as a new variant**, under a name you type, with an empty record. The one it came from

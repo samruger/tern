@@ -44,6 +44,8 @@ class Live:
     capital_usd: float = 100.0     # most it may have at risk (cost of open positions) at once
     max_order_usd: float = 25.0    # most one order may cost
     max_daily_loss: float = 30.0   # loss since local midnight that turns live off
+    limits: dict = field(default_factory=dict)   # a built-in variant's own, if not those three:
+                                   # {"multi": {"max_risk": 250, "max_order": 25, "day_loss": 200}}
     auto_needs_gate: bool = True   # live trades a variant only after its paper record passes the gate
     variant: str = ""              # the variant live trades (L on the screen sets it to the one selected). It must pass
                                    # the gate on its own record. Live never falls back to another.
@@ -96,6 +98,9 @@ class Config:
                     if isinstance(v, bool) or not isinstance(v, (int, float)) or v != v:
                         raise TypeError(f"{k} must be a number")
                     v = type(want)(v)
+                elif isinstance(want, dict):
+                    if not isinstance(v, dict):
+                        raise TypeError(f"{k} must be a table")
                 elif isinstance(want, list):
                     if not isinstance(v, list):
                         raise TypeError(f"{k} must be a list")

@@ -3912,6 +3912,23 @@ class Limits(Rig, unittest.TestCase):
             with self.assertRaisesRegex(KalshiError, "largest order"):
                 k._exec(k.live, "KXBTCD-E1-T9", 30, 0.8, 100, "auto")
 
+    def test_a_built_in_one_can_have_its_own(self):
+        import json
+        from tern import config
+        with tempfile.TemporaryDirectory() as d:
+            c = config.Config(); c.live.limits = {"multi": {"max_risk": 300, "day_loss": 500}, "base": {"day_loss": 200, "max_order": "x"}, "late": 5}
+            config.save(c, d)
+            k = self.desk(d)
+            self.assertEqual([k._limits(n) for n in ("multi", "base", "late", "cap1")],
+                             [(300, 25, 500), (100, 25, 200), (100, 25, 30), (100, 25, 30)])   # what isn't a number is not taken
+            rules = {v["name"]: v["rule"] for v in self.status(k)["variants"]}
+            self.assertEqual((rules["multi"]["max_risk"], rules["base"]["day_loss"], rules["cap1"]["day_loss"]), (300, 200, 30))
+            self.new(k, "multi", "mine", cap=2)
+            self.assertEqual(k._limits("mine"), (300, 25, 500))                # a copy starts from them
+            with self.assertRaises(TypeError):
+                config.Config.from_dict({"live": {"limits": [1]}})
+            self.assertEqual(config.load(d).live.limits["multi"]["max_risk"], 300)   # and they are kept through a save
+
     def test_lives_loss_limit_is_the_variants(self):
         import time
         with tempfile.TemporaryDirectory() as d:

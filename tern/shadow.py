@@ -119,9 +119,16 @@ def size_of(name: str, S, own: VariantSet | None = None) -> tuple[float, float]:
 
 
 def limits_of(name: str, cfg: Config, own: VariantSet | None = None) -> tuple[float, float, float]:
-    """(most at risk, largest order, daily loss limit) for a variant: an own one's are its own, a built-in one's config.json's."""
+    """(most at risk, largest order, daily loss limit) for a variant: an own one's are its own, a built-in one's config.json's
+    (live.limits for that one, else the three for all)."""
     mine = own.rule(name) if own is not None and name not in VARIANTS else None
-    return tuple(mine[f] for f in LIMITS) if mine is not None else (cfg.live.capital_usd, cfg.live.max_order_usd, cfg.live.max_daily_loss)
+    if mine is not None:
+        return tuple(mine[f] for f in LIMITS)
+    L = cfg.live
+    given = L.limits.get(name) if isinstance(L.limits, dict) else None
+    given = given if isinstance(given, dict) else {}
+    num = lambda v: isinstance(v, (int, float)) and not isinstance(v, bool) and 0 <= v < math.inf
+    return tuple(float(given[f]) if num(given.get(f)) else v for f, v in zip(LIMITS, (L.capital_usd, L.max_order_usd, L.max_daily_loss)))
 
 
 def start_of(name: str, cfg: Config, own: VariantSet | None = None) -> float:
