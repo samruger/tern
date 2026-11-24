@@ -66,7 +66,7 @@ The boxes sit on two pages, and `p` flips between them. Page 1 · trade has spot
 and log. Page 2 · compare is the variants, with the highlighted one's P&L by hour under them. Each
 page fits itself to the terminal: tables keep all their rows and the charts give up height first. A screen big
 enough for every box (about 121×37, and a row more for each variant of your own) shows them all as one page. Each page numbers its boxes in reading order
-(page 1: 1–5, log is 5; page 2: 1 variants), and `page 1/2` at the bottom
+(page 1: 1–5, log is 5; page 2 is one box), and `page 1/2` at the bottom
 right says which page it is. A box's number zooms it to the whole screen; the same number again (the bottom border says `3 back`)
 restores the page, and `p` restores it and flips.
 
@@ -80,7 +80,7 @@ restores the page, and `p` restores it and flips.
 | ³ ladder | every strike, high to low: bid, ask, probability bar, spread, volume, your position. ★ marks strikes in the rule's band |
 | ⁴ book | the selected variant's equity, P&L, cash, at risk, fees, record and open positions. `v` switches between paper and live |
 | ⁵ log | what the engine did |
-| ¹ variants (page 2) | each variant's record and gate progress, ● on the one selected, L on the one live trades, + on the ones you made, and the highlighted one's P&L by hour |
+| variants (page 2) | each variant's record and gate progress, ● on the one selected, L on the one live trades, + on the ones you made, and the highlighted one's P&L by hour |
 
 ## Variants
 

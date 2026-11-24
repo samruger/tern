@@ -1444,11 +1444,13 @@ class Pages(Rig, unittest.TestCase):
             self.press("p")
             text = self.text()
             self.assertEqual(set(scr.rects), {"variants"})
-            self.assertIn("¹variants", text)
-            for gone in ("equity", "log ", "²"):
+            self.assertIn("variants ◂", text)
+            for gone in ("equity", "log ", "¹", "²"):
                 self.assertNotIn(gone, text)
-            self.press("2")
-            self.assertIn("one box", scr.flash)
+            scr.flash = ""; self.sync(); text = self.text()
+            for key in "12":                                                    # one box, nothing to zoom
+                self.press(key)
+                self.assertEqual((scr.zoom, self.text().splitlines()[:-1]), (None, text.splitlines()[:-1]))
             self.assertIsNone(scr.zoom)
 
     def test_zoomed_lists_stay_in_their_box(self):
@@ -1461,10 +1463,9 @@ class Pages(Rig, unittest.TestCase):
                 self.size(H, W)
                 self.rects_ok(H, W)
                 for sel in ("base", "base-21"):                                 # the list scrolls to the highlighted one
-                    scr.var_sel = sel; self.press("1")
+                    scr.var_sel = sel; self.sync()
                     self.rects_ok(H, W)
                     self.assertIn(f" {sel} " if sel == "base" else f"+{sel}", self.text())
-                    self.press("1")
 
     def test_focus_keys_while_zoomed_on_a_chart(self):
         with tempfile.TemporaryDirectory() as d:
@@ -1489,6 +1490,10 @@ class Pages(Rig, unittest.TestCase):
             self.size(33, 111)                                                  # page 1 has no variants box
             self.assertIsNone(scr.zoom)
             self.assertEqual(len(self.rects_ok(33, 111)), 5)
+            self.size(50, 150); self.press("5"); scr.page = 2
+            self.size(33, 111)                                                  # page 2 is that box anyway: not zoomed there
+            self.assertIsNone(scr.zoom)
+            self.assertIn("page 2/2", self.text())
 
     def test_page2_fits_small_screens(self):
         with tempfile.TemporaryDirectory() as d:
@@ -3021,19 +3026,19 @@ class Web(unittest.TestCase):
             self.assertEqual(os.listdir(os.path.join(d, "cmd")), [])          # no command reached the engine
             self.assertFalse(os.path.exists(os.path.join(d, "dash.json")))     # the screen's prefs are its own
             self.assertIn("view only", "".join(t for t, _ in f["rows"][38]))
-            for k in ("t", "c", "Tab", "BackTab", "1"):
+            for k in ("t", "c", "Tab", "BackTab", "1", "p", "5"):
                 f = hub.handle({"sid": sid, "w": 120, "h": 40, "key": k})
             self.assertEqual(f["prefs"]["variant"], "band90")                  # ↓ then enter: selected, for this viewer
             self.assertNotEqual(f["prefs"]["theme"], "classic")
             self.assertEqual(f["prefs"]["chart"], "1h")
             self.assertNotIn("hidden", f["prefs"])
             self.assertNotIn("zoom", f["prefs"])
-            self.assertEqual(hub.sessions[sid][0].zoom, "variants")              # page 2's 1: zoomed in this tab only
+            self.assertEqual(hub.sessions[sid][0].zoom, "log")                   # page 1's 5: zoomed in this tab only
             hub.sessions[sid][0].flash = ""
             f = hub.handle({"sid": sid, "w": 120, "h": 40, "key": "ArrowUp"})
             row = "".join(t for t, _ in f["rows"][38])
-            f = hub.handle({"sid": sid, "w": 120, "h": 40, "click": {"y": 38, "x": row.index("1 back")}})
-            self.assertIsNone(hub.sessions[sid][0].zoom)                         # clicking "1 back" restores
+            f = hub.handle({"sid": sid, "w": 120, "h": 40, "click": {"y": 38, "x": row.index("5 back")}})
+            self.assertIsNone(hub.sessions[sid][0].zoom)                         # clicking "5 back" restores
             self.assertEqual(len(f["rows"]), 40)
 
     def test_web_pages_prefs(self):

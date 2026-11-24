@@ -337,7 +337,7 @@ HELP_BOXES = [
     ("⁴", "book", "the selected variant's equity, P&L, cash, at risk, fees and record, then open"),
     ("", "", "  positions, settlements and fills; (v) switches paper / live"),
     ("⁵", "log", "what the engine did, newest at the bottom; scroll back with ↑↓"),
-    ("¹", "variants", "page 2: each variant's hours, entries, P&L, ¢ a contract, win rate, t,"),
+    ("", "variants", "page 2: each variant's hours, entries, P&L, ¢ a contract, win rate, t,"),
     ("", "", "  and gate progress (yellow: still short); ● selected, L live's, + one you"),
     ("", "", "  made; the highlighted one's P&L by hour below"),
     ("", "pages", "(p) flips page 1 (boxes 1-5) and page 2 (variants); \"page 1/2\" at the"),
@@ -427,7 +427,7 @@ SCREEN_SETTINGS = [cfgmod.Setting("screen", "log", "log shows", kind="choice", g
 # spot chart spans: c cycles them in this order (the engine sends ~15 min of seconds and 24h of minutes)
 CHARTS = {"5m": 300, "15m": 900, "1h": 3600, "24h": 86400}
 
-# every box; on each view its number key is its place in that view's reading order (page 2: 1 variants)
+# every box; on each view its number key is its place in that view's reading order (page 2 has one, the variants)
 BOXES = ["spot", "contract", "ladder", "book", "log", "variants"]
 PANELS = BOXES                                   # older name, kept for the web and tests
 # each view's rows of boxes, top to bottom; p flips page1 / page2, and a screen big enough for every box at its
@@ -649,9 +649,11 @@ class Screen:
         H, W = self.s.getmaxyx()
         v = self.view(H, W)
         here = view_boxes(v)
+        if len(here) == 1:                           # page 2: its one box fills it already
+            return
         if i >= len(here):
             where = f"page {self.page}" if v != "merged" else "this screen"
-            self.say(f"{where} has boxes 1-{len(here)}" if len(here) > 1 else f"{where} has one box"); return
+            self.say(f"{where} has boxes 1-{len(here)}"); return
         name = here[i]
         self.zoom = None if self.zoom == name else name
         if self.zoom in SCROLLS:
@@ -660,7 +662,8 @@ class Screen:
 
     def zoomed(self, H: int, W: int) -> str | None:
         """The zoomed box, if it is on this view (a resize can take it off: then it's dropped)."""
-        if self.zoom and self.zoom not in view_boxes(self.view(H, W)):
+        here = view_boxes(self.view(H, W)) if self.zoom else []
+        if self.zoom and (self.zoom not in here or len(here) == 1):
             self.zoom = None
         return self.zoom
 
@@ -2410,7 +2413,7 @@ class Screen:
         for name, y, x, h, w in boxes:
             self.rects[name] = (y, x, h, w)
             self.clip = x + w - 1
-            self.panel_key = SUPER[here.index(name)]
+            self.panel_key = SUPER[here.index(name)] if len(here) > 1 else ""
             self.drawing = name
             getattr(self, name + "_panel")(y, x, h, w)
         self.clip = None
