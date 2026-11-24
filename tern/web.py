@@ -251,9 +251,8 @@ class WebScreen(dash.Screen):
     def variants_panel(self, y, x, h, w) -> None:
         super().variants_panel(y, x, h, w)
         names = [v["name"] for v in self.st.get("variants") or []]
-        if names:
-            rows = max(1, min(len(names), h - 3))
-            self.rowmap["variants"] = {y + 2 + j: n for j, n in enumerate(names[self.var_top:self.var_top + rows])}
+        if names and self.overlay != "edit":
+            self.rowmap["variants"] = {y + 2 + j: n for j, n in enumerate(names[self.var_top:self.var_top + self.var_rows])}
 
     # ------------------------------------------------------------ input from the page
     def press(self, name: str) -> None:

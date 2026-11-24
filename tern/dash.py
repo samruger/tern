@@ -1155,8 +1155,11 @@ class Screen:
             self.put(y + 1, at[name], f"{name:>{cw}}", head)
         at["gate"] = cx + gap
         self.put(y + 1, x + 5, "variant", head); self.put(y + 1, at["gate"], "gate", head)
-        # The list scrolls under the fixed header: the rows that fit, moved so the highlighted one shows
-        rows = max(1, min(len(vs), h - 3))
+        # The graph's size is the box's alone, whatever the list holds. The list scrolls over it, under its fixed header:
+        # the rows that fit, moved so the highlighted one shows.
+        gh = h // 3
+        gy = y + h - 3 - gh
+        self.var_rows = rows = gy - y - 4
         si = names.index(self.var_sel)
         self.var_top = max(0, min(self.var_top, len(vs) - rows))
         if si < self.var_top:
@@ -1208,48 +1211,43 @@ class Screen:
             self.put(y + 1, x + w - 2, "▲", P(YELLOW))
         if top + rows < len(vs):
             self.put(y + 2 + rows - 1, x + w - 2, "▼", P(YELLOW))
+        self.count_lines(y + h - 1, x + 3, top, rows, len(vs))
         cur = next(v for v in vs if v["name"] == self.var_sel)
-        yy = y + 3 + rows
-        if yy >= y + h - 2:                            # a short box: the rows and the tip line are all that fit
-            yy = y + h - 2
-        else:
-            nm = cur["name"] if self.vn(cur["name"]) == cur["name"] else f"{self.vn(cur['name'])} ({cur['name']})"
-            nm = "+ " + nm if cur.get("own") else nm
-            self.put(yy, x + 2, f"{nm}: ", P(P.c("variant"), bold=True))
-            self.put(yy, x + 4 + len(nm), (cur.get("desc") or "")[:w - 8 - len(nm)], P(WHITE))
+        nm = cur["name"] if self.vn(cur["name"]) == cur["name"] else f"{self.vn(cur['name'])} ({cur['name']})"
+        nm = "+ " + nm if cur.get("own") else nm
+        self.put(gy - 1, x + 2, f"{nm}: ", P(P.c("variant"), bold=True))
+        self.put(gy - 1, x + 4 + len(nm), (cur.get("desc") or "")[:w - 8 - len(nm)], P(WHITE))
         curve = cur.get("curve") or []
-        gy, gh = yy + 1, y + h - 3 - (yy + 1)
         gw = w - 2 - 11
-        if len(curve) >= 2 and gh >= 2:
+        if len(curve) >= 2:
             vals = [0.0] + curve
             lo, hi = min(vals), max(vals)
             vals = [vals[i * len(vals) // (gw * 2)] for i in range(gw * 2)] if len(vals) < gw * 2 else vals   # the whole width
             pad = (hi - lo) * 0.1 or 1.0
             self.graph(gy, x + 1, gh, gw, vals, lo - pad, hi + pad, P.grad("eq_up" if vals[-1] >= 0 else "eq_dn"), [(0.0, P.grey)], fit=True)
             zr = int(round((hi + pad) / (hi - lo + 2 * pad) * (gh - 1)))
-            if 0 < zr < gh - 1:
+            if lo < 0 < hi and 0 < zr < gh - 1:
                 self.put(gy + zr, x + 1 + gw + 1, "$0", P(self.P.grey))
             self.put(gy, x + 1 + gw + 1, money(hi, True)[:10], P(self.P.grey))
             self.put(gy + gh - 1, x + 1 + gw + 1, money(lo, True)[:10], P(self.P.grey))
             self.put(gy + gh, x + 2, f"P&L over its last {len(curve)} hours", P(self.P.grey))
-        elif gh >= 1 and len(curve) < 2:
-            self.put(gy + 1, x + 3, "the curve starts after a couple of settled hours", P(self.P.grey))
-        # The bottom row says what the highlighted variant is doing. On a short box the row is the last variant's.
-        if y + 1 + rows < y + h - 2:
-            name, sel_, live = self.vn(cur["name"]), cur["name"] == self.variant, cur.get("live") and st.get("live_enabled")
-            tip, col = "", GREEN
-            if not cur.get("on", True):
-                tip, col = f"{name} is off: no new entries, open ones settle · space turns it on", YELLOW
-            elif cur.get("cash") is not None and cur["cash"] < (cur.get("rule") or {}).get("band_lo", 0) and not cur.get("open"):
-                tip, col = f"{name} has {money(cur['cash'])} left: it buys nothing · e, s makes a fresh one", YELLOW
-            elif live:
-                tip, col = f"L live trades {name}" + (" · selected" if sel_ else ""), RED
-            elif sel_:
-                tip = f"● {name} is selected: the book shows it · L goes live with it" + \
-                    ("" if (cur.get("gate") or {}).get("passed") else ", once it passes the gate")
-            else:
-                tip, col = f"enter selects {name} · changes nothing that trades", P.grey
-            self.put(y + h - 2, x + 2, tip[:w - 4], P(col, bold=col != P.grey))
+        else:
+            self.put(gy + gh // 2, x + 3, "the curve starts after a couple of settled hours", P(self.P.grey))
+        # The bottom row says what the highlighted variant is doing.
+        name, sel_, live = self.vn(cur["name"]), cur["name"] == self.variant, cur.get("live") and st.get("live_enabled")
+        tip, col = "", GREEN
+        if not cur.get("on", True):
+            tip, col = f"{name} is off: no new entries, open ones settle · space turns it on", YELLOW
+        elif cur.get("cash") is not None and cur["cash"] < (cur.get("rule") or {}).get("band_lo", 0) and not cur.get("open"):
+            tip, col = f"{name} has {money(cur['cash'])} left: it buys nothing · e, s makes a fresh one", YELLOW
+        elif live:
+            tip, col = f"L live trades {name}" + (" · selected" if sel_ else ""), RED
+        elif sel_:
+            tip = f"● {name} is selected: the book shows it · L goes live with it" + \
+                ("" if (cur.get("gate") or {}).get("passed") else ", once it passes the gate")
+        else:
+            tip, col = f"enter selects {name} · changes nothing that trades", P.grey
+        self.put(y + h - 2, x + 2, tip[:w - 4], P(col, bold=col != P.grey))
 
     def select_variant(self) -> None:
         """enter: the highlighted variant is the one the book, band and gate show. Nothing that trades changes."""

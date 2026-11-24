@@ -1565,6 +1565,27 @@ class Tabs(Rig, unittest.TestCase):
             self.press("5", "e")
             self.assertIn("CHANGES", self.text())
 
+    def test_the_variants_graph_keeps_its_size(self):
+        for H, W, room in ((30, 100, 12), (32, 148, 13), (44, 160, 21)):
+            with tempfile.TemporaryDirectory() as d:
+                k, scr = self.setup(d, H, W)
+                self.press("5")
+                at, labels = [], lambda: [i for i, l in enumerate(self.text().splitlines()) if "the curve starts after" in l]
+                for n in range(24):                                            # 10 built in, up to 24 of your own
+                    at.append((labels(), next(i for i, l in enumerate(self.text().splitlines()) if "base: the rule" in l or ": " in l and "every slot" in l)))
+                    self.new(k, name=f"v{n}"); self.sync(); scr.draw()
+                self.assertEqual(len(set(map(str, at))), 1, (H, W, at))        # in one place whatever the list holds
+                names = [v["name"] for v in scr.st["variants"]]
+                self.assertEqual(len(names), 34)
+                rows = lambda: [l for l in self.text().splitlines()[3:3 + room]]
+                self.assertTrue(names[0] in rows()[0] and names[room - 1] in rows()[-1], rows())
+                self.assertIn("▼", rows()[-1]); self.assertIn(f" 1-{room} of 34 ", self.rows()[1])
+                for name in names[1:]:                                         # every one can be reached
+                    self.press(self.curses.KEY_DOWN)
+                    self.assertEqual(scr.var_sel, name); self.assertTrue(any(f" {name} " in l or f"+{name} " in l for l in rows()), name)
+                self.assertNotIn("▼", rows()[-1]); self.assertIn(f" {35 - room}-34 of 34 ", self.rows()[1])
+                self.press(self.curses.KEY_HOME); self.assertEqual(scr.var_sel, names[0])
+
     def test_the_palettes_are_kept_apart(self):
         with tempfile.TemporaryDirectory() as d:
             for H, W in ((30, 100), (31, 104), (44, 160)):
