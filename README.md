@@ -270,6 +270,8 @@ systemctl --user enable --now tern-save-report.timer
 
 The themes box (`0`) lists 54 color themes; `↑↓` and `←→` pick one. Full color needs a 256-color terminal. Sunset and mint chip:
 
+<img width="1364" height="668" alt="The themes box" src="docs/screenshots/14-themes.png" />
+
 <img width="1364" height="668" alt="The sunset theme" src="docs/screenshots/09-theme-sunset.png" />
 
 <img width="1364" height="668" alt="The mint chip theme" src="docs/screenshots/10-theme-mint-chip.png" />
@@ -369,7 +371,7 @@ The major ones, newest first.
 
 | Date | Change |
 |---|---|
-| 2026-11-23 | **One list of variants.** Profiles, the separate paper book and `w` are gone: `enter` selects the variant the screen shows, `L` goes live with it, `e` there edits one as a new one, `space` turns one on or off and `r` renames one. `s` is the settings (was `e`) and `P` pauses the engine (was `S`). Every box fills the screen and the others are tabs (`1`–`6`, `tab`); the pages, zooming and the equity box are gone, `C` cycles coins and `V` is the book's paper/live view. Profiles' own variants move into the list with their records (see Settings). `tern report --profile` and `--profiles` are now `--periods`. |
+| 2026-11-23 | **One list of variants.** Profiles, the separate paper book and `w` are gone: `enter` selects the variant the screen shows, `L` goes live with it, `e` there edits one as a new one, `space` turns one on or off and `r` renames one. Every box fills the screen and the others are tabs (`1`–`9`, `0`, `h`, `tab`), the gate, reports, settings, themes and help too; the pages, zooming and the equity box are gone, `P` pauses the engine (was `S`), `C` cycles coins and `V` is the book's paper/live view. Profiles' own variants move into the list with their records (see Settings). `tern report --profile` and `--profiles` are now `--periods`. |
 | 2026-11-23 | **Cash limit on paper:** no variant, and not the paper book, buys more than the cash it has left. Entries from before could. A variant that is out of cash says so in the variants box. |
 | 2026-11-23 | **Variants hold every trading setting**, contracts a strike, most an hour and paper start too. `E` opens them as a draft and `s` saves it as a new variant; a saved one never changes, and only `enter` changes what trades. Settings (`e`) has the profile and the desk only, the same under every profile. `n` in the variants box, and the rule, paper and "book trades" rows in settings, are gone. Variants saved before keep their profile's size. |
 | 2026-11-23 | **AGPL license** (version 3 or later). It was MIT, then briefly the GPL; copies from then stay under those. |
