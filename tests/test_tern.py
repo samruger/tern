@@ -1506,10 +1506,10 @@ class Tabs(Rig, unittest.TestCase):
                 self.assertRegex(self.rows()[1], r" 1-\d+ of \d+ ")
                 self.press(down)
                 self.assertNotEqual(self.text().splitlines()[1:-3], first)
-                self.press(c.KEY_END, down); end = self.text()
-                self.assertNotIn("▼", end)
+                self.press(c.KEY_END, down); end = self.text().splitlines()[:-1]
+                self.assertNotIn("▼", "\n".join(end))
                 self.press(up)                                                  # no slack built up past the end
-                self.assertNotEqual(self.text(), end)
+                self.assertNotEqual(self.text().splitlines()[:-1], end)
                 self.press(c.KEY_HOME)
                 self.assertEqual(self.text().splitlines()[1:-3], first)
             for _ in range(9):
@@ -4068,12 +4068,13 @@ class Limits(Rig, unittest.TestCase):
             k, scr = self.setup(d, 30, 100)
             c = self.curses
             self.press("5"); self.press("e")
-            first = self.text()
+            box = lambda: self.text().splitlines()[:-1]                        # (without the status line and its clock)
+            first = box()
             self.assertRegex("".join(scr.s.ch[28]), r" 1-\d+ of \d+ ")
-            self.press(c.KEY_NPAGE); self.assertNotEqual(self.text(), first); self.assertEqual((scr.set_sel, scr.overlay), (0, "edit"))
-            self.press(c.KEY_DOWN); self.press(c.KEY_UP); self.assertEqual(self.text(), first)   # another setting starts at its top
+            self.press(c.KEY_NPAGE); self.assertNotEqual(box(), first); self.assertEqual((scr.set_sel, scr.overlay), (0, "edit"))
+            self.press(c.KEY_DOWN); self.press(c.KEY_UP); self.assertEqual(box(), first)   # another setting starts at its top
             x = scr.rects["about"][1] + 3
-            scr.wheel(10, x, 1); scr.draw(); self.assertNotEqual(self.text(), first)
+            scr.wheel(10, x, 1); scr.draw(); self.assertNotEqual(box(), first)
 
     def test_a_hole_in_the_last_hour_is_filled_once(self):
         import collections, time

@@ -5,7 +5,7 @@ with a btop-style terminal screen: braille charts, a strike ladder, and paper an
 Every trade comes from its rule; there are no manual orders.
 It paper trades from the start and sends no real order until you arm live.
 
-<img width="1364" height="668" alt="The ladder: every strike of the hour" src="docs/screenshots/01-page1-trade.png" />
+<img width="1364" height="668" alt="The variants, and the highlighted one's P&L by hour" src="docs/screenshots/02-page2-compare.png" />
 
 - **Paper and live.** Every variant trades on paper all the time. Live is off until you arm it with one of them, and has its own caps, gate and daily loss limit.
 - **Variants.** Ten built-in versions of the rule run side by side on paper, each with its own record. Make your own from the screen: any of their settings, saved as a new variant.
@@ -67,7 +67,7 @@ others are tabs on its top border: the key on a tab (`1` to `9`, `0`, `h`) shows
 through them. A box's own keys are on its bottom border and work only there; the log's are the ones that work everywhere. The status
 line is always at the bottom.
 
-<img width="1364" height="668" alt="The variants, and the highlighted one's P&L by hour" src="docs/screenshots/02-page2-compare.png" />
+<img width="1364" height="668" alt="The ladder: every strike of the hour" src="docs/screenshots/01-page1-trade.png" />
 
 | Box | What it shows |
 |---|---|
