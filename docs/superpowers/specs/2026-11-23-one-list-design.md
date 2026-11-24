@@ -33,3 +33,7 @@ profiles on the screen only: two lists stay underneath; (c) the user's pick: one
 - live.variant starts as what live would have traded before.
 
 **Non-goals:** shared cash; editing a saved variant; changing the gate, live's caps or execution.
+
+**After trying it (same evening):** no `E` (n is the same thing), no `R` (n then s is a fresh copy, so a copy without a
+change is allowed), no `r` for a coin (it is in the settings): `r` renames. No equity box, no pages: `v` opens the
+variants over the dash, `esc` goes back, `V` is the book's paper/live view.

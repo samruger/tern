@@ -304,8 +304,8 @@ HELP = [
                  "A variant holds everything about how it trades: its rule, contracts a strike, most an hour and paper start. "
                  "It never buys more than the cash it has left. Once saved it never changes. Make your own, marked +: (n) opens "
                  "the highlighted one's settings as a draft, and (s) there saves your changes as a new variant with an empty "
-                 "record; the one it came from and its record stay. (space) turns one off or on, (D) deletes one, (N) renames "
-                 "it, (R) starts the selected one over: its record so far is kept in the reports. At most {max_own} of your "
+                 "record; the one it came from and its record stay. (space) turns one off or on, (D) deletes one, (r) renames "
+                 "it. At most {max_own} of your "
                  "own; a deleted one's record stays on file.\n"
                  "Retired, records kept and listed by (tern report):\n"
                  "{retired}"),
@@ -319,8 +319,8 @@ HELP = [
              "Caps: ${risk:,.0f} at risk at once and ${order:,.0f} per order; a loss of ${day:,.0f} since local midnight "
              "turns live off and leaves open positions to settle. Every order is immediate-or-cancel. Kalshi "
              "is the record: its positions overwrite the engine's every 15 seconds."),
-    ("COINS", "(tab) and shift+tab step through {coins}. (r) opens the selected variant with the coin on screen "
-              "turned on or off, to save as a new one. The 67-day test was BTC only, so the rule trades BTC unless you turn others on."),
+    ("COINS", "(tab) and shift+tab step through {coins}. Which coins a variant trades is in its settings (n). "
+              "The 67-day test was BTC only, so the rule trades BTC unless you turn others on."),
     ("PAPER", "{variant} starts with ${paper:,.0f}, its paper start. Every variant that is on trades on paper all the "
               "time, live or not, so its record keeps growing."),
 ]
@@ -385,9 +385,7 @@ HELP_KEYS = [
                 ("", "one and its record stay as they are"),
                 ("space", "turn it on / off"),
                 ("D", "delete it, if it is one you made"),
-                ("N", "rename it: its record keeps its own name"),
-                ("R", "start the selected one over (asks y)"),
-                ("r", "n on the selected one, this coin flipped")]),
+                ("r", "rename it: its record keeps its own name")]),
      ("trade", [("L", "live: on with the selected variant, off, or"),
                 ("", "moved to it (type \"live\")"),
                 ("g", "gate, variants and go-live checklist"),
@@ -442,7 +440,7 @@ WANT_W = {"ladder": 56, "variants": 81}   # the width a box needs to show all it
 SUPER = "¹²³⁴⁵⁶⁷⁸⁹"
 LEFT_MIN = {"ladder": 56, "variants": 57}   # the ladder's columns need this much before its bar has any room
 SCROLLS = ["ladder", "variants", "book", "log"]   # the boxes ←→ focus and ↑↓ scroll
-ORPHAN_DROP = ["t", "c", "R", "L", "V", "r", "", "h", "S", "g", "q", "v", "tab"]   # off-screen boxes' hints, first dropped first
+ORPHAN_DROP = ["t", "c", "L", "V", "", "h", "S", "g", "q", "v", "tab"]   # off-screen boxes' hints, first dropped first
 COMFY_H = {"spot": 10, "contract": 10, "ladder": 12, "book": 12, "log": 8}   # sizes the merged view needs
 
 
@@ -472,10 +470,8 @@ def view_boxes(view: str) -> list[str]:
 
 # key hints drawn on each box's top border (btop style); an off-screen box's hints move to the bottom row
 PANEL_KEYS = {
-    "spot": lambda s: [("tab", " next coin"), ("r", "ule on/off", "") if s.rule_on() is None
-                       else ("r", "ule ", "on", "/off") if s.rule_on() else ("r", "ule on/", "off"),   # pink: the state now
-                       ("c", "hart " + s.chart)],
-    "book": lambda s: [("V", "iew"), ("L", "ive"), ("R", "estart")],
+    "spot": lambda s: [("tab", " next coin"), ("c", "hart " + s.chart)],
+    "book": lambda s: [("V", "iew"), ("L", "ive")],
     "contract": lambda s: [("t", "heme ", s.P.name)],
     "log": lambda s: ([("v", "ariants")] if s.page == 1 else []) + [("g", "ate"), ("", "s", "e", "ttings"), ("", "rep", "o", "rts"), ("S", "top" if s.alive else "tart"), ("h", "elp"), ("q", "uit")],
 }
@@ -843,7 +839,7 @@ class Screen:
         self.put(y, x, "─", border)
 
     def vn(self, name: str | None) -> str:
-        """A variant's display name (N renames it); its record stays under its own name."""
+        """A variant's display name (r renames it); its record stays under its own name."""
         if not name:
             return "?"
         mine = next((v for v in self.raw.get("variants") or [] if v["name"] == name), {})
@@ -860,11 +856,6 @@ class Screen:
     def strat(self) -> dict | None:
         """The selected variant's settings: the screen marks the ladder and band with them."""
         return self.st.get("strategy")
-
-    def rule_on(self) -> bool | None:
-        """Whether the selected variant trades the coin on screen; None until the engine has said."""
-        S = self.strat()
-        return None if not S else self.series in (S.get("series") or [])
 
     def graph(self, y: int, x: int, h: int, w: int, vals: list[float], lo: float, hi: float, grad: list[int],
               marks: list[float] | None = None, mark_color: int = YELLOW, filled: bool = True) -> None:
@@ -951,7 +942,7 @@ class Screen:
         S = self.strat() or {}
         if S:
             on = self.series in (S.get("series") or [])
-            seg = [("r", P(P.c("key"), bold=True)), ("ule ", P(P.c("word_b"))), ("ON" if on else "off", P(GREEN if on else RED, bold=True))]
+            seg = [("rule ", P(P.c("word_b"))), ("ON" if on else "off", P(GREEN if on else RED, bold=True))]
             if ev and on:
                 tau = ev["close"] - now
                 ahead = [m for m in S.get("minutes", []) if m * 60 < tau]
@@ -1199,7 +1190,7 @@ class Screen:
         P, st = self.P, self.st
         vs = st.get("variants") or []
         G = st.get("gate_cfg") or {}
-        self.box(y, x, h, w, "variants", self.P.border("ladder"), "", [("⏎", " select"), ("n", "ew"), ("space", " on/off"), ("", "re", "N", "ame"), ("D", "elete"), "↑↓"])
+        self.box(y, x, h, w, "variants", self.P.border("ladder"), "", [("⏎", " select"), ("n", "ew"), ("space", " on/off"), ("r", "ename"), ("D", "elete"), "↑↓"])
         if not vs:
             self.put(y + 2, x + 3, "waiting for the engine…", P(self.P.grey)); return
         names = [v["name"] for v in vs]
@@ -1292,7 +1283,7 @@ class Screen:
             if not cur.get("on", True):
                 tip, col = f"{name} is off: no new entries, open ones settle · space turns it on", YELLOW
             elif cur.get("cash") is not None and cur["cash"] < (cur.get("rule") or {}).get("band_lo", 0) and not cur.get("open"):
-                tip, col = f"{name} has {money(cur['cash'])} left: it buys nothing · n makes one with a new paper start, R starts it over", YELLOW
+                tip, col = f"{name} has {money(cur['cash'])} left: it buys nothing · n makes a fresh one", YELLOW
             elif live:
                 tip, col = f"L live trades {name}" + (" · selected" if sel_ else ""), RED
             elif sel_:
@@ -1317,7 +1308,7 @@ class Screen:
         self.save_prefs(); self.apply_selected()
         self.say(f"{self.vn(self.variant)} selected: the book shows it" + (f" · live still trades {self.vn(live)}" if live and live != self.variant else ""))
 
-    # ---- the variants: n, D, space
+    # ---- the variants: n, D, space, r
     def variant_key(self, ch: int) -> None:
         """D or space with the variants box on screen, on the highlighted variant."""
         cur = self.vrow(self.var_sel)
@@ -1381,21 +1372,6 @@ class Screen:
                                 *([] if st.get("keys") else ["", f"No key found yet: live stays off until {cfgmod.KEYFILE_ENV} exists."]),
                                 "", "type live and press enter (esc cancels):", "> "]}
 
-    def restart_key(self) -> None:
-        """R: the selected variant starts over."""
-        row, name = self.vrow(self.variant), self.vn(self.variant)
-        if row is None:
-            self.say("no variants from the engine yet"); return
-        if self.older_engine():
-            return
-        if self.armed() and self.live_variant() == self.variant:
-            self.say(f"{name} is what live trades: turn live off or move it first (L)"); return
-        start = (row.get("rule") or {}).get("paper_capital", 0)
-        self.modal = {"type": "restart", "title": f"start {name} over", "name": self.variant,
-                      "lines": [f"Start {name} over, with ${start:,.0f} and an empty record? Its gate starts over too.",
-                                "Its record so far is kept in the reports under a deleted variant's name.", "",
-                                "y starts it over · any other key keeps it"]}
-
     def open_settings(self, variant: str | None = None) -> None:
         """e: the settings box (the desk's and the screen's). n: the same box on a variant's settings, as a draft."""
         self.overlay, self.set_buf, self.edit_var, self.draft = "settings", None, variant, {}
@@ -1424,12 +1400,10 @@ class Screen:
             self.say("the last save has not been answered yet"); return
         if self.older_engine():
             return
-        if not self.draft:
-            self.say("nothing is changed yet: there is nothing to save"); return
         self.modal = {"type": "vname", "title": "save as a new variant", "color": CYAN, "buf": "", "max": varmod.NAME_MAX,
                       "cmd": {"op": "variant_new", "from": self.edit_var, "rule": dict(self.draft)},
                       "lines": [f"A new variant: {self.vn(self.edit_var)} with",
-                                *("  " + t for t in self.draft_lines()), "",
+                                *("  " + t for t in self.draft_lines() or ["the same settings"]), "",
                                 f"It starts with an empty record. {self.vn(self.edit_var)} and its record stay as they are.",
                                 f"name, up to {varmod.NAME_MAX} characters (enter alone picks one, esc goes back):", "> "]}
 
@@ -1441,31 +1415,14 @@ class Screen:
         self.say("the engine running is older than this screen: restart it (S, S)")
         return True
 
-    def rule_coin(self) -> None:
-        """r: n on the selected variant, with the coin on screen flipped in the draft."""
-        name = self.variant
-        have = ((self.vrow(name) or {}).get("rule") or {}).get("series")
-        if name is None or have is None:
-            self.say("no value from the engine yet"); return
-        if self.older_engine():
-            return
-        want = [c for c in cfgmod.SERIES if (c in have) != (c == self.series)]
-        if not want:
-            self.say("at least one of the coins stays on"); return
-        self.open_settings(name)
-        self.var_sel = name
-        self.draft["series"] = want
-        self.set_sel = [r.name for r in varmod.RULE_SETTINGS].index("series")
-        self.set_sub = list(cfgmod.SERIES).index(self.series)
-
     def armed(self) -> bool:
         return bool(self.raw.get("live_enabled") or self.raw.get("mode") == "live")
 
     def rename_ask(self) -> None:
-        """N: rename the highlighted variant."""
+        """r: rename the highlighted variant."""
         v = self.var_sel
         if not self.shown("variants") or self.vrow(v) is None:
-            self.say("N renames a variant: " + self.back_to("highlight one in variants, then N")); return
+            self.say("r renames a variant: " + self.back_to("highlight one, then r")); return
         name, mx = self.vn(v), namesmod.VARIANT_NAME_MAX
         self.modal = {"type": "rename", "title": f"rename {name}", "color": CYAN, "buf": name, "max": mx,
                       "target": {"variant": v},
@@ -2506,12 +2463,6 @@ class Screen:
                 else:
                     self.say("engine kept running")
                 return True
-            if m.get("type") == "restart":
-                if ch in (ord("y"), ord("Y")):
-                    self.send(op="variant_restart", variant=m["name"])
-                else:
-                    self.say("kept")
-                return True
             return True
         if self.overlay == "settings":
             self.settings_key(ch)
@@ -2548,7 +2499,7 @@ class Screen:
             else:
                 self.say(("D deletes a variant: " if ch == ord("D") else "space turns a variant on or off: ") +
                          self.back_to("highlight one in variants"))
-        elif ch == ord("N"):
+        elif ch == ord("r"):
             self.rename_ask()
         elif ord("1") <= ch <= ord(str(len(BOXES))):
             self.toggle(ch - ord("1"))
@@ -2561,8 +2512,6 @@ class Screen:
             step = -1 if ch == curses.KEY_BTAB else 1
             self.series = order[(order.index(self.series) + step) % len(order)] if self.series in order else order[0]
             self.sel = None; self.write_view(); self.save_prefs(); self.say(f"viewing {cfgmod.SERIES[self.series]}")
-        elif ch == ord("r"):
-            self.rule_coin()
         elif ch in (ord("t"), ord("T")):
             self.next_theme(-1 if ch == ord("T") else 1)
         elif ch == ord("c"):
@@ -2584,8 +2533,6 @@ class Screen:
             self.engine_key()
         elif ch == ord("s"):
             self.say("S stops / starts the engine · s saves a report (o)")
-        elif ch == ord("R"):
-            self.restart_key()
         elif ch == ord("L"):
             self.live_key()
         return True

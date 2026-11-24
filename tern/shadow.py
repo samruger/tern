@@ -199,7 +199,6 @@ class Shadow:
                 for line in fh:
                     try:
                         r = json.loads(line)
-                        r["v"] = self._whose(r)
                         self._count(r)
                         done.add(self._key(r))
                     except (json.JSONDecodeError, KeyError, TypeError):
@@ -209,9 +208,6 @@ class Shadow:
         # A row is written to the settled file before shadow.json is saved without it. If the engine
         # died in between, the row is in both: the settled file wins, so it is not settled twice.
         n = len(self.rows)
-        for r in self.rows:
-            if isinstance(r.get("v"), str):
-                r["v"] = self._whose(r)
         # retired variants (stop20, arb) had no open rows when they stopped; any left would not settle right.
         # One of your own may have, deleted or lost from variants.json: those settle like any other.
         self.rows = [r for r in self.rows if self._key(r) not in done and isinstance(r.get("v"), str) and r["v"] not in RETIRED]
@@ -222,29 +218,6 @@ class Shadow:
         return (r.get("v"), r.get("ticker"), r.get("ticker2"), r.get("ts"), r.get("slot"))
 
     # ------------------------------------------------------------ bookkeeping
-    def _whose(self, r: dict) -> str:
-        """The variant an entry counts for: the one that bought it, or, from before a restart (R), the one kept for that."""
-        v = r["v"]
-        for x in self.own.restarts:
-            if x["v"] == v and (r.get("ts") or 0) < x["before"]:
-                return x["key"]
-        return v
-
-    def restart(self, name: str, rule: dict, now: float) -> str:
-        """R: start a variant over. Its entries so far, open ones too, are another (deleted) variant's from here on."""
-        key = self.own.restart(name, rule, now)
-        for d in (self.agg, self.recent, self.fees):
-            if name in d:
-                d[key] = d.pop(name)
-        for (v, sv) in [k for k in self.by_sv if k[0] == name]:
-            self.by_sv[key, sv] = self.by_sv.pop((v, sv))
-        for r in self.rows:
-            if r["v"] == name:
-                r["v"] = key
-        self.dirty = True
-        self.changes += 1
-        return key
-
     def _count(self, r: dict) -> None:
         self.changes += 1
         a = self.agg.setdefault(r["v"], {}).setdefault(r["event"], [0.0, 0.0, 0, 0, 0])

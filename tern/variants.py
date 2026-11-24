@@ -4,8 +4,7 @@ A variant here is everything about how it trades: band, slots, spread, coins, th
 strike, most an hour and its paper start. shadow.TABLE's variants are built in and take theirs from config.json. No variant ever changes once it is saved: n on the screen opens one as a draft, and saving that draft makes a
 new variant with an empty record (engine._variant_new), so a record is always one rule's.
 
-They are in variants.json beside the records, with the variants that are turned off and the restarts (R: entries
-from before one belong to a deleted variant that keeps them). A variant that bought something and was then deleted
+They are in variants.json beside the records, with the variants that are turned off. A variant that bought something and was then deleted
 stays listed there as deleted: its open entries still settle and its key is never used again.
 """
 
@@ -177,7 +176,6 @@ class VariantSet:
         self.reserved = tuple(reserved)
         self.all: dict[str, dict] = {}           # key -> {rule, title, from, made, deleted, was (the profile it came from)}
         self.off: set[str] = set()               # turned off (space), built in or own: no new entries
-        self.restarts: list[dict] = []           # {v, key, before}: what v bought before then is key's
         self.changes = 0                         # goes up with every change: the engine's summaries cache on it
         self.by: dict[str, str] = {}             # variant -> the id of the command that made it, since the start
         self.used = lambda: set()                # keys that have records (Shadow sets it): never given to another
@@ -195,10 +193,6 @@ class VariantSet:
             self.damaged = len(self.all) != len(items)
             off = whole.get("off")
             self.off = {n for n in off if isinstance(n, str)} if isinstance(off, list) else set()
-            for r in whole.get("restarts") if isinstance(whole.get("restarts"), list) else []:
-                if isinstance(r, dict) and isinstance(r.get("v"), str) and r.get("key") in self.all and \
-                        isinstance(r.get("before"), (int, float)):
-                    self.restarts.append({"v": r["v"], "key": r["key"], "before": r["before"]})
         except FileNotFoundError:
             pass
         except (OSError, ValueError, KeyError, AttributeError, TypeError):
@@ -230,7 +224,7 @@ class VariantSet:
         else:
             self.unsized = {}
         with open(self.path + ".tmp", "w") as fh:
-            json.dump({"variants": out, "off": sorted(self.off), "restarts": self.restarts}, fh, indent=1)
+            json.dump({"variants": out, "off": sorted(self.off)}, fh, indent=1)
         os.replace(self.path + ".tmp", self.path)
         self.changes += 1
 
@@ -296,14 +290,6 @@ class VariantSet:
     def turn(self, name: str, on: bool) -> None:
         (self.off.discard if on else self.off.add)(name)
         self.save()
-
-    def restart(self, name: str, rule: dict, now: float) -> str:
-        """R: what name has bought so far goes to a deleted variant of its own; returns that one's key."""
-        key = self._key(f"{name[:NAME_MAX - 4]}-old")
-        self.all[key] = {"rule": copy.deepcopy(rule), "title": key, "from": name, "made": round(now, 3), "deleted": True, "was": ""}
-        self.restarts.append({"v": name, "key": key, "before": now})
-        self.save()
-        return key
 
     def rename(self, key: str, to: str, taken=()) -> tuple[str, str]:
         to = clean(to) or key

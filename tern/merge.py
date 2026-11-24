@@ -139,7 +139,6 @@ def merge(runtime: str, sv: int) -> list[str]:
             for line in _lines(os.path.join(d, "shadow-settled.jsonl")):
                 try:
                     r = json.loads(line)
-                    r["v"] = p._whose(r)
                     done.append(json.dumps(moved(r), separators=(",", ":")) + "\n")
                 except (ValueError, KeyError, TypeError):
                     continue
@@ -147,7 +146,6 @@ def merge(runtime: str, sv: int) -> list[str]:
             said.append(f"profile folder {pid} could not be read, its variants are not in the list ({ex}): kept in runtime/{TO}/")
             continue
         own.all.update(add)
-        own.restarts += [{**x, "v": key.get(x["v"], x["v"]), "key": key[x["key"]]} for x in p.own.restarts if x["key"] in key]
         rows += open_
         settled += done
         for ev, s in p.slots.items():

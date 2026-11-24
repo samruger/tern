@@ -742,8 +742,7 @@ class Live(unittest.TestCase):
             self.assertFalse(g["passed"]); self.assertIn("is off", g["checks"][0]["name"])
             k._auto()
             self.assertEqual(got, [])
-            for op in ("variant_delete", "variant_restart"):
-                self.assertIn("what live trades", k._command({"op": op, "variant": "wide"}))
+            self.assertIn("what live trades", k._command({"op": "variant_delete", "variant": "wide"}))
             del k.shadow.own.all["wide"]                                       # gone some other way
             self.assertIn("not there any more", k.gate()["checks"][0]["name"])
             k.slots.clear(); k._auto()
@@ -1387,7 +1386,7 @@ class SettingsBox(Rig, unittest.TestCase):
             with mock.patch.object(dash, "Pal", web.WebPal):
                 scr = dash.Screen(web.VTerm(40, 120), d)
             scr.draw()
-            for key in "rnDRL N":
+            for key in "rnDL ":
                 scr.key(ord(key)); scr.draw()
                 self.assertIsNone(scr.overlay, key); self.assertIsNone(scr.modal, key)
             scr.key(ord("e"))
@@ -1653,11 +1652,11 @@ class Pages(Rig, unittest.TestCase):
     def test_keys_of_the_variants_box_say_where_it_is(self):
         with tempfile.TemporaryDirectory() as d:
             k, scr = self.setup(d)
-            for key in (10, "D", " ", "N"):
+            for key in (10, "D", " ", "r"):
                 self.press(key)
                 self.assertIn("v opens the list", scr.flash, key)
             self.size(50, 150); self.press("6")                                 # one big screen, log zoomed: no variants box
-            for key in (10, "D", " ", "N"):
+            for key in (10, "D", " ", "r"):
                 self.press(key)
                 self.assertIn("v opens the list", scr.flash, key)
             self.assertEqual(self.cmds(), [])
@@ -1731,7 +1730,7 @@ class Pages(Rig, unittest.TestCase):
                 scr.flash = ""; self.size(H, W)
                 row = "".join(scr.s.ch[H - 2])
                 self.assertIn("esc back", row, (W, row))
-                for page1 in ("tab next coin", "chart", "View", "Live", "Restart", "theme", "settings", "reports", "help", "quit"):   # page 1's, not repeated
+                for page1 in ("tab next coin", "chart", "View", "Live", "theme", "settings", "reports", "help", "quit"):   # page 1's, not repeated
                     self.assertNotIn(page1, row, (W, row))
 
 
@@ -1796,7 +1795,7 @@ class OwnVariants(Rig, unittest.TestCase):
             for v in old["variants"].values():
                 for f in ("contracts", "max_hour_cost", "paper_capital"):
                     del v["rule"][f]
-            del old["off"], old["restarts"]                                    # (there were none of those yet)
+            del old["off"]                                                     # (there was none yet)
             with open(path, "w") as fh:
                 json.dump(old, fh)
             cfg = config.Config(paper_capital=100); cfg.strategy.contracts, cfg.strategy.max_hour_cost = 19.0, 100.0
@@ -2015,8 +2014,6 @@ class ScreenVariants(Rig, unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             k, scr = self.setup(d)
             self.open()
-            self.press("s")
-            self.assertIsNone(scr.modal); self.assertIn("nothing is changed", scr.flash)
             self.press(self.curses.KEY_RIGHT, self.curses.KEY_LEFT)
             self.assertEqual(scr.draft, {})                                    # back where it was: not a change
             self.press(self.curses.KEY_RIGHT, "e", "q", "x", "p")
@@ -2049,23 +2046,6 @@ class ScreenVariants(Rig, unittest.TestCase):
             k._command({"op": "variant_delete", "variant": "mine"}); self.sync()
             self.assertEqual((scr.overlay, scr.edit_var, scr.draft, scr.modal), (None, None, {}, None))
             self.assertIn("gone", scr.flash)
-
-    def test_r_opens_the_selected_one_with_the_coin_flipped(self):
-        with tempfile.TemporaryDirectory() as d:
-            k, scr = self.setup(d)
-            k.cfg.live.enabled, k.cfg.live.variant = True, "base"; self.sync(); self.cmds()   # armed: still nothing is sent
-            self.press("r")
-            self.assertIn("at least one", scr.flash); self.assertIsNone(scr.overlay)   # BTC is its only coin
-            self.press(9, "r")                                                 # ETH
-            self.assertEqual((scr.edit_var, scr.draft, scr.modal), ("base", {"series": ["KXBTCD", "KXETHD"]}, None))
-            self.assertEqual(self.cmds(), [])
-            self.press("s", 10); self.run_cmds()
-            self.assertEqual((k.cfg.live.variant, k.shadow.own.rule("base-2")["series"]), ("base", ["KXBTCD", "KXETHD"]))
-            for had in ([], ["KXBTCD", "KXFOOD"]):
-                k.cfg.strategy.series = list(had); self.sync()
-                self.press("r")
-                self.assertEqual(scr.draft["series"], [c for c in had if c != "KXFOOD"] + ["KXETHD"])
-                self.press(27)
 
     def test_delete_asks_and_refuses(self):
         with tempfile.TemporaryDirectory() as d:
@@ -2358,23 +2338,20 @@ class VariantSettingsReview(Rig, unittest.TestCase):
             scr.key(ord("s"))
             self.assertIsNone(scr.modal); self.assertIn("older than this screen", scr.flash)
             scr.key(27); scr.key(9)
-            for key in "rnLRD ":
+            for key in "nLD ":
                 scr.flash = ""; scr.key(ord(key))
                 self.assertEqual((scr.overlay, scr.modal), (None, None), key); self.assertIn("older than this screen", scr.flash, key)
             self.assertEqual(self.cmds(), [])
 
     # 4
-    def test_a_copy_without_a_change_is_refused(self):
+    def test_a_slot_off_and_on_again_is_not_a_change(self):
         with tempfile.TemporaryDirectory() as d:
             k, scr = self.setup(d)
             k.cfg.strategy.minutes = [10, 15, 20, 25]; self.sync()
-            for rule in (None, {}, {"band_lo": 0.75}, {"minutes": [25, 20, 15, 10]}):
-                self.assertIn("no new variant", k._command({"op": "variant_new", "from": "base", "rule": rule}))
-            self.assertEqual(k.shadow.own.all, {})
             self.open("base")
             self.row("minutes"); scr.set_sub = scr.set_choices(scr.set_rows()[scr.set_sel]).index(10)
             self.press(" "); self.assertEqual(scr.draft, {"minutes": [25, 20, 15]})
-            self.press(" "); self.assertEqual(scr.draft, {})                   # off and on again: not a change
+            self.press(" "); self.assertEqual(scr.draft, {})
 
     # 5
     def test_an_unreadable_config_never_settles_a_variants_size(self):
@@ -2637,67 +2614,45 @@ class OneList(Rig, unittest.TestCase):
             self.press(" "); self.run_cmds()                                   # off never asks
             self.assertIn("late", k.shadow.own.off)
 
-    def test_R_starts_a_variant_over_and_keeps_its_record(self):
-        with tempfile.TemporaryDirectory() as d:
-            k, scr = self.setup(d)
-            self.new(k, "base", "mine", band_lo=0.55, band_hi=0.65, paper_capital=100, minutes=[25, 10]); k._shadow()
-            for i in range(3):
-                k.shadow._close({"v": "mine", "event": f"KXBTCD-H{i}", "n": 2, "cost": 0.5, "fee": 0.1, "ts": 5.0 + i, "close": 9.0,
-                                 "ticker": f"KXBTCD-H{i}-T1", "side": "yes", "slot": 25}, -20.0)
-            was = k.shadow.summary(["mine"])[0]
-            self.assertEqual((was["entries"], was["open"]), (3, 1))
-            scr.variant = "mine"; self.sync()
-            self.press("R", "n"); self.assertEqual(self.cmds(), [])
-            self.press("R")
-            self.assertIn("with $100 and an empty record", self.text())
-            self.press("y"); [c] = self.run_cmds()
-            self.assertEqual((c["op"], c["variant"]), ("variant_restart", "mine"))
-            for k in (k, self.desk(d)):                                        # and across a restart of the engine
-                new, old = k.shadow.summary(["mine", "mine-old"])
-                self.assertEqual((new["entries"], new["open"], new["pnl"], k.shadow.cash("mine", 100)), (0, 0, 0, 100))
-                self.assertEqual({**old, "name": "mine"}, was)
-                self.assertEqual((k.shadow.own.active(), k.shadow.own.deleted()), (["mine"], ["mine-old"]))
-            self.assertIn("bought nothing", k._command({"op": "variant_restart", "variant": "mine"}))
-            k.shadow.settle({self.T: True})                                    # its open entry settles for the old record
-            self.assertEqual([r["entries"] for r in k.shadow.summary(["mine", "mine-old"])], [0, 4])
-            k.shadow.save(); k = self.desk(d)
-            self.assertEqual([r["entries"] for r in k.shadow.summary(["mine", "mine-old"])], [0, 4])
-            k.shadow._close({"v": "mine", "event": "KXBTCD-H9", "n": 2, "cost": 0.5, "fee": 0.1, "ts": __import__("time").time(), "close": 9.0,
-                             "ticker": "x", "side": "yes", "slot": 25}, 1.0)
-            self.assertIn("kept as mine-old-2", k._command({"op": "variant_restart", "variant": "mine"}).replace("mine-ol-2", "mine-old-2"))
-            k = self.desk(d)
-            self.assertEqual([r["entries"] for r in k.shadow.summary(["mine", "mine-old"])], [0, 4])
-            self.assertEqual(sum(r["entries"] for r in k.shadow.summary(k.shadow.own.deleted())), 5)
-
-    def test_a_built_in_one_can_start_over_too(self):
-        with tempfile.TemporaryDirectory() as d:
-            k = self.desk(d)
-            k._shadow(); k.shadow.settle({self.T: True})
-            n = k.shadow.summary(["base"])[0]["entries"]
-            self.assertTrue(n)
-            self.assertIn("kept as base-old", k._command({"op": "variant_restart", "variant": "base"}))
-            k = self.desk(d)
-            self.assertEqual([r["entries"] for r in k.shadow.summary(["base", "base-old"])], [0, n])
-            self.assertEqual(k.shadow.own.active(), [])
-
-    def test_names_off_and_restarts_by_hand_are_checked(self):
+    def test_off_by_hand_is_checked(self):
         import json
         with tempfile.TemporaryDirectory() as d:
             self.new(self.desk(d), name="mine")
             path = os.path.join(d, "variants.json")
             with open(path) as fh:
                 j = json.load(fh)
-            j["off"], j["restarts"] = ["late", 5, None], [5, {"v": "base"}, {"v": "base", "key": "nope", "before": 1}, {"v": "base", "key": "mine", "before": "x"}]
-            with open(path, "w") as fh:
-                json.dump(j, fh)
-            own = self.desk(d).shadow.own
-            self.assertEqual((own.off, own.restarts, own.active()), ({"late"}, [], ["mine"]))
-            for bad in (5, {}, "late"):
-                j["off"] = j["restarts"] = bad
+            for off, want in ((["late", 5, None], {"late"}), (5, set()), ({}, set()), ("late", set())):
+                j["off"], j["restarts"] = off, []                              # (restarts: there was an R, for an hour)
                 with open(path, "w") as fh:
                     json.dump(j, fh)
                 own = self.desk(d).shadow.own
-                self.assertEqual((own.off, own.restarts, own.active()), (set(), [], ["mine"]))
+                self.assertEqual((own.off, own.active(), own.damaged), (want, ["mine"], False))
+
+    def test_r_renames_and_R_is_gone(self):
+        with tempfile.TemporaryDirectory() as d:
+            k, scr = self.setup(d)
+            self.press("r")
+            self.assertIn("v opens the list", scr.flash); self.assertIsNone(scr.modal)   # the variants' key, on their view
+            self.assertNotIn("rule on/off", self.text()); self.assertNotIn("Restart", self.text())
+            self.press("v"); self.assertIn("─rename─", self.text())
+            scr.var_sel = "late"; self.press("r", 21, *"slow", 10)
+            [c] = self.run_cmds()
+            self.assertEqual((c["op"], c["variant"], c["name"], k.names.variant("late")), ("rename", "late", "slow", "slow"))
+            for key in "RNE":
+                self.press(key)
+                self.assertEqual((self.cmds(), scr.modal, scr.overlay), ([], None, None), key)
+            self.assertIn("unknown command", k._command({"op": "variant_restart", "variant": "base"}))
+
+    def test_n_then_s_is_a_fresh_copy(self):
+        with tempfile.TemporaryDirectory() as d:
+            k, scr = self.setup(d)
+            self.new(k, "base", "wide", band_lo=0.55, band_hi=0.65); k._shadow()
+            self.open("wide"); self.press("s")
+            self.assertIn("the same settings", self.text())
+            self.press(10); [c] = self.run_cmds()
+            self.assertEqual((c["from"], c["rule"]), ("wide", {}))
+            self.assertEqual(k.shadow.own.rule("wide-2"), k.shadow.own.rule("wide"))
+            self.assertEqual([r["open"] for r in k.shadow.summary(["wide", "wide-2"])], [1, 0])
 
 
 class Merge(Rig, unittest.TestCase):
@@ -3027,7 +2982,7 @@ class Web(unittest.TestCase):
             f = hub.handle({"w": 120, "h": 40, "prefs": {"page": 2, "theme": "classic"}})
             sid = f["sid"]
             hub.handle({"sid": sid, "w": 120, "h": 40, "key": "v"})
-            for k in ("q", "s", "R", "L", "r", "n", "D", "N", " ", "ArrowDown", "Enter", "L"):
+            for k in ("q", "s", "L", "r", "n", "D", " ", "ArrowDown", "Enter", "L"):
                 f = hub.handle({"sid": sid, "w": 120, "h": 40, "key": k})
             self.assertEqual(os.listdir(os.path.join(d, "cmd")), [])          # no command reached the engine
             self.assertFalse(os.path.exists(os.path.join(d, "dash.json")))     # the screen's prefs are its own

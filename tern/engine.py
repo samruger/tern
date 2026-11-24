@@ -865,12 +865,11 @@ class Desk:
             return self._live_command(c)
         if op == "variant_new":
             return self._variant_new(c)
-        if op in ("variant_delete", "variant_on", "variant_restart"):
+        if op in ("variant_delete", "variant_on"):
             name = c.get("variant")
             if not shadowmod.known(name, self.shadow.own):
                 return f"no variant {name!r}"
-            return {"variant_delete": self._variant_delete, "variant_on": lambda n: self._variant_on(n, bool(c.get("on"))),
-                    "variant_restart": self._variant_restart}[op](name)
+            return self._variant_delete(name) if op == "variant_delete" else self._variant_on(name, bool(c.get("on")))
         if op == "set":
             key, was = c.get("key"), None
             if cfgmod.setting(key) is not None:
@@ -953,8 +952,6 @@ class Desk:
         rule = shadowmod.rule_of(parent, self.cfg, sh.own)
         try:
             changes = varmod.checked(c.get("rule") or {}, rule)
-            if varmod.same({**rule, **changes}, rule):
-                raise ValueError(f"nothing is different from {self.vname(parent)}")
             key = sh.own.add({**rule, **changes}, c.get("name") or "", parent, self.names.shown())
         except ValueError as ex:
             return f"no new variant: {ex}"
@@ -966,7 +963,7 @@ class Desk:
             if v != rule[f]:
                 self.slog.append("rule." + f, rule[f], v, bump=False)
                 what.append(f"{varmod.RULE[f].label} {namesmod.show('rule.' + f, rule[f])} → {namesmod.show('rule.' + f, v)}")
-        return f"new variant {sh.own.title(key)}, from {self.vname(parent)}: {', '.join(what)}"
+        return f"new variant {sh.own.title(key)}, from {self.vname(parent)}: {', '.join(what) or 'the same settings'}"
 
     def _variant_delete(self, name: str) -> str:
         """D: one of your own stops running. Its entries stay on file."""
@@ -991,19 +988,6 @@ class Desk:
         self.slog.append("on." + name, not on, on, bump=False)
         return f"{self.vname(name)} " + ("on: enters from its next slot" if on else "off: no new entries; open ones still settle") + \
             ((" · live trades it" if on else " · it is live's: live enters nothing while it is off") if self._armed_with(name) else "")
-
-    def _variant_restart(self, name: str) -> str:
-        """R: a variant starts over, with its paper start and an empty record. What it bought so far is kept under a
-        deleted variant's name."""
-        if self._armed_with(name):
-            return f"{self.vname(name)} is what live trades: turn live off or move it first (L)"
-        if not self.shadow.bought(name):
-            return f"{self.vname(name)} has bought nothing: there is nothing to start over"
-        rule = shadowmod.rule_of(name, self.cfg, self.shadow.own)
-        key = self.shadow.restart(name, rule, time.time())
-        self.shadow.save()
-        self.slog.append("restart", name, key, bump=False)
-        return f"{self.vname(name)} starts over at ${rule['paper_capital']:,.0f}: its record so far is kept as {key} (tern report)"
 
     def _rename(self, c: dict) -> str:
         """A variant gets a new name on the screen; its record keeps its own."""

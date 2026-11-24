@@ -3,7 +3,7 @@
 The browser does not draw its own copy of the dash. Each browser tab gets a real dash.Screen
 drawing into a virtual terminal here; the cells go to the page, which paints them like foot does.
 So the web view always looks and behaves like the screen, minus the keys that change anything:
-no quit, engine stop or start, or live, and no making, renaming, turning on/off, deleting or restarting a
+no quit, engine stop or start, or live, and no making, renaming, turning on/off or deleting a
 variant. Selecting one (enter) only views it, for that viewer. The settings box (e) opens and its cursor moves,
 but only its log filter row changes (for that viewer). Reports (o) can be read but not saved. It sends
 no command files and never writes the screen's own view.json or dash.json. Its viewers' coins
@@ -46,11 +46,11 @@ NAMED = {"ArrowUp": curses.KEY_UP, "ArrowDown": curses.KEY_DOWN, "ArrowLeft": cu
 # keys that only change what this viewer sees: they reach the screen; everything else stops here
 VIEW_KEYS = set("123456jktTcvVgeoh?") | {"Enter", "Escape", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "PageUp", "PageDown",
                                        "Tab", "BackTab"}
-CONTROL_KEYS = {"q": "quit", "Q": "quit", "S": "engine start/stop", "s": "saving a report", "R": "starting a variant over", "L": "live",
-                "r": "making a variant", "N": "renaming", " ": "turning a variant on or off",
+CONTROL_KEYS = {"q": "quit", "Q": "quit", "S": "engine start/stop", "s": "saving a report", "L": "live",
+                "r": "renaming", " ": "turning a variant on or off",
                 "n": "making a variant", "D": "deleting"}
 # border hints whose key changes something: not drawn on the web (⏎ selects a variant: it only views)
-CONTROL_HINTS = {"r", "L", "R", "s", "S", "q", "space", "n", "D", "N"}
+CONTROL_HINTS = {"r", "L", "s", "S", "q", "space", "n", "D"}
 # what a hint on a border sends when clicked
 HINT_KEY = {"tab": "Tab", "any key": "Escape", "esc": "Escape", "↑↓": None, "←→": None, "⏎": "Enter"}
 
