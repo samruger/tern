@@ -1747,7 +1747,7 @@ class Screen:
 
     def footer(self, H: int, W: int) -> None:
         """Row H-2 is the bottom border of the lowest boxes. Zoomed, it carries the hints of the boxes not on
-        screen (so tab, ?, q... never go missing) at its right end, the variants' view the log's; a flash message
+        screen (so tab, ?, q... never go missing) at its right end, the variants' view only how to go back; a flash message
         goes at its left."""
         P = self.P
         flashing = bool(self.flash) and time.time() - self.flash_at < 8
@@ -1760,9 +1760,9 @@ class Screen:
         else:
             page_seg = ("esc", " back") if view == "page2" else ()
         paged = not flashing and bool(page_seg)
-        # the variants' view has no log box, so the log's hints (gate ... quit) are here; the dash's other keys are the
-        # dash's (they still work, and h lists them). A zoomed box hides every other, so then theirs move here
-        orphans = [] if self.overlay == "reports" else PANEL_KEYS["log"](self) if view == "page2" and not z else \
+        # the variants' view has its own hints and how to go back, not the dash's (those keys still work, and h lists
+        # them). A zoomed box hides every other, so then theirs move here
+        orphans = [] if self.overlay == "reports" or view == "page2" else \
             [k for name, fn in PANEL_KEYS.items() if name not in self.rects for k in fn(self)]
         width = lambda segs: sum(sum(map(len, seg)) + 3 for seg in segs) - 1
         for key in ORPHAN_DROP:                       # too many for the row: the least needed go first, tab last

@@ -1715,7 +1715,7 @@ class Pages(Rig, unittest.TestCase):
                 scr.scroll("log", 1)
             self.assertIsNone(scr.log_anchor)                                  # back to following new lines
 
-    def test_page2_bottom_row_has_only_its_own_hints(self):
+    def test_the_variants_bottom_row_has_only_how_to_go_back(self):
         from tern import themes
         with tempfile.TemporaryDirectory() as d:
             k, scr = self.setup(d)
@@ -1725,9 +1725,7 @@ class Pages(Rig, unittest.TestCase):
                 scr.flash = ""; self.size(H, W)
                 row = "".join(scr.s.ch[H - 2])
                 self.assertIn("esc back", row, (W, row))
-                for log in ("gate", "settings", "reports", "help", "quit"):     # the log box is page 1's, its keys are here
-                    self.assertIn(log, row, (W, row))
-                for page1 in ("tab next coin", "chart", "View", "Live", "Restart", "theme"):   # page 1's, not repeated
+                for page1 in ("tab next coin", "chart", "View", "Live", "Restart", "theme", "settings", "reports", "help", "quit"):   # page 1's, not repeated
                     self.assertNotIn(page1, row, (W, row))
 
 
