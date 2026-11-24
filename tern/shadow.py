@@ -199,6 +199,7 @@ class Shadow:
         self.fees: dict[str, float] = {}           # variant -> entry fees paid on settled rows
         self.dirty = False
         self.changes = 0                           # goes up whenever rows are added or settled: summaries cache on it
+        self._today: tuple = (None, {})            # ((changes, day), variant -> today()) since then
         self._sums: tuple[int, dict] = (-1, {})    # (changes, (variant, settings version) -> its summary row) since then
         try:
             with open(self.open_path) as fh:
@@ -279,6 +280,19 @@ class Shadow:
         return start + sum(a[0] for a in self.agg.get(name, {}).values()) - \
             sum(r["n"] * r["cost"] + r["fee"] for r in self.rows if r["v"] == name)
 
+    def today(self, name: str, now: float) -> list:
+        """[P&L, entries, won] of a variant's hours that have settled since local midnight."""
+        t = time.localtime(now)
+        start = now - (t.tm_hour * 3600 + t.tm_min * 60 + t.tm_sec)
+        key = (self.changes, t.tm_yday)
+        if self._today[0] != key:
+            self._today = (key, {})
+        have = self._today[1]
+        if name not in have:
+            ev = [a for e, a in self.agg.get(name, {}).items() if self.closes.get(e, 0.0) > start]
+            have[name] = [round(sum(a[0] for a in ev), 2), sum(a[2] for a in ev), sum(a[3] for a in ev)]
+        return have[name]
+
     def stopped(self, name: str, now: float) -> bool:
         """Past its daily loss limit: no new entries until local midnight."""
         d = self.days.get(name)
@@ -321,7 +335,7 @@ class Shadow:
             return []
         done.append(slot); self.dirty = True; self.changes += 1
         series = event.split("-", 1)[0]
-        bought: dict[str, int] = {}
+        bought: dict[str, list] = {}               # variant -> [strikes, contracts, what they cost]
         for name in running(self.own):
             lo, hi, cap, mins, spread, coins, mvol = params(name, S, self.own)
             size, hour = size_of(name, S, self.own)
@@ -356,8 +370,10 @@ class Shadow:
                 self.rows.append({"v": name, "ts": now, "event": event, "close": close, "ticker": s["ticker"],
                                   "side": s["side"], "n": n, "cost": unit, "fee": fee, "slot": slot, "pnl": None,
                                   **({} if sv is None else {"sv": sv})})
-                bought[name] = bought.get(name, 0) + 1
-        return [f"paper: {slot}m slot on {event} bought · " + " · ".join(f"{n} {k}" for n, k in bought.items())] if bought else []
+                b = bought.setdefault(name, [0, 0.0, 0.0])
+                b[0] += 1; b[1] += n; b[2] += n * unit
+        return [f"paper: {slot}m slot on {event} bought · " +
+                " · ".join(f"{n} {k} ({c:g} for ${cost:,.2f})" for n, (k, c, cost) in bought.items())] if bought else []
 
     # ------------------------------------------------------------ settlement
     def pending(self, now: float) -> dict[str, float]:

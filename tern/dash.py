@@ -371,7 +371,8 @@ HELP_BOXES = [
     ("⁴", "book", "the selected variant's money and record, its open positions, and what settled and was filled; (V) switches paper / live"),
     ("⁵", "variants", "each variant's hours, entries, P&L, ¢ a contract, win rate, t, and gate progress (yellow: still short); "
                       "● selected, L live's, + one you made; the highlighted one's P&L by hour below"),
-    ("⁶", "log", "what the engine did, newest at the bottom; scroll back with ↑↓"),
+    ("⁶", "log", "what the engine did, newest at the bottom; scroll back with ↑↓. On its right: the coins, the selected variant's "
+                  "slots, warnings, and every variant's day"),
     ("⁷", "gate", "what the selected variant still needs to go live, caps, and every variant side by side"),
     ("⁸", "reports", "every record: worked out now, or saved"),
     ("⁹", "settings", "gate, alerts, web, what the log shows"),
@@ -393,7 +394,9 @@ OVERLAY_TOKENS = re.compile(
     r"|(?P<path>~/\S+|\bKALSHI_KEY_(?:ID|FILE)\b|\blive\.\w+)")
 SHADOW_LINE = re.compile(r"^shadow: ([A-Z0-9]+)-(\S+) settled · (.+)$")       # the engine's line after a coin's hour settles
 SLOT_LINE = re.compile(r"^paper: (\d+m) slot on ([A-Z0-9]+)-(\S+) bought · (.+)$")   # and after a slot
-SHADOW_CELL = re.compile(r"^(\S+) ([+-]\d[\d,]*\.\d\d|\d+)$")
+# one variant in them: "base +224.70 (3/4 -18.44)": its record, and of that event won/entries and P&L; "base 4 (20 for
+# $17.20)": strikes, contracts and their cost (neither has what is in () before 2026-11-24)
+SHADOW_CELL = re.compile(r"^(\S+) ([+-]\d[\d,]*\.\d\d|\d+)(?: \((\d+)/(\d+) ([+-][\d,]+\.\d\d)\))?(?: \((\d+) for \$([\d,]+\.\d\d)\))?$")
 
 # the help's key legend: two columns of (section, [(keys, what they do)])
 HELP_KEYS = [
@@ -1513,35 +1516,39 @@ class Screen:
     def log_panel(self, y, x, h, w) -> None:
         P = self.P
         self.box(y, x, h, w, "log", self.P.border("log"), PANEL_KEYS["log"](self))
-        logs = self.log_rows(self.logs_shown())
+        side = self.log_side(w)
+        w -= side                                                  # the log itself is on the left
+        self.split(y, x, h, "log", w)
+        self.pane(y + 1, x + w + 2, h - 2, side - 4, self.log_summary(side - 4, h - 2))
+        logs = self.log_rows(self.logs_shown(), w - 1)
         rows = h - 2
         end = self.log_end(logs, rows)
-        saved, self.clip = self.clip, x + w - 2
+        saved, self.clip = self.clip, x + w - 1
         shown = logs[max(0, end - rows):end]
+        roles = {"variant": (P.c("variant"), True), "count": (WHITE, True), "num": (WHITE, False), "money": (P.c("value"), False),
+                 "note": (P.grey, False), "sep": (P.c("sep"), False), "head": (P.grey, False)}
         for j, (ts, lvl, msg, sub, cells) in enumerate(shown):
             yy = y + 1 + j
             age = (len(shown) - 1 - j) / max(1, rows - 1)          # 0 for the bottom (newest) line
-            cx = x + 19                                            # under what follows "shadow: "
+            cx = x + 13                                            # a table, and a line's later rows, are under its text
             for text, role in cells or []:
-                c = {"variant": P.c("variant"), "count": WHITE, "note": P.grey, "sep": P.c("sep")}.get(role) or \
-                    {"+": GREEN, "-": RED}.get(text.lstrip()[:1], WHITE)
-                self.put(yy, cx, text, P(c, bold=role in ("variant", "count", "signed"))); cx += len(text)
-            if sub:                                                # a continuation row: no time, no text
-                continue
-            self.put(yy, x + 2, time.strftime("%H:%M:%S", time.localtime(ts)), P(P.pick("fade_ts", age)))
-            self.put(yy, x + 10, LOG_MARK.get(lvl, " "), P(LOG_BASE.get(lvl, WHITE), bold=True))
-            cx = x + 11
-            for text, attr in self.log_spans(msg, lvl, P.pick("fade_txt", age)):
+                c, bold = roles.get(role) or ({"+": GREEN, "-": RED}.get(text.lstrip()[:1], WHITE), True)
+                self.put(yy, cx, text, P(c, bold=bold)); cx += len(text)
+            if sub == 0:
+                self.put(yy, x + 2, time.strftime("%H:%M:%S", time.localtime(ts)), P(P.pick("fade_ts", age)))
+                self.put(yy, x + 10, LOG_MARK.get(lvl, " "), P(LOG_BASE.get(lvl, WHITE), bold=True))
+                cx = x + 11
+            if sub and msg:                                        # (a later row's first word is no book's name)
+                msg, cx = " " + msg, cx - 1
+            for text, attr in self.log_spans(msg, lvl, P.pick("fade_txt", age)) if msg else []:
                 self.put(yy, cx, text, attr); cx += len(text)
-                if cx >= x + w - 2:
+                if cx >= x + w:
                     break
         self.clip = saved
         if end - rows > 0:
-            self.put(y, x + w - 2, "▲", P(YELLOW))
+            self.put(y, x + w - 1, "▲", P(YELLOW))
         if end < len(logs):
-            note = f"{len(logs) - end} newer "
-            self.put(y + h - 1, x + w - 2 - len(note), note, P(YELLOW))
-            self.put(y + h - 1, x + w - 2, "▼", P(YELLOW))
+            self.put(y + h - 1, x + 3, f" {len(logs) - end} newer ▼ ", P(YELLOW))
 
     def log_spans(self, msg: str, lvl: str, fade: int = WHITE) -> list[tuple[str, int]]:
         """Split one log line into colored pieces: book names, tickers, YES/NO, signed money, slots, numbers."""
@@ -1592,14 +1599,15 @@ class Screen:
             out.append((msg[i:], plain))
         return out
 
-    def log_rows(self, logs: list) -> list[tuple]:
-        """The log box's screen rows, (ts, level, text, sub, cells). The engine writes a line a coin when an hour settles
-        ("shadow: EV settled · base +1.20 ...", every variant's record) and after a slot ("paper: 25m slot on EV bought ·
-        base 5 ..."): an hour's, and a slot's, are one entry, where its last line is. Under it is a row for each variant the
-        hour changed (by how much, and its record now) or that bought (how many strikes, and of what): sub 1, 2..., no text,
-        cells of (text, role). Every other line is one row: sub 0, no cells."""
+    def log_rows(self, logs: list, w: int = 200) -> list[tuple]:
+        """The log box's screen rows, (ts, level, text, sub, cells), in w columns. The engine writes a line a coin when an
+        hour settles ("shadow: EV settled · base +1.20 (3/4 -18.44) ...") and after a slot ("paper: 25m slot on EV bought ·
+        base 4 (20 for $17.20) ..."): an hour's, and a slot's, are one entry, where its last line is. Under it is a table, a
+        row for each variant the hour settled or that bought, with a blank line around it: sub 1, 2..., no text, cells of
+        (text, role). Any other line is as many rows as it needs, those after the first with sub 1, 2... and no time."""
         split = lambda text: [m for m in map(SHADOW_CELL.match, text.split(" · ")) if m]
         coin = cfgmod.coin
+        num = lambda v: float(v.replace(",", ""))
         groups: dict[tuple, dict] = {}                           # (slot or "", hour) -> its lines' last place, coins, cells
         of: dict[int, dict] = {}                                 # line -> its group
         for n, (ts, lvl, msg) in enumerate(logs):
@@ -1612,45 +1620,125 @@ class Screen:
                 g = of[n] = groups.setdefault((slot, hour), {"slot": slot, "cells": {}, "coins": {}})
                 g["at"] = n
                 g["coins"][coin(series)] = None
-                for c in cells:                                  # a variant's record as its last line has it; a buy by coin
-                    g["cells"].setdefault(c.group(1), {})[coin(series) if slot else ""] = c.group(2)
+                for c in cells:                                  # by variant, then by coin; "": the record as the last line has it
+                    by = g["cells"].setdefault(c.group(1), {})
+                    by[""] = c
+                    by[coin(series)] = c
         order = {v["name"]: k for k, v in enumerate(self.st.get("variants") or [])}   # as the variants box lists them
         out: list[tuple] = []
+
+        def gap() -> None:
+            if out and (out[-1][2] or out[-1][4]):
+                out.append((out[-1][0], out[-1][1], "", out[-1][3] + 1, []))
         before: dict | None = None                               # the records as the hour before left them
         for n, (ts, lvl, msg) in enumerate(logs):
             g = of.get(n)
             if not g:
-                out.append((ts, lvl, msg, 0, None)); continue
+                one = len(msg) <= w - 11
+                for k, t in enumerate([msg] if one else textwrap.wrap(msg, max(20, w - 13)) or [""]):
+                    out.append((ts, lvl, t, k, None))
+                continue
             if g["at"] != n:                                     # shown where the group's last line is
                 continue
-            rows: list[list[tuple[str, str]]] = []
+            table: list[list[tuple[str, str]]] = []
+            who = sorted(g["cells"].items(), key=lambda x: order.get(x[0], len(order)))
             if g["slot"]:
-                head = f"paper: {g['slot']} slot bought " + " ".join(g["coins"])
-                for name, by in sorted(g["cells"].items(), key=lambda x: order.get(x[0], len(order))):
-                    row = [(self.vn(name), "variant"), (f"{sum(map(int, by.values()))}", "count")]
-                    for k, (c, q) in enumerate(by.items()):
-                        row += ([(" · ", "sep")] if k else []) + [(f"{c} {q}" if len(by) > 1 else c, "note")]
-                    rows.append(row)
+                heads = ["variant", "buys", "contracts", "cost", "avg", "coins"]
+                buys = spent = 0
+                for name, by in who:
+                    cs = {c: m for c, m in by.items() if c}
+                    k = sum(int(m.group(2)) for m in cs.values())
+                    full = all(m.group(6) for m in cs.values())
+                    cn, cost = (sum(num(m.group(x)) for m in cs.values()) if full else None for x in (6, 7))
+                    buys += k; spent = None if cost is None or spent is None else spent + cost
+                    row = [(self.vn(name), "variant"), (f"{k}", "count"), (f"{cn:g}" if full else "", "num"),
+                           (f"${cost:,.2f}" if full else "", "money"), (f"{cost / cn * 100:.0f}¢" if full and cn else "", "num")]
+                    coins: list[tuple[str, str]] = []
+                    for c, m in cs.items():
+                        coins += ([(" · ", "sep")] if coins else []) + [(f"{c} {m.group(2)}" if len(cs) > 1 else c, "note")]
+                    table.append(row + coins)
+                head = f"paper: {g['slot']} slot bought " + " ".join(g["coins"]) + f" · {buys} buy{'' if buys == 1 else 's'}" + (f" · ${spent:,.2f}" if spent else "")
             else:
-                now = {name: by[""] for name, by in g["cells"].items()}
-                num = lambda v: float(v.replace(",", ""))
-                for name, v in now.items():
-                    d = None if before is None else round(num(v) - num(before.get(name, "0")), 2)
-                    if d != 0:
-                        rows.append([(self.vn(name), "variant"), ("" if d is None else f"{d:+,.2f}", "signed"),
-                                     ("now", "note"), (v, "signed")])
-                head = "shadow: settled " + " ".join(g["coins"]) + ("" if rows else " · no variant changed")
+                heads = ["variant", "won", "this hour", "record"]
+                now = {name: by[""].group(2) for name, by in who}
+                won = all_ = 0
+                for name, by in who:
+                    cs = [m for c, m in by.items() if c and m.group(3)]
+                    d = round(sum(num(m.group(5)) for m in cs), 2) if cs else \
+                        None if before is None else round(num(now[name]) - num(before.get(name, "0")), 2)
+                    if not cs and (d == 0 or any(m.group(3) for b in g["cells"].values() for m in b.values())):
+                        continue                                 # it had nothing in this hour
+                    a, b = sum(int(m.group(3)) for m in cs), sum(int(m.group(4)) for m in cs)
+                    won += a; all_ += b
+                    table.append([(self.vn(name), "variant"), (f"{a} of {b}" if cs else "", "num"), ("" if d is None else f"{d:+,.2f}", "signed"),
+                                  (now[name], "signed")])
+                head = "shadow: settled " + " ".join(g["coins"]) + (f" · {won} of {all_} won" if all_ else "" if table else " · no variant changed")
                 before = {**(before or {}), **now}
+            gap()
             out.append((ts, lvl, head, 0, None))
-            wide = [max(len(r[c][0]) for r in rows) if rows else 0 for c in range(2 if g["slot"] else 4)]   # these line up
-            for k, row in enumerate(rows, 1):
-                cells = []
-                for c, (text, role) in enumerate(row):
-                    if c < len(wide):
-                        text = f"{text:<{wide[c]}}" if role in ("variant", "note") else f"{text:>{wide[c]}}"
-                        text = text + ("   " if c < 2 else " ") if wide[c] else ""
-                    cells.append((text, role))
-                out.append((ts, lvl, "", k, cells))
+            keep = [c for c in range(len(heads)) if c > 4 or any(r[c][0] for r in table)]   # (older lines have no contracts, no won)
+            wide = {c: max(len(heads[c]), *(len(r[c][0]) for r in table)) for c in keep if c < 5 and table}
+            pad = lambda c, t: (f"{t:<{wide[c]}}" if c == 0 else f"{t:>{wide[c]}}") + ("   " if w >= 85 else " ")
+            if table:
+                out.append((ts, lvl, "", 1, [(pad(c, heads[c]) if c < 5 else heads[c], "head") for c in keep]))
+            for k, row in enumerate(table, 2):
+                out.append((ts, lvl, "", k, [(pad(c, row[c][0]), row[c][1]) for c in keep if c < 5] + row[5:]))
+            gap()
+        if out and not out[-1][2] and not out[-1][4]:
+            out.pop()
+        return out
+
+    def log_side(self, w: int) -> int:
+        """How much of the log box the summary on its right takes."""
+        return max(38, min(58, w * 37 // 100))
+
+    def log_summary(self, w: int, h: int) -> list:
+        """The right of the log box: the coins, the selected variant's slots, what has come up, and every variant's day."""
+        P, st, now = self.P, self.st, time.time()
+        head = lambda t, note="": [(t, P(P.c("head"), bold=True)), (note, P(P.grey))]
+        out: list = [head("COINS", "  price · 1 hour · moves")]
+        for series, prod in cfgmod.SERIES.items():
+            sp = (st.get("spot") or {}).get(prod) or {}
+            px_, mins = sp.get("now"), sp.get("min") or []
+            if px_ is None:
+                continue
+            past = next((p for t, p in reversed(mins) if t + 60 <= now - 3600), None)
+            chg = px_ / past - 1 if past else None
+            v = self.vols([series])[series]
+            out.append([(f"{cfgmod.coin(series):<5}", P(P.c("sym"), bold=True)), (f"{px(px_):>9}  ", P(WHITE)),
+                        (f"{chg:+.2%}".rjust(7) if chg is not None else " " * 7, P(GREEN if (chg or 0) >= 0 else RED)),
+                        (f"  {v:4.1f} bp" if v is not None else "", P(P.grey))])
+        S, ev = self.strat() or {}, (st.get("events") or {}).get(self.series) or {}
+        left = (ev.get("close") or 0) - now
+        if S.get("minutes") and left > 0:
+            line, nxt = [], max([m for m in S["minutes"] if m * 60 < left], default=None)
+            for m in sorted(S["minutes"], reverse=True):
+                done = m * 60 >= left
+                line += [(f":{60 - m:02g} " if 0 < m < 60 else f"{m:g}m ", P(P.c("slot"), bold=m == nxt)),
+                         ("✓  " if done else f"in {clock(left - m * 60)}  " if m == nxt else "   ", P(GREEN if done else WHITE if m == nxt else P.grey))]
+            out += [[], head("SLOTS", f"  {self.vn(self.variant)} · the hour closes in {clock(left)}"), line]
+        t = time.localtime(now)
+        start = now - (t.tm_hour * 3600 + t.tm_min * 60 + t.tm_sec)
+        bad = [l for l in st.get("logs") or [] if l[0] >= start and l[1] in ("warn", "error")]
+        if bad:
+            out += [[], head("WARNINGS", f"  {len(bad)} since midnight · the last at {time.strftime('%H:%M', time.localtime(bad[-1][0]))}")]
+            out += [[(x, P(YELLOW))] for x in textwrap.wrap(bad[-1][2], max(10, w))[:2]]
+        rows = [(v, v["today"]) for v in st.get("variants") or [] if v.get("today") and (v["today"][1] or v.get("open"))]
+        if rows:
+            rows.sort(key=lambda r: -r[1][0])
+            n = h - len(out) - 3
+            most = max([abs(d[0]) for _, d in rows] + [0.01])
+            nw = max(7, *(len(self.vn(v["name"])) for v, _ in rows))
+            bar = max(0, w - nw - 31)
+            out += [[], head("TODAY", "  settled since midnight, best first"),
+                    [(f"{'variant':<{nw}} {'P&L':>9} {'won':>9} {'open':>5}", P(P.grey, bold=True))]]
+            for v, (pnl, entries, won) in rows[:max(1, n - (len(rows) > n))]:
+                on = v["name"] == self.variant
+                out.append([(f"{self.vn(v['name']):<{nw}} ", P(P.c("key") if on else P.c("variant"), bold=True)),
+                            (f"{pnl:>+9.2f} ", P(GREEN if pnl >= 0 else RED, bold=True)), (f"{f'{won} of {entries}' if entries else '-':>9} ", P(WHITE)),
+                            (f"{v.get('open', 0):>5}   ", P(P.grey)), ("■" * int(abs(pnl) / most * bar + 0.5), P(GREEN if pnl >= 0 else RED))])
+            if len(rows) > n:
+                out.append([(f"and {len(rows) - max(1, n - 1)} more", P(P.grey))])
         return out
 
     def log_end(self, logs: list, rows: int) -> int:
@@ -1702,7 +1790,7 @@ class Screen:
             self.rep_off = max(0, min(self.rep_len - self.rep_room, self.rep_off + d))
         elif name == "log":
             r = self.rects.get("log")
-            logs = self.log_rows(self.logs_shown())
+            logs = self.log_rows(self.logs_shown(), (r[3] - self.log_side(r[3]) if r else 100) - 1)
             rows = r[2] - 2 if r else 1
             end = max(min(rows, len(logs)), min(len(logs), self.log_end(logs, rows) + 3 * d))
             self.log_anchor = None if end >= len(logs) else (logs[end - 1][0], logs[end - 1][3])

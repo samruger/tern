@@ -850,8 +850,10 @@ class Desk:
             if not self.shadow.needs(ev):            # rows Kalshi has not decided yet are asked about again:
                 del self.closed[ev]                  # dropping the event would leave them open until a restart
             if n:
+                hour = lambda name: self.shadow.agg.get(name, {}).get(ev)   # each one's record now and, of this event, won/entries P&L
                 self.log("shadow: " + ev + " settled · " + " · ".join(
-                    f"{r['name']} {r['pnl']:+.2f}" for r in self.shadow.summary() if r["entries"]))
+                    f"{r['name']} {r['pnl']:+.2f}" + (f" ({a[3]}/{a[2]} {a[0]:+.2f})" if (a := hour(r["name"])) else "")
+                    for r in self.shadow.summary() if r["entries"]))
         self.shadow.save()
 
     # ------------------------------------------------------------ settlement
@@ -1133,7 +1135,7 @@ class Desk:
         gate = gate or self.gate()
         shadow = self.shadow.summary()
         variants = [{**r, **self._vinfo(r["name"], self.cfg, self.shadow), "live": r["name"] == self.cfg.live.variant,
-                     "gate": self.checks(r["name"], r)} for r in shadow]
+                     "today": self.shadow.today(r["name"], now), "gate": self.checks(r["name"], r)} for r in shadow]
 
         def strat(name: str) -> dict:
             return self._strat(name, self.cfg.strategy, self.shadow.own)

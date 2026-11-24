@@ -1783,6 +1783,9 @@ class Tabs(Rig, unittest.TestCase):
                     self.assertIn("in ", row)                                   # when the next slot is
                     self.assertIn("closes", row)
 
+    def flat(self, rows, ts):
+        return ["".join(t for t, _ in r[4]).rstrip() for r in rows if r[0] == ts and r[3] and r[4]]
+
     def test_an_hours_shadow_lines_are_one_entry(self):
         with tempfile.TemporaryDirectory() as d:
             k, scr = self.setup(d)
@@ -1790,35 +1793,82 @@ class Tabs(Rig, unittest.TestCase):
             self.sync()
             line = lambda coin, hour, *v: f"shadow: KX{coin}D-{hour} settled · " + " · ".join(
                 f"{n} {x}" for n, x in zip(("base", "band90", "multi", "calm"), v))
-            logs = [[1.0, "info", line("BTC", "H1", "+10.00", "+5.00", "-1,130.00", "+1.00")],
+            logs = [[1.0, "info", line("BTC", "H1", "+10.00", "+5.00", "-1,130.00", "+1.00")],   # (as they were before 2026-11-24)
                     [2.0, "info", line("ETH", "H1", "+10.00", "+5.00", "-1,132.43", "+1.00")],
                     [3.0, "info", "paper: something between"],
                     [4.0, "info", line("BTC", "H2", "+8.50", "+5.00", "-1,132.43", "+1.00") + " · late +2.00"],
                     [4.5, "info", "live: a line in the middle"],
                     [5.0, "info", line("ETH", "H2", "+8.50", "+5.00", "-1,100.00", "+1.00") + " · late +2.00"],
                     [6.0, "info", line("BTC", "H3", "+8.50", "+5.00", "-1,100.00", "+1.00")],
+                    [6.5, "info", line("BTC", "H4", "+9.50 (2/2 +1.00)", "+5.00", "-1,150.00 (3/5 -20.00)", "+1.00")],
+                    [6.7, "info", line("ETH", "H4", "+9.50", "+5.00", "-1,140.00 (4/5 +10.00)", "+1.00")],
                     [7.0, "info", "shadow: odd line · no cells"]]
             rows = scr.log_rows(logs)
             self.assertEqual([(r[0], r[2], r[3]) for r in rows if not r[3]], [
                 (2.0, "shadow: settled BTC ETH", 0), (3.0, "paper: something between", 0), (4.5, "live: a line in the middle", 0),
                 (5.0, "shadow: settled BTC ETH", 0), (6.0, "shadow: settled BTC · no variant changed", 0),
-                (7.0, "shadow: odd line · no cells", 0)])
-            cells = lambda ts: [[c[0].strip() for c in r[4] if c[0] != "now "] for r in rows if r[0] == ts and r[3]]
-            self.assertEqual(cells(2.0), [["base", "", "+10.00"], ["high favs", "", "+5.00"], ["multi", "", "-1,132.43"],
-                                          ["calm", "", "+1.00"]])              # nothing before it to compare with
-            self.assertEqual(cells(5.0), [["base", "-1.50", "+8.50"], ["multi", "+32.43", "-1,100.00"], ["late", "+2.00", "+2.00"]])
-            self.assertEqual(len({len("".join(c[0] for c in r[4])) for r in rows if r[0] == 5.0 and r[3]}), 1)   # aligned
+                (6.7, "shadow: settled BTC ETH · 9 of 12 won", 0), (7.0, "shadow: odd line · no cells", 0)])
+            self.assertEqual([x.split() for x in self.flat(rows, 2.0)[1:]], [["base", "+10.00"], ["high", "favs", "+5.00"],
+                                                                              ["multi", "-1,132.43"], ["calm", "+1.00"]])   # nothing before it
+            self.assertEqual([x.split() for x in self.flat(rows, 5.0)], [["variant", "this", "hour", "record"], ["base", "-1.50", "+8.50"],
+                                                                          ["late", "+2.00", "+2.00"], ["multi", "+32.43", "-1,100.00"]])
+            self.assertEqual([x.split() for x in self.flat(rows, 6.7)], [["variant", "won", "this", "hour", "record"],
+                             ["base", "2", "of", "2", "+1.00", "+9.50"], ["multi", "7", "of", "10", "-10.00", "-1,140.00"]])
+            for ts in (2.0, 5.0, 6.7):
+                self.assertEqual(len({len(x) for x in self.flat(rows, ts)}), 1)   # aligned
+            blank = [k for k, r in enumerate(rows) if r[3] and not r[2] and not r[4]]
+            self.assertTrue(blank and all(b - a > 1 for a, b in zip(blank, blank[1:])) and blank[-1] < len(rows) - 1)   # one at a time
             self.press("6")
-            for ts, lvl, msg in logs[:6]:
+            for ts, lvl, msg in logs[3:]:
                 k.log(msg)
             scr.flash = ""; self.sync()
             text = self.text()
-            self.assertEqual(text.count("shadow: settled BTC ETH"), 2)
-            self.assertRegex(text, r"base +-1\.50   now +\+8\.50"); self.assertRegex(text, r"multi +\+32\.43   now -1,100\.00")
-            head = next(l for l in text.splitlines() if "shadow: settled" in l)
-            self.assertIn("now", text)
-            under = text.splitlines()[text.splitlines().index(head) + 1]
-            self.assertEqual(len(under) - len(under[1:].lstrip()), head.index("settled"))
+            self.assertIn("shadow: settled BTC ETH · 9 of 12 won", text)
+            self.assertRegex(text, r"multi +7 of 10 +-10\.00 +-1,140\.00")
+
+    def test_a_long_line_wraps_under_its_text(self):
+        with tempfile.TemporaryDirectory() as d:
+            k, scr = self.setup(d, 30, 100)
+            msg = "new variant multi-5, from multi-2: max spread 9¢ → 5¢, coins BTC ETH SOL XRP → BTC ETH SOL, most an hour $200 → $30"
+            rows = scr.log_rows([[1.0, "cmd", msg]], 60)
+            self.assertGreater(len(rows), 2); self.assertEqual(" ".join(r[2] for r in rows), msg)
+            self.assertEqual([r[3] for r in rows], list(range(len(rows))))
+            self.press("6"); k.log(msg, "cmd"); self.sync()
+            lines = [l for l in self.text().splitlines()]
+            at = next(n for n, l in enumerate(lines) if "new variant multi-5" in l)
+            self.assertRegex(lines[at + 1], r"^│ {12}\S")                       # no time, under the text
+            self.assertEqual(len({l[scr.rects["log"][3] - scr.log_side(100)] for l in lines[1:28]}), 1)   # nothing crosses the line
+
+    def test_the_logs_right_side(self):
+        import time
+        with tempfile.TemporaryDirectory() as d:
+            for H, W in ((30, 100), (32, 148), (44, 200)):
+                k, scr = self.setup(d, H, W)
+                now = time.time()
+                for n, pnl in (("base", 5.0), ("multi", -7.5)):
+                    k.shadow._count({"v": n, "event": f"KXBTCD-{n}", "pnl": pnl, "n": 5, "fee": 0, "close": now, "ticker": "KXBTCD-E-T1", "side": "yes",
+                                     "cost": 0.8, "ts": now})
+                k.log("Wi-Fi is out of date", "warn")
+                self.sync(); scr.raw["spot"] = {"BTC-USD": {"now": 60000.0, "min": [[now - 60 * i, 59400.0] for i in range(90, 0, -1)]}}
+                scr.apply_selected(); scr.read = lambda: None; self.press("6"); text = self.text()
+                for want in ("COINS", "BTC", "+1.01%", "0.0 bp", "TODAY", "WARNINGS", "Wi-Fi is out of date"):
+                    self.assertIn(want, text, (H, W))
+                self.assertRegex(text, r"base +\+5\.00 +1 of 1"); self.assertRegex(text, r"multi +-7\.50 +0 of 1")
+                self.assertLess(text.index("+5.00"), text.index("-7.50"))       # best first
+                for r in scr.s.ch[1:H - 2]:
+                    self.assertIn("".join(r)[-1], "│")
+
+    def test_today_is_what_settled_since_midnight(self):
+        import time
+        with tempfile.TemporaryDirectory() as d:
+            k = self.desk(d)
+            t = time.localtime(); noon = time.mktime((t.tm_year, t.tm_mon, t.tm_mday, 12, 0, 0, 0, 0, -1))
+            row = lambda ev, close, pnl: {"v": "base", "event": ev, "pnl": pnl, "n": 1, "fee": 0, "close": close}
+            k.shadow._count(row("A", noon - 86400, 9.0)); k.shadow._count(row("B", noon - 43200, 4.0))   # yesterday, and its last hour
+            k.shadow._count(row("C", noon - 3600, -2.0)); k.shadow._count(row("C", noon - 3600, 3.0))
+            self.assertEqual(k.shadow.today("base", noon), [1.0, 2, 1])
+            k.shadow._count(row("D", noon, 1.0)); self.assertEqual(k.shadow.today("base", noon + 60), [2.0, 3, 2])
+            self.assertEqual(k.shadow.today("base", noon + 86400), [0, 0, 0])   # tomorrow
 
     def test_a_slots_lines_are_one_entry(self):
         from tern import dash
@@ -1826,23 +1876,32 @@ class Tabs(Rig, unittest.TestCase):
             k, scr = self.setup(d)
             k._command({"op": "rename", "variant": "band90", "name": "high favs"})
             self.sync()
-            logs = [[1.0, "info", "paper: 25m slot on KXBTCD-H1 bought · base 5 · band90 12 · multi 3"],
-                    [1.1, "info", "paper: 25m slot on KXETHD-H1 bought · cap1 2 · multi 4"],
-                    [1.2, "info", "paper: 20m slot on KXBTCD-H1 bought · base 1"],      # another slot
+            logs = [[1.0, "info", "paper: 25m slot on KXBTCD-H1 bought · base 5 (25 for $21.25) · band90 12 (60 for $1,055.20) · multi 3 (15 for $12.00)"],
+                    [1.1, "info", "paper: 25m slot on KXETHD-H1 bought · cap1 2 (10 for $8.00) · multi 4 (20 for $18.00)"],
+                    [1.2, "info", "paper: 20m slot on KXBTCD-H1 bought · base 1"],      # another slot, as before 2026-11-24
                     [9.0, "info", "paper: 25m slot on KXBTCD-H2 bought · base 2"],      # another hour
                     [9.5, "info", "paper: 25m slot on KXBTCD-H2 bought nothing it should"]]
             self.assertTrue(all(dash.TRADE_LINE.match(l[2]) for l in logs[:4]))   # each one of the log filter's trades
             rows = scr.log_rows(logs)
             self.assertEqual([(r[0], r[2]) for r in rows if not r[3]], [
-                (1.1, "paper: 25m slot bought BTC ETH"), (1.2, "paper: 20m slot bought BTC"), (9.0, "paper: 25m slot bought BTC"),
-                (9.5, "paper: 25m slot on KXBTCD-H2 bought nothing it should")])
-            self.assertEqual(["".join(t for t, _ in r[4]) for r in rows if r[0] == 1.1 and r[3]],
-                             ["base         5   BTC", "high favs   12   BTC", "cap1         2   ETH", "multi        7   BTC 3 · ETH 4"])
+                (1.1, "paper: 25m slot bought BTC ETH · 26 buys · $1,114.45"), (1.2, "paper: 20m slot bought BTC · 1 buy"),
+                (9.0, "paper: 25m slot bought BTC · 2 buys"), (9.5, "paper: 25m slot on KXBTCD-H2 bought nothing it should")])
+            self.assertEqual([x.split() for x in self.flat(rows, 1.1)], [
+                ["variant", "buys", "contracts", "cost", "avg", "coins"], ["base", "5", "25", "$21.25", "85¢", "BTC"],
+                ["high", "favs", "12", "60", "$1,055.20", "1759¢", "BTC"], ["cap1", "2", "10", "$8.00", "80¢", "ETH"],
+                ["multi", "7", "35", "$30.00", "86¢", "BTC", "3", "·", "ETH", "4"]])
+            self.assertEqual([x.split() for x in self.flat(rows, 1.2)], [["variant", "buys", "coins"], ["base", "1", "BTC"]])
             self.press("6")
             for n in range(30):                                                # more than the box holds
-                k.log(f"paper: 25m slot on KXBTCD-E{n} bought · base 5 · band90 12 · cap1 1 · late 3")
+                k.log(f"paper: 25m slot on KXBTCD-E{n} bought · base 5 (25 for $21.25) · band90 12 (60 for $55.00) · cap1 1 (5 for $4.00)")
             self.sync()
-            self.assertIn("high favs   12   BTC ", self.text())
+            self.assertRegex(self.text(), r"high favs +12 +60 +\$55\.00 +92¢ +BTC")
+            for sh in (k.shadow,):                                              # and the engine writes them so
+                import time
+                now = time.time()
+                [note] = sh.step("KXBTCD-N1", now + 25 * 60 - 1, [{"ticker": "KXBTCD-N1-T1", "floor_strike": 1.0, "yes_bid_dollars": "0.79", "yes_ask_dollars": "0.80",
+                                 "yes_bid_size_fp": "500", "yes_ask_size_fp": "500"}], k.cfg.strategy, now, paper=1000.0)
+                self.assertIn("base 1 (5 for $4.00)", note); self.assertTrue(dash.SLOT_LINE.match(note))
             for r in scr.s.ch:                                                  # nothing runs past the box
                 self.assertIn("".join(r)[-1], "│╯╮ ")
             for _ in range(10):
@@ -1891,7 +1950,7 @@ class OwnVariants(Rig, unittest.TestCase):
             got = {r["v"]: r["n"] for r in k.shadow.rows}
             self.assertEqual([got[v] for v in ("base", "base-2", "base-3", "base-4")], [5, 2, 9, 12])   # $10 buys 12 at 81c
             self.assertTrue(any("25m slot" in m or "10m slot" in m for _, _, m in k.logs if m.startswith("paper:")))
-            self.assertTrue(any(" bought · base 1 · " in m and m.endswith("base-4 1") for _, _, m in k.logs))
+            self.assertTrue(any(" bought · base 1 (" in m and " · base-4 1 (" in m for _, _, m in k.logs))
 
     def test_paper_start_is_the_variants(self):
         with tempfile.TemporaryDirectory() as d:
