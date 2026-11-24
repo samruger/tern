@@ -44,7 +44,7 @@ NAMED = {"ArrowUp": curses.KEY_UP, "ArrowDown": curses.KEY_DOWN, "ArrowLeft": cu
          "Home": curses.KEY_HOME, "End": curses.KEY_END, "Tab": 9, "BackTab": curses.KEY_BTAB,
          "Enter": 10, "Escape": 27, "Backspace": 127}
 # keys that only change what this viewer sees: they reach the screen; everything else stops here
-VIEW_KEYS = set("1234567pjktTcvgeoh?") | {"Enter", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "PageUp", "PageDown",
+VIEW_KEYS = set("123456jktTcvVgeoh?") | {"Enter", "Escape", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "PageUp", "PageDown",
                                        "Tab", "BackTab"}
 CONTROL_KEYS = {"q": "quit", "Q": "quit", "S": "engine start/stop", "s": "saving a report", "R": "starting a variant over", "L": "live",
                 "r": "making a variant", "N": "renaming", " ": "turning a variant on or off",
@@ -131,8 +131,6 @@ def clean_prefs(d) -> dict:
     out = {}
     if not isinstance(d, dict):
         return out
-    if type(d.get("page")) is int and d["page"] in dash.PAGE_NAMES:
-        out["page"] = d["page"]
     for k, ok in (("series", cfgmod.SERIES), ("chart", dash.CHARTS)):
         if d.get(k) in ok:
             out[k] = d[k]
@@ -170,17 +168,13 @@ class WebScreen(dash.Screen):
             self.chart = d["chart"]
         if "variant" in d:
             self.variant = d["variant"]
-        if "page" in d:
-            self.page = d["page"]
-            self.focus = "ladder" if self.page == 1 else "variants"
         if "theme" in d:
             self.P.set_theme(d["theme"])
         if "log_filter" in d:
             self.log_filter, self.log_anchor = d["log_filter"], None
 
     def current_prefs(self) -> dict:
-        return {"page": self.page,
-                "series": self.series, "chart": self.chart, "theme": self.P.name,
+        return {"series": self.series, "chart": self.chart, "theme": self.P.name,
                 "variant": self.variant, "log_filter": self.log_filter}
 
     def save_prefs(self) -> None:                # kept by the browser (localStorage), not in dash.json

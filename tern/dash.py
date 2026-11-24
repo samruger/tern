@@ -299,7 +299,7 @@ HELP = [
     ("VARIANTS", "Each variant runs on paper side by side with the others, with its own record, its own cash and "
                  "real fees. The built-in ones:\n"
                  "{variants}\n"
-                 "Highlight one with ↑↓ (page 2: p) and press (enter) to select it, marked ●: the book, ladder, "
+                 "(v) opens them. Highlight one with ↑↓ and press (enter) to select it, marked ●: the book, ladder, "
                  "contract and gate show it. Selecting changes nothing that trades.\n"
                  "A variant holds everything about how it trades: its rule, contracts a strike, most an hour and paper start. "
                  "It never buys more than the cash it has left. Once saved it never changes. Make your own, marked +: (n) opens "
@@ -337,13 +337,12 @@ HELP_BOXES = [
     ("⁴", "book", "the selected variant's equity, P&L, cash, at risk, fees and record, then open"),
     ("", "", "  positions, settlements and fills; (v) switches paper / live"),
     ("⁵", "log", "what the engine did, newest at the bottom; scroll back with ↑↓"),
-    ("", "variants", "page 2: each variant's hours, entries, P&L, ¢ a contract, win rate, t,"),
+    ("", "variants", "(v) each variant's hours, entries, P&L, ¢ a contract, win rate, t,"),
     ("", "", "  and gate progress (yellow: still short); ● selected, L live's, + one you"),
     ("", "", "  made; the highlighted one's P&L by hour below"),
-    ("", "pages", "(p) flips page 1 (boxes 1-5) and page 2 (variants); \"page 1/2\" at the"),
-    ("", "", "  bottom right says which. A screen big enough for every box shows them"),
-    ("", "", "  all as one, numbered 1-6. A box's number zooms it"),
-    ("", "", "  to the whole screen; \"3 back\" on the bottom border: the same number restores"),
+    ("", "", "  (v) opens this list over the boxes above, (esc) goes back. A screen big enough"),
+    ("", "", "  for every box shows them all. A box's number zooms it to the whole screen;"),
+    ("", "", "  \"3 back\" on the bottom border: the same number, or esc, restores"),
     ("", "status", "bottom row: PAPER or LIVE, the coin's price and 1h change, the hourly event"),
     ("", "", "  and time to its close, rule ON/off with the next slot (+live when live"),
     ("", "", "  trades), stale data warnings (usually Wi-Fi), engine ok / stale / down"),
@@ -364,22 +363,21 @@ RULE_LINE = "\0rule"                              # placeholder text: draw_overl
 
 # the help's key legend: two columns of (section, [(keys, what they do)])
 HELP_KEYS = [
-    [("move", [("←→", "focus: the scrolling boxes on this page"),
+    [("move", [("←→", "focus: the scrolling boxes"),
                ("↑↓  j k", "scroll the focused box: the ladder picks a"),
                ("", "strike, variants highlights one"),
                ("PgUp PgDn", "ten steps at a time"),
                ("mouse wheel", "scroll the box under the pointer"),
                ("tab S-tab", "next / previous coin")]),
-     ("look", [("p", "page 1 / page 2"),
-               ("1-5", "page 1: zoom spot, contract, ladder,"),
-               ("", "book or log to the whole screen"),
-               ("", "(the same number again goes back)"),
+     ("look", [("v", "the variants; esc goes back"),
+               ("1-5", "zoom spot, contract, ladder, book or log"),
+               ("", "to the whole screen (again, or esc: back)"),
                ("c", "spot chart span: 5m 15m 1h 24h"),
-               ("v", "book: paper / live"),
+               ("V", "book: paper / live view"),
                ("o", "reports: every record, live and saved"),
                ("", "(←→ ↑↓ move, PgUp PgDn page, s saves one)"),
                ("t T", "next / previous of {themes} color themes")])],
-    [("variants", [("enter", "select the highlighted one (page 2): the book,"),
+    [("variants", [("enter", "select the highlighted one (v): the book,"),
                 ("", "band and gate show it"),
                 ("n", "new one, from the highlighted one's settings:"),
                 ("", "change them, s saves it, esc discards; that"),
@@ -427,15 +425,14 @@ SCREEN_SETTINGS = [cfgmod.Setting("screen", "log", "log shows", kind="choice", g
 # spot chart spans: c cycles them in this order (the engine sends ~15 min of seconds and 24h of minutes)
 CHARTS = {"5m": 300, "15m": 900, "1h": 3600, "24h": 86400}
 
-# every box; on each view its number key is its place in that view's reading order (page 2 has one, the variants)
+# every box; on each view its number key is its place in that view's reading order (the variants' view has one)
 BOXES = ["spot", "contract", "ladder", "book", "log", "variants"]
 PANELS = BOXES                                   # older name, kept for the web and tests
-# each view's rows of boxes, top to bottom; p flips page1 / page2, and a screen big enough for every box at its
+# each view's rows of boxes, top to bottom: page1 the dash, page2 the variants (v). A screen big enough for every box at its
 # smallest shows them all as one (merged). A box's number zooms it to the whole screen; the same number restores.
 PAGES = {"page1": [("spot", "contract"), ("ladder", "book"), ("log",)],
          "page2": [("variants",)],
          "merged": [("spot", "contract"), ("ladder", "book"), ("variants", "log")]}
-PAGE_NAMES = {1: "trade", 2: "compare"}
 SHARE = {"spot": 0.36, "contract": 0.36, "ladder": 0.44, "book": 0.44, "log": 0.28}   # flexible rows' height shares
 DROP_FIRST = ("↑↓", "space")                     # border hints that go before the others when a box is narrow
 LEFT_SHARE = {"spot": 0.6, "ladder": 0.52, "variants": 0.6}         # a pair's left width share
@@ -444,7 +441,7 @@ WANT_W = {"ladder": 56, "variants": 81}   # the width a box needs to show all it
 SUPER = "¹²³⁴⁵⁶⁷⁸⁹"
 LEFT_MIN = {"ladder": 56, "variants": 57}   # the ladder's columns need this much before its bar has any room
 SCROLLS = ["ladder", "variants", "book", "log"]   # the boxes ←→ focus and ↑↓ scroll
-ORPHAN_DROP = ["t", "c", "R", "L", "v", "r", "", "h", "S", "g", "q", "tab"]   # off-screen boxes' hints, first dropped first
+ORPHAN_DROP = ["t", "c", "R", "L", "V", "r", "", "h", "S", "g", "q", "v", "tab"]   # off-screen boxes' hints, first dropped first
 COMFY_H = {"spot": 10, "contract": 10, "ladder": 12, "book": 12, "log": 8}   # sizes the merged view needs
 
 
@@ -477,9 +474,9 @@ PANEL_KEYS = {
     "spot": lambda s: [("tab", " next coin"), ("r", "ule on/off", "") if s.rule_on() is None
                        else ("r", "ule ", "on", "/off") if s.rule_on() else ("r", "ule on/", "off"),   # pink: the state now
                        ("c", "hart " + s.chart)],
-    "book": lambda s: [("v", "iew"), ("L", "ive"), ("R", "estart")],
+    "book": lambda s: [("V", "iew"), ("L", "ive"), ("R", "estart")],
     "contract": lambda s: [("t", "heme ", s.P.name)],
-    "log": lambda s: [("g", "ate"), ("", "s", "e", "ttings"), ("", "rep", "o", "rts"), ("S", "top" if s.alive else "tart"), ("h", "elp"), ("q", "uit")],
+    "log": lambda s: ([("v", "ariants")] if s.page == 1 else []) + [("g", "ate"), ("", "s", "e", "ttings"), ("", "rep", "o", "rts"), ("S", "top" if s.alive else "tart"), ("h", "elp"), ("q", "uit")],
 }
 
 
@@ -529,7 +526,7 @@ class Screen:
         self.pos_off = 0                       # first line shown under the book's totals
         self.prefs_path = os.path.join(runtime, "dash.json")
         self.zoom: str | None = None           # the box a number key blew up to the whole screen (never saved)
-        self.page = 1                          # p flips page 1 (trade) / page 2 (compare)
+        self.page = 1                          # 1 the dash, 2 the variants (v opens them, esc goes back); never saved
         self.panel_key = ""                    # the number drawn in the title of the box being drawn
         self.drawing = ""                      # the box being drawn, so box() can mark the focused one
         self.focus = "ladder"                  # the box ↑↓ scroll; ←→ move it
@@ -550,9 +547,6 @@ class Screen:
         try:
             with open(self.prefs_path) as fh:
                 d = json.load(fh)
-            if type(d.get("page")) is int and d["page"] in PAGE_NAMES:
-                self.page = d["page"]
-                self.focus = "ladder" if self.page == 1 else "variants"
             if d.get("series") in cfgmod.SERIES:
                 self.series = d["series"]
             if d.get("chart") in CHARTS:
@@ -625,15 +619,14 @@ class Screen:
     def save_prefs(self) -> None:
         try:
             with open(self.prefs_path + ".tmp", "w") as fh:
-                json.dump({"page": self.page,
-                           "series": self.series, "chart": self.chart, "theme": self.P.name,
+                json.dump({"series": self.series, "chart": self.chart, "theme": self.P.name,
                            "variant": self.variant, "log_filter": self.log_filter}, fh)
             os.replace(self.prefs_path + ".tmp", self.prefs_path)
         except OSError:
             pass
 
     def view(self, H: int, W: int) -> str:
-        """merged when every box fits at a comfortable size, else the page p is on."""
+        """merged when every box fits at a comfortable size, else the dash (page1) or the variants (page2)."""
         rows = PAGES["merged"]
         need = sum(max(self.fixed_h(n)[0] if n == "variants" else COMFY_H[n] for n in row) for row in rows)
         wide = max(sum(WANT_W.get(n, 40) for n in row) for row in rows)
@@ -649,11 +642,10 @@ class Screen:
         H, W = self.s.getmaxyx()
         v = self.view(H, W)
         here = view_boxes(v)
-        if len(here) == 1:                           # page 2: its one box fills it already
+        if len(here) == 1:                           # the variants' view: its one box fills it already
             return
         if i >= len(here):
-            where = f"page {self.page}" if v != "merged" else "this screen"
-            self.say(f"{where} has boxes 1-{len(here)}"); return
+            self.say(f"the boxes are 1-{len(here)}"); return
         name = here[i]
         self.zoom = None if self.zoom == name else name
         if self.zoom in SCROLLS:
@@ -668,24 +660,27 @@ class Screen:
         return self.zoom
 
     def back_to(self, what: str) -> str:
-        """How to get to a box that isn't on screen: un-zoom, or flip to page 2."""
-        H, W = self.s.getmaxyx()
-        here = view_boxes(self.view(H, W))
-        z = self.zoomed(H, W)
-        if z and "variants" in here:                      # un-zooming shows it only where this view has it
-            return f"{here.index(z) + 1} un-zooms, {what}"
-        return f"p for page 2, {what}"
+        """How to get to the variants when they aren't on screen."""
+        return f"v opens the list, {what}"
 
-    def flip_page(self) -> None:
+    def open_variants(self) -> None:
+        """v: the variants, over the dash. On a screen that shows every box: that one, if another is zoomed."""
+        self.zoom, self.flash = None, ""
         H, W = self.s.getmaxyx()
         if self.view(H, W) == "merged":
-            z = self.zoomed(H, W)
-            self.say(f"both pages fit on this screen: {view_boxes('merged').index(z) + 1} back shows every box"
-                     if z else "both pages fit on this screen: every box is shown"); return
-        self.page = 2 if self.page == 1 else 1
-        self.zoom = None                             # the numbers mean other boxes on the other page
-        self.save_prefs()
-        self.flash = ""                              # the page names on the bottom border show which page it is
+            self.focus = "variants"
+        elif self.page == 2:                         # v again goes back, as o does
+            self.go_back()
+        else:
+            self.page, self.focus = 2, "variants"
+
+    def go_back(self) -> None:
+        """esc: from a zoomed box, or from the variants, to the dash."""
+        if self.zoom:
+            self.zoom = None
+        elif self.page == 2:
+            self.page, self.focus = 1, "ladder"
+        self.flash = ""
 
     def shown(self, name: str) -> bool:
         if self.rects:
@@ -1752,7 +1747,7 @@ class Screen:
 
     def footer(self, H: int, W: int) -> None:
         """Row H-2 is the bottom border of the lowest boxes. Zoomed, it carries the hints of the boxes not on
-        screen (so tab, ?, q... never go missing) at its right end, page 2 the log's; a flash message
+        screen (so tab, ?, q... never go missing) at its right end, the variants' view the log's; a flash message
         goes at its left."""
         P = self.P
         flashing = bool(self.flash) and time.time() - self.flash_at < 8
@@ -1763,10 +1758,10 @@ class Screen:
         elif z:                                                 # ─3 back─: the zoomed box's number restores
             page_seg = (str(view_boxes(view).index(z) + 1), " back")
         else:
-            page_seg = ("p", "age ", str(self.page), "/2") if view != "merged" else ()   # ─page 1/2─
+            page_seg = ("esc", " back") if view == "page2" else ()
         paged = not flashing and bool(page_seg)
-        # page 2 has no log box, so the log's hints (gate ... quit) are here; page 1's other keys are page 1's (they
-        # still work, and h lists them). A zoomed box hides every other, so then theirs move here
+        # the variants' view has no log box, so the log's hints (gate ... quit) are here; the dash's other keys are the
+        # dash's (they still work, and h lists them). A zoomed box hides every other, so then theirs move here
         orphans = [] if self.overlay == "reports" else PANEL_KEYS["log"](self) if view == "page2" and not z else \
             [k for name, fn in PANEL_KEYS.items() if name not in self.rects for k in fn(self)]
         width = lambda segs: sum(sum(map(len, seg)) + 3 for seg in segs) - 1
@@ -1774,7 +1769,7 @@ class Screen:
             if width(orphans + ([page_seg] if paged else [])) <= W - 4:
                 break
             orphans = [seg for seg in orphans if isinstance(seg, str) or seg[0] != key]
-        segs = orphans + ([page_seg] if paged else [])   # ─page 1/2─ (or ─3 back─) last, at the right end
+        segs = orphans + ([page_seg] if paged else [])   # ─esc back─ (or ─3 back─) last, at the right end
         rx = W - 3 - width(segs)
         for seg in segs:
             if rx >= 1:
@@ -1961,7 +1956,7 @@ class Screen:
             out.append(f"  [{'x' if c['ok'] else ' '}] {c['name']}  ({c['detail']})")
         if st.get("shadow"):
             rows = shadowmod.table(st["shadow"])
-            out += ["", head("VARIANTS", "   side by side on paper; (p) page 2 shows them, (enter) selects one (tern report)")]
+            out += ["", head("VARIANTS", "   side by side on paper; (v) opens them, (enter) selects one (tern report)")]
             out += [[("  " + rows[0], P(P.grey, bold=True))]] + ["  " + l for l in rows[1:]]
         out += ["", head("GO LIVE", "   all three are needed")]
         out.append(f"  [{'x' if st.get('keys') else ' '}] Kalshi key present ({cfgmod.KEYFILE_ENV})")
@@ -2555,8 +2550,10 @@ class Screen:
             self.rename_ask()
         elif ord("1") <= ch <= ord(str(len(BOXES))):
             self.toggle(ch - ord("1"))
-        elif ch == ord("p"):
-            self.flip_page()
+        elif ch == ord("v"):
+            self.open_variants()
+        elif ch == 27:
+            self.go_back()
         elif ch in (9, curses.KEY_BTAB):
             order = list(cfgmod.SERIES)
             step = -1 if ch == curses.KEY_BTAB else 1
@@ -2570,7 +2567,7 @@ class Screen:
             order = list(CHARTS)
             self.chart = order[(order.index(self.chart) + 1) % len(order)] if self.chart in order else "15m"
             self.save_prefs()
-        elif ch == ord("v"):
+        elif ch == ord("V"):
             cur = self.book_view or ("live" if self.st.get("mode") == "live" else "paper")
             self.book_view = "live" if cur == "paper" else "paper"
         elif ch == ord("g"):
