@@ -1285,12 +1285,12 @@ class Rig:
         return out
 
     def open(self, name="band80"):
-        """n on a variant, page 2."""
+        """e on a variant, on their view."""
         if self.scr.page == 1:
             self.press("v")
         self.scr.var_sel = name
         self.cmds()
-        self.press("n")
+        self.press("e")
 
     def row(self, key):
         self.scr.set_sel = [r.name for r in self.scr.set_rows()].index(key)
@@ -1386,7 +1386,7 @@ class SettingsBox(Rig, unittest.TestCase):
             with mock.patch.object(dash, "Pal", web.WebPal):
                 scr = dash.Screen(web.VTerm(40, 120), d)
             scr.draw()
-            for key in "rnDL ":
+            for key in "rDL ":
                 scr.key(ord(key)); scr.draw()
                 self.assertIsNone(scr.overlay, key); self.assertIsNone(scr.modal, key)
             scr.key(ord("e"))
@@ -1618,7 +1618,7 @@ class Pages(Rig, unittest.TestCase):
             self.assertEqual((scr.page, scr.zoom), (1, None))
             self.press("3", "v", 27)
             self.assertEqual((scr.page, scr.zoom), (1, None))
-            self.press("v", "n"); self.press(27)                               # out of the box first, then back
+            self.press("v"); self.press("e"); self.press(27)                   # out of the box first, then back
             self.assertEqual((scr.page, scr.overlay), (2, None))
             self.press(27)
             self.assertEqual(scr.page, 1)
@@ -1964,14 +1964,14 @@ class OwnVariants(Rig, unittest.TestCase):
 
 
 class ScreenVariants(Rig, unittest.TestCase):
-    """n, D and r, and the draft n opens, on a real engine's status."""
+    """e, D and r, and the draft e opens, on a real engine's status."""
 
     def test_a_draft_is_saved_once_as_a_new_variant(self):
         with tempfile.TemporaryDirectory() as d:
             k, scr = self.setup(d)
             self.open()
             self.assertEqual([r.group for r in scr.set_rows() if r.group], ["RULE", "SIZE", "PAPER"])
-            self.assertIn("RULE  from band80  built in", self.text())
+            self.assertIn("RULE  band80  built in", self.text())
             self.press(self.curses.KEY_RIGHT, self.curses.KEY_RIGHT)           # band low is the first row
             self.row("contracts"); self.press("1", "9", 10)
             self.row("max_hour_cost"); self.press(self.curses.KEY_RIGHT)
@@ -1995,20 +1995,26 @@ class ScreenVariants(Rig, unittest.TestCase):
             self.press(10)                                                     # enter selects it
             self.assertEqual((self.cmds(), scr.variant), ([], "mine"))
 
-    def test_n_is_the_highlighted_one_and_on_page_1_the_selected_one(self):
+    def test_e_edits_on_the_variants_and_is_the_settings_on_the_dash(self):
         with tempfile.TemporaryDirectory() as d:
             k, scr = self.setup(d)
             scr.variant, scr.var_sel = "late", "band90"; self.sync()
-            self.press("n")
-            self.assertEqual((scr.page, scr.edit_var, scr.draft), (1, "late", {}))
-            self.press(27); self.press("v"); self.press("n")
-            self.assertEqual((scr.page, scr.edit_var), (2, "band90"))
+            self.press("e")
+            self.assertEqual((scr.overlay, scr.edit_var), ("settings", None))
+            self.press(27); self.press("v"); self.press("e")
+            self.assertEqual((scr.overlay, scr.edit_var), ("settings", "band90"))
+            self.assertIn("edit band90", self.text())
             self.press(self.curses.KEY_RIGHT, "s", *"mine", 10); self.run_cmds()
             self.assertEqual((k.shadow.own.rule("mine")["band_lo"], k.shadow.own.all["mine"]["from"]), (0.91, "band90"))
-            scr.var_sel = "mine"; self.press("n")                              # from one of your own too
+            scr.var_sel = "mine"; self.press("e")                              # one of your own too
             self.assertEqual((scr.edit_var, scr.set_value("rule.band_lo")), ("mine", 0.91))
-            self.press(27); self.press("E")                                    # there is only n
+            self.press(27); self.press("n", "E")                               # there is only e
             self.assertEqual((scr.overlay, self.cmds()), (None, []))
+            scr.s.resize(50, 150); self.sync()                                 # every box at once: the focused one decides
+            for focus, want in (("variants", "mine"), ("ladder", None)):
+                scr.focus = focus; self.press("e")
+                self.assertEqual((scr.overlay, scr.edit_var), ("settings", want))
+                self.press(27)
 
     def test_esc_throws_the_draft_away_and_other_keys_do_not(self):
         with tempfile.TemporaryDirectory() as d:
@@ -2024,7 +2030,7 @@ class ScreenVariants(Rig, unittest.TestCase):
             self.assertEqual((scr.overlay, scr.edit_var, scr.draft), (None, None, {}))
             self.assertIn("thrown away", scr.flash)
             self.assertEqual((self.cmds(), k.shadow.own.all), ([], {}))
-            self.press("n")
+            self.press("e")
             self.assertIn("80¢ ", self.text()); self.assertEqual(scr.draft, {})
 
     def test_a_refused_save_keeps_the_draft(self):
@@ -2070,7 +2076,7 @@ class ScreenVariants(Rig, unittest.TestCase):
             scr.variant = "mine"; self.sync()
             text = " ".join(" ".join(l if isinstance(l, str) else "".join(t for t, _ in l) for l in scr.help_lines(120)).split())
             for want in ("With mine, the variant selected", "mid is 69-83c", "1 a strike an hour", "the base rule (75-95c",
-                         "7 contracts a strike", "mine starts with $300", "from the highlighted one's settings", "marked +", "tern report --periods"):
+                         "7 contracts a strike", "mine starts with $300", "edit the highlighted one's settings", "marked +", "tern report --periods"):
                 self.assertIn(want, text)
 
     def test_off_can_be_stepped_and_typed(self):
@@ -2194,7 +2200,7 @@ class VariantReviewFixes(Rig, unittest.TestCase):
             k, scr = self.setup(d)
             k.cfg.strategy.minutes = [25, 20, 12]; self.sync()
             self.press("v"); scr.focus, scr.var_sel = "variants", "base"; self.cmds()
-            self.press("n")
+            self.press("e")
             row = next(r for r in scr.set_rows() if r.key == "rule.minutes")
             scr.set_sel = scr.set_rows().index(row)
             self.assertIn(12, scr.set_choices(row))
@@ -2255,7 +2261,7 @@ class VariantSettingsReview(Rig, unittest.TestCase):
                 self.row(key); self.press("2", "0", 10)                        # (enter turns the choice on or off)
                 self.assertIsNone(scr.set_buf)
                 self.assertTrue(all(isinstance(v, list) for v in scr.draft.values()), scr.draft)
-            self.press(27); self.press("e")
+            self.press(27); self.press(27); self.press("e")
             scr.set_sel = [r.key for r in scr.set_rows()].index("alerts")
             self.press("1")
             self.assertEqual((scr.set_buf, scr.overlay, self.cmds()), (None, "settings", []))
@@ -2270,7 +2276,7 @@ class VariantSettingsReview(Rig, unittest.TestCase):
             self.press(27)
             self.assertNotIn("nothing was saved", scr.flash)
             self.assertIn("being saved", scr.flash)
-            scr.var_sel = "band90"; self.press("n", self.curses.KEY_RIGHT)
+            scr.var_sel = "band90"; self.press("e", self.curses.KEY_RIGHT)
             k.results[c["id"]] = k._command(c); self.sync()
             self.assertEqual((scr.overlay, scr.edit_var, scr.draft), ("settings", "band90", {"band_lo": 0.91}))
             self.assertEqual(k.shadow.own.active(), ["mine"])
@@ -2338,7 +2344,7 @@ class VariantSettingsReview(Rig, unittest.TestCase):
             scr.key(ord("s"))
             self.assertIsNone(scr.modal); self.assertIn("older than this screen", scr.flash)
             scr.key(27); scr.key(9)
-            for key in "nLD ":
+            for key in "eLD ":
                 scr.flash = ""; scr.key(ord(key))
                 self.assertEqual((scr.overlay, scr.modal), (None, None), key); self.assertIn("older than this screen", scr.flash, key)
             self.assertEqual(self.cmds(), [])
@@ -2643,7 +2649,7 @@ class OneList(Rig, unittest.TestCase):
                 self.assertEqual((self.cmds(), scr.modal, scr.overlay), ([], None, None), key)
             self.assertIn("unknown command", k._command({"op": "variant_restart", "variant": "base"}))
 
-    def test_n_then_s_is_a_fresh_copy(self):
+    def test_e_then_s_is_a_fresh_copy(self):
         with tempfile.TemporaryDirectory() as d:
             k, scr = self.setup(d)
             self.new(k, "base", "wide", band_lo=0.55, band_hi=0.65); k._shadow()
@@ -2982,7 +2988,7 @@ class Web(unittest.TestCase):
             f = hub.handle({"w": 120, "h": 40, "prefs": {"page": 2, "theme": "classic"}})
             sid = f["sid"]
             hub.handle({"sid": sid, "w": 120, "h": 40, "key": "v"})
-            for k in ("q", "s", "L", "r", "n", "D", " ", "ArrowDown", "Enter", "L"):
+            for k in ("q", "s", "L", "r", "D", " ", "e", "ArrowDown", "Enter", "L"):
                 f = hub.handle({"sid": sid, "w": 120, "h": 40, "key": k})
             self.assertEqual(os.listdir(os.path.join(d, "cmd")), [])          # no command reached the engine
             self.assertFalse(os.path.exists(os.path.join(d, "dash.json")))     # the screen's prefs are its own
@@ -3017,7 +3023,8 @@ class Web(unittest.TestCase):
             y = next(i for i, r in enumerate(rows) if "─variants─" in r)
             go(click={"y": y, "x": rows[y].index("variants")})                 # clicking the hint opens them
             self.assertEqual(scr.page, 2)
-            self.assertIn("view only", go(key="n")[31])
+            self.assertIn("view only", go(key="e")[31])
+            self.assertIsNone(scr.overlay)
             scr.flash = ""; rows = go()
             go(click={"y": 31, "x": rows[31].index("esc back")})
             self.assertEqual(scr.page, 1)
@@ -3041,7 +3048,7 @@ class Web(unittest.TestCase):
             y = next(i for i, r in enumerate(rows) if "variants" in r and "select" in r)
             f = go(click={"y": y, "x": rows[y].index("⏎")})
             self.assertEqual(f["prefs"]["variant"], "band90")
-            for hint in ("new─", "on/off", "Delete"):                   # the keys that change something are not drawn
+            for hint in ("edit", "on/off", "Delete"):                   # the keys that change something are not drawn
                 self.assertNotIn(hint, rows[y])
             self.assertEqual(os.listdir(os.path.join(d, "cmd")), [])
             f = hub.handle({"w": 111, "h": 33, "prefs": {"page": 2, "variant": "band90"}})   # a reload keeps it

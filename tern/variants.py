@@ -1,7 +1,7 @@
 """Your own variants: complete rules made on the screen.
 
 A variant here is everything about how it trades: band, slots, spread, coins, the two optional caps, contracts a
-strike, most an hour and its paper start. shadow.TABLE's variants are built in and take theirs from config.json. No variant ever changes once it is saved: n on the screen opens one as a draft, and saving that draft makes a
+strike, most an hour and its paper start. shadow.TABLE's variants are built in and take theirs from config.json. No variant ever changes once it is saved: e on the screen opens one as a draft, and saving that draft makes a
 new variant with an empty record (engine._variant_new), so a record is always one rule's.
 
 They are in variants.json beside the records, with the variants that are turned off. A variant that bought something and was then deleted
@@ -25,7 +25,7 @@ NAME_MAX = 12                                    # a variant's key and display n
 KEY = re.compile(r"[a-z][a-z0-9-]{0,11}")
 SLOT_CHOICES = (30, 25, 20, 15, 10, 5)           # minutes before the close a rule may enter at
 
-# The rows of n's box. Values are the variant's own; 0 is "off" in a cap.
+# The rows of a variant's box (e). Values are the variant's own; 0 is "off" in a cap.
 RULE_SETTINGS = [
     Setting("rule", "band_lo", "band low", 0.50, 0.98, 0.01, kind="p", group="RULE",
             what="the favorite's mid must be at least this"),

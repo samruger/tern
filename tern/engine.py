@@ -942,7 +942,7 @@ class Desk:
 
     # ------------------------------------------------------------ the variants (variants.py)
     def _variant_new(self, c: dict) -> str:
-        """s in the box n opens: a variant's settings with the draft's changes, saved as a new variant with an
+        """s in e's box: a variant's settings with the draft's changes, saved as a new variant with an
         empty record. The one it came from, its record and what live trades stay as they are."""
         sh, parent = self.shadow, c.get("from")
         if c.get("profile") not in (None, "", "1"):

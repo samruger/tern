@@ -48,9 +48,9 @@ VIEW_KEYS = set("123456jktTcvVgeoh?") | {"Enter", "Escape", "ArrowUp", "ArrowDow
                                        "Tab", "BackTab"}
 CONTROL_KEYS = {"q": "quit", "Q": "quit", "S": "engine start/stop", "s": "saving a report", "L": "live",
                 "r": "renaming", " ": "turning a variant on or off",
-                "n": "making a variant", "D": "deleting"}
+                "D": "deleting"}
 # border hints whose key changes something: not drawn on the web (⏎ selects a variant: it only views)
-CONTROL_HINTS = {"r", "L", "s", "S", "q", "space", "n", "D"}
+CONTROL_HINTS = {"r", "L", "s", "S", "q", "space", "D"}
 # what a hint on a border sends when clicked
 HINT_KEY = {"tab": "Tab", "any key": "Escape", "esc": "Escape", "↑↓": None, "←→": None, "⏎": "Enter"}
 
@@ -192,6 +192,9 @@ class WebScreen(dash.Screen):
             return super().send_setting(row, value)
         self.say("view only: settings are changed from the screen in the terminal")
 
+    def edit_variant(self) -> None:              # e on the variants
+        self.say("view only: making a variant is done from the screen in the terminal")
+
     def save_report(self) -> None:
         self.say("view only: reports are saved from the screen in the terminal")
 
@@ -220,7 +223,7 @@ class WebScreen(dash.Screen):
 
     def box(self, y, x, h, w, title, color, key="", right=()) -> None:
         segs = [right] if isinstance(right, str) else list(right)
-        segs = [s for s in segs if isinstance(s, str) or not set(s[0::2]) & CONTROL_HINTS]   # any key piece
+        segs = [s for s in segs if isinstance(s, str) or not set(s[0::2]) & CONTROL_HINTS and s[:2] != ("e", "dit")]   # any key piece
         key = key or self.panel_key
         if key in dash.SUPER:                    # the box number: a click zooms / restores it, as 1-8 do
             self.hits.append((y, x + 3, x + 3 + len(key), str(dash.SUPER.index(key) + 1)))

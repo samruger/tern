@@ -108,8 +108,7 @@ A variant holds everything about how it trades: band, slots, max spread, coins, 
 volatility, contracts a strike, most an hour and paper start. Once saved it never changes, so a record always
 belongs to one set of settings. The ones you make are marked `+` in the variants box.
 
-- **`n` makes a new one**: it opens the settings of the highlighted one, built in or your own (on the dash, the selected
-  one), as a draft. Change as many as you like; nothing is sent yet, and a changed one shows as `19 → 10 *`.
+- **`e` edits the highlighted one**, built in or your own: its settings open as a draft. Change as many as you like; nothing is sent yet, and a changed one shows as `19 → 10 *`.
 - **`s` there saves the draft as a new variant**, under a name you type, with an empty record. The one it came from
   stays as it is, with its record. `esc` throws the draft away.
 - **`space` turns one off or on**, built in or your own. Off, it takes no new entries, open ones settle, and the hours
@@ -117,7 +116,7 @@ belongs to one set of settings. The ones you make are marked `+` in the variants
 - **`D` deletes one of yours** (it asks `y`). If it bought anything its record stays on file and open entries settle.
 - **`r` renames one** on the screen (up to 12 characters; empty gives its own name back). Its record, the gate,
   `config.json` and `tern report` keep its own name, so renaming never splits a record.
-- **To start one over**, press `n` and `s`: the same settings, an empty record.
+- **To start one over**, press `e` and `s`: the same settings, an empty record.
 
 Built-in variants take
 their size and paper start from `config.json`. No variant buys more than the cash it has left: its paper start, plus
@@ -125,7 +124,7 @@ its settled P&L, less what its open entries cost. It buys fewer contracts when t
 when it is out. At most 24 of your own, kept in `variants.json` beside the records. The gate judges each variant on its
 own record.
 
-<img width="1364" height="668" alt="A new variant: a draft with two changes, not saved yet" src="docs/screenshots/12-variant-rule.png" />
+<img width="1364" height="668" alt="Editing a variant: a draft with two changes, not saved yet" src="docs/screenshots/12-variant-rule.png" />
 
 The engine also records what it sees to `runtime/ticks/`: every 5 seconds, each near-the-money strike's
 bid, ask and sizes with spot, plus each hour's results (about 2 MB a day, gzipped). Kalshi keeps only
@@ -155,7 +154,7 @@ hour's P&L divided by its standard error. These are paper results.
 
 ## Settings
 
-`e` opens the desk's settings: LIVE (its limits and contracts a strike), GATE, ALERTS, WEB, and what the log box shows.
+`e` on the dash opens the desk's settings: LIVE (its limits and contracts a strike), GATE, ALERTS, WEB, and what the log box shows.
 How anything trades is in its variant. Every change is written down with its time in `runtime/settings-log.jsonl`. A
 hand edit of the strategy in `config.json` changes the built-in variants and starts a new settings period; rows are
 stamped with theirs, and `python3 -m tern report --periods` splits the results by it.
@@ -241,11 +240,11 @@ Requests are signed (Ed25519 or RSA-PSS) in pure Python, checked against openssl
 | `t` / `T` | next / previous color theme |
 | `V` | paper / live book |
 | `enter` | select the highlighted variant (`v`) |
-| `n` | new variant, from the highlighted one's settings: `s` saves it, `esc` discards |
+| `e` | on the variants: edit the highlighted one; `s` saves a new variant, `esc` discards |
 | `space` | turn the highlighted variant on / off |
 | `D` `r` | delete / rename it |
 | `g` | the gate |
-| `e` | settings |
+| `e` | on the dash: settings |
 | `o` | reports (below) |
 | `L` | live: on with the selected variant, off, or moved to it |
 | `S` | stop (asks `y`) / start the engine |
@@ -292,7 +291,7 @@ chart span, `tab`/shift+tab coins, `t`/`T` themes, `V` paper/live, `enter` selec
 help, `↑↓ ←→` and the wheel. Clicking a key on a box border, a box's number, or a ladder or variant row
 does what the key would; on a phone, drag to scroll.
 
-It is view only. `q`, `S`, `s`, `L`, `r`, `n`, `D` and `space` on a variant do nothing there, and their
+It is view only. `q`, `S`, `s`, `L`, `r`, `D`, `space` and `e` on a variant do nothing there, and their
 hints are not drawn. The settings box (`e`) shows the settings but changes only what that browser's log box shows.
 The web screen writes no command files and never touches the terminal's `dash.json` or `view.json`: each browser keeps its own settings. It writes `view-web.json` (in the same tmpfs folder)
 with the coins and strikes its viewers have up, so the engine sends those strikes' contract history
@@ -378,7 +377,7 @@ The major ones, newest first.
 
 | Date | Change |
 |---|---|
-| 2026-11-23 | **One list of variants.** Profiles, the separate paper book and `w` are gone: `enter` selects the variant the screen shows, `L` goes live with it, `n` makes a new one from any of them, `space` turns one on or off and `r` renames one. `v` opens the variants and `esc` goes back (the pages and `p` are gone, and so is the equity box); `V` is the book's paper/live view. Profiles' own variants move into the list with their records (see Settings). `tern report --profile` and `--profiles` are now `--periods`. |
+| 2026-11-23 | **One list of variants.** Profiles, the separate paper book and `w` are gone: `enter` selects the variant the screen shows, `L` goes live with it, `e` there edits one as a new one, `space` turns one on or off and `r` renames one. `v` opens the variants and `esc` goes back (the pages and `p` are gone, and so is the equity box); `V` is the book's paper/live view. Profiles' own variants move into the list with their records (see Settings). `tern report --profile` and `--profiles` are now `--periods`. |
 | 2026-11-23 | **Cash limit on paper:** no variant, and not the paper book, buys more than the cash it has left. Entries from before could. A variant that is out of cash says so in the variants box. |
 | 2026-11-23 | **Variants hold every trading setting**, contracts a strike, most an hour and paper start too. `E` opens them as a draft and `s` saves it as a new variant; a saved one never changes, and only `enter` changes what trades. Settings (`e`) has the profile and the desk only, the same under every profile. `n` in the variants box, and the rule, paper and "book trades" rows in settings, are gone. Variants saved before keep their profile's size. |
 | 2026-11-23 | **AGPL license** (version 3 or later). It was MIT, then briefly the GPL; copies from then stay under those. |
