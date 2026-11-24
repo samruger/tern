@@ -47,7 +47,7 @@ class Pal:
         except curses.error:
             self.bg = BLACK
         self.many = curses.COLORS >= 256
-        self.cache: dict[int, int] = {}
+        self.cache: dict[int | tuple[int, int], int] = {}
         self.set_theme(None)
 
     def set_theme(self, name: str | None) -> None:
@@ -70,6 +70,19 @@ class Pal:
         if dim:
             a |= curses.A_DIM
         return a
+
+    def on(self, fg: int, bg: int, bold: bool = False) -> int:
+        """fg on a background of its own (the tabs). 8 colors have no dark one to spare: no background there."""
+        if not self.many:
+            return self(fg, bold=bold)
+        fg = self.t["base"].get(fg, fg)
+        if (fg, bg) not in self.cache:
+            n = len(self.cache) + 1
+            if n >= curses.COLOR_PAIRS:
+                return self(fg, bold=bold)
+            curses.init_pair(n, fg, bg)
+            self.cache[fg, bg] = curses.color_pair(n)
+        return self.cache[fg, bg] | (curses.A_BOLD if bold else 0)
 
     def c(self, role: str) -> int:
         """The theme's color for a role (see themes.py)."""
@@ -309,7 +322,7 @@ HELP = [
                  "own; a deleted one's record stays on file.\n"
                  "Retired, records kept and listed by (tern report):\n"
                  "{retired}"),
-    ("THE GATE", "(g) Live trades a variant only after its own paper record has {days:g} days of hours "
+    ("THE GATE", "(7) Live trades a variant only after its own paper record has {days:g} days of hours "
                  "traded, {entries} settled entries and P&L of ${pnl:g} or more after fees. Hours with the engine or the "
                  "variant off don't count, and moving live to another never skips it: that one needs its own record."),
     ("LIVE", "(L) goes live with the selected variant: it asks you to type \"live\". Selecting another one later does not "
@@ -340,18 +353,23 @@ HELP_BOXES = [
     ("⁵", "variants", "each variant's hours, entries, P&L, ¢ a contract, win rate, t,"),
     ("", "", "  and gate progress (yellow: still short); ● selected, L live's, + one you"),
     ("", "", "  made; the highlighted one's P&L by hour below"),
-    ("", "tabs", "one box fills the screen; the others are tabs on its top border: (1) to (6) show"),
+    ("", "tabs", "one box fills the screen; the others are tabs on its top border: their keys show"),
     ("", "", "  one, (tab) steps through. Its own keys are on its bottom border, and the log's"),
     ("", "", "  has every key that isn't one box's"),
+    ("⁷", "gate", "what the selected variant still needs to go live, every variant side by side, caps"),
+    ("⁸", "reports", "every record: worked out now, or saved"),
+    ("⁹", "settings", "live limits, gate, alerts, web, what the log shows"),
+    ("⁰", "themes", "{n} color themes: the one highlighted is in use".replace("{n}", str(len(themes.NAMES)))),
+    ("", "help", "(h) this"),
     ("", "status", "bottom row: PAPER or LIVE, the coin's price and 1h change, the hourly event"),
     ("", "", "  and time to its close, rule ON/off with the next slot (+live when live"),
     ("", "", "  trades), stale data warnings (usually Wi-Fi), engine ok / stale / down"),
 ]
 
-# overlay text worth a color: checks, key references like (g), words to type, warnings, paths and names
+# overlay text worth a color: checks, key references like (7), words to type, warnings, paths and names
 OVERLAY_TOKENS = re.compile(
     r"(?P<ok>\[x\])|(?P<todo>\[ \])"
-    r"|(?P<ref>\((?:[a-zA-Z?1-8]|tern \w[\w-]*|enter|tab|esc)\))"
+    r"|(?P<ref>\((?:[a-zA-Z?0-9]|tern \w[\w-]*|enter|tab|esc)\))"
     r"|(?P<quote>\"[^\"]+\"|\blive and press enter\b)"
     r"|(?P<warn>\b(?:real money|turns live off|turns itself off|Nothing trades|No key found yet|Wipe)\b)"
     r"|(?P<keyhint>^(?:y|any key|any other key)\b|\besc\b|·\s(?:any (?:other )?key)\b)"
@@ -365,16 +383,16 @@ RULE_LINE = "\0rule"                              # placeholder text: draw_overl
 # the help's key legend: two columns of (section, [(keys, what they do)])
 HELP_KEYS = [
     [("move", [("tab S-tab", "next / previous box"),
-               ("1-6", "spot, contract, ladder, book, variants, log"),
+               ("1-9 0 h", "the box with that key on the top border"),
                ("↑↓  j k", "scroll: the ladder and contract pick a"),
                ("", "strike, variants highlights one"),
-               ("PgUp PgDn", "ten steps at a time"),
+               ("PgUp PgDn", "ten steps at a time; Home End: the ends"),
+               ("mouse wheel", "scrolls what it is over"),
                ("C", "next coin")]),
      ("look", [("c", "spot: chart span: 5m 15m 1h 24h"),
                ("V", "book: paper / live view"),
-               ("o", "reports: every record, live and saved"),
-               ("", "(←→ ↑↓ move, PgUp PgDn page, s saves one)"),
-               ("t T", "next / previous of {themes} color themes")])],
+               ("s", "reports: save the one shown (PgUp PgDn page it)"),
+               ("↑↓ ←→", "themes: pick one")])],
     [("variants", [("enter", "select the highlighted one: the book,"),
                 ("", "band and gate show it"),
                 ("e", "edit the highlighted one's settings: s saves"),
@@ -384,26 +402,19 @@ HELP_KEYS = [
                 ("D", "delete it, if it is one you made"),
                 ("r", "rename it: its record keeps its own name")]),
      ("trade", [("L", "live: on with the selected variant, off, or"),
-                ("", "moved to it (type \"live\")"),
-                ("g", "gate, variants and go-live checklist"),
-                ("s", "settings (live limits, gate, alerts, web, log)")]),
-     ("engine", [("P", "pause (asks y) / start the engine"),
-                 ("h ?", "this help"),
-                 ("q", "close the screen; the engine keeps going")]),
+                ("", "moved to it (type \"live\")")]),
      ("settings", [("↑↓", "pick a setting"),
                    ("←→  - +", "step it down / up, or flip it"),
-                   ("enter 0-9", "type a value, enter saves"),
-                   ("s", "in a variant (e): save as a new variant"),
-                   ("esc", "close; in a variant: throw changes away")]),
-     ("in here", [("↑↓ PgUp PgDn", "scroll this help or the gate"),
-                  ("Home End", "top / bottom"),
-                  ("any other key", "close it")])],
+                   ("enter", "type a value, enter saves, esc leaves it"),
+                   ("s esc", "in a variant (e): save as a new one / discard")]),
+     ("engine", [("P", "pause (asks y) / start the engine"),
+                 ("q", "close the screen; the engine keeps going")])],
 ]
 
 # command line, shown at the end of the help
 HELP_CLI = [
     ("tern", "this screen (starts the engine in paper if it is down)"),
-    ("tern report", "every variant's record, deleted and retired ones too (o shows it here)"),
+    ("tern report", "every variant's record, deleted and retired ones too (8 shows it here)"),
     ("tern report --periods", "the same by settings period"),
     ("tern report --save", "save a summary: status, variants (report-timer: weekly)"),
     ("tern status", "a plain-text summary"),
@@ -421,15 +432,18 @@ SCREEN_SETTINGS = [cfgmod.Setting("screen", "log", "log shows", kind="choice", g
 # spot chart spans: c cycles them in this order (the engine sends ~15 min of seconds and 24h of minutes)
 CHARTS = {"5m": 300, "15m": 900, "1h": 3600, "24h": 86400}
 
-# the boxes, each filling the screen; the others are tabs on its top border. A box's number shows it, tab steps through
-BOXES = ["spot", "contract", "ladder", "book", "variants", "log"]
-SUPER = "¹²³⁴⁵⁶⁷⁸⁹"
+# the boxes, each filling the screen; the others are tabs on its top border. A box's key shows it, tab steps through
+BOXES = ["spot", "contract", "ladder", "book", "variants", "log", "gate", "reports", "settings", "themes", "help"]
+BOX_KEYS = "1234567890h"
+SUPER = "¹²³⁴⁵⁶⁷⁸⁹⁰"                             # (help's h is in its name)
+TAB_BG = (238, 235)                              # the dark backgrounds of the tabs not on screen
+BORDER = {"variants": "ladder", "gate": "contract", "reports": "book", "settings": "contract", "themes": "spot", "help": "log"}
 DROP_FIRST = ("↑↓", "space")                     # border hints that go before the others when they don't all fit
 
 
-# the reports screen (o): the list's width, and the lines of a report that are a table's header, a table's row
+# the reports box: the list's width, and the lines of a report that are a table's header, a table's row
 # (name, then whole-number columns and a P&L) and a name with what it is
-REPORT_LIST_W = 28
+REPORT_LIST_W = 26
 REPORT_HEAD = re.compile(r"^\s*variant\s.*\bhours\s+entries\b")
 REPORT_ROW = re.compile(r"^(\s*)(\S.*?)(\s+\d+\s+\d+(?:\s+\d+)?\s+[+-]\d+\.\d\d\s+\S.*)$")
 REPORT_NAME = re.compile(r"^(\s*)([a-z0-9][\w-]*(?: \([^)]*\))?)(: )(.+)$")
@@ -454,8 +468,12 @@ PANEL_KEYS = {
     "ladder": lambda s: [("C", "oin"), ("↑↓", " strike")],
     "book": lambda s: [("V", "iew"), ("L", "ive"), "↑↓"],
     "variants": lambda s: [("⏎", " select"), ("e", "dit"), ("space", " on/off"), ("r", "ename"), ("D", "elete"), ("L", "ive"), "↑↓"],
-    "log": lambda s: [("t", "heme ", s.P.name), ("g", "ate"), ("s", "ettings"), ("", "rep", "o", "rts"),
-                      ("P", "ause" if s.alive else " start"), ("h", "elp"), ("q", "uit"), "↑↓"],
+    "log": lambda s: [("P", "ause" if s.alive else " start"), ("q", "uit"), "↑↓"],
+    "gate": lambda s: [("L", "ive"), "↑↓"],
+    "reports": lambda s: ([] if s.rep_sel.startswith("saved:") else [("s", "ave")]) + [("↑↓", " pick"), ("PgUp PgDn", " scroll")],
+    "settings": lambda s: [("↑↓", " pick"), ("←→", " step"), ("enter", " type")],
+    "themes": lambda s: [("↑↓ ←→", " pick")],
+    "help": lambda s: ["↑↓"],
 }
 
 
@@ -484,7 +502,7 @@ class Screen:
         self.sel: str | None = None
         self.chart = "15m"
         self.book_view = None
-        self.overlay: str | None = None        # "help", "gate" or "settings" while one is open
+        self.overlay: str | None = None        # "edit" while a variant's settings are open over the variants (e)
         self.set_sel = 0                       # the settings row the cursor is on
         self.set_buf: str | None = None        # the value being typed in the settings box, or None
         self.edit_var: str | None = None       # e: the variant the box's draft starts from (None: the settings box)
@@ -493,7 +511,8 @@ class Screen:
         self.var_new: dict | None = None       # a draft was sent to be saved: cid, and its variant and draft
         self.set_sent: dict[str, tuple] = {}   # key -> (value, time) sent but not yet in the status
         self.log_filter = "all"                # what the log box shows: LOG_FILTERS
-        self.ov_off, self.ov_room, self.ov_len = 0, 1, 0   # its scroll: first line shown, lines that fit, lines in all
+        self.offs: dict[str, int] = {}         # box -> the first line shown (gate, help)
+        self.theme_rows = 1                    # the themes box: rows in a column, as last drawn
         self.modal: dict | None = None
         self.flash, self.flash_at = "", 0.0
         self.pending: dict[str, float] = {}
@@ -514,9 +533,8 @@ class Screen:
         self.rep_list: list = []               # o: the reports there are (reports.index), looked up every 2 s
         self.rep_at = 0.0
         self.rep_sel = "desk"                  # the report shown
-        self.rep_focus = "reports"             # which of its two boxes ↑↓ move in: reports (the list) or report
         self.rep_top = 0                       # first row of the list shown
-        self.rep_off, self.rep_room, self.rep_len = 0, 1, 0   # the report's scroll: as ov_off, ov_room, ov_len
+        self.rep_off, self.rep_room, self.rep_len = 0, 1, 0   # the report's scroll: first line shown, lines that fit, lines in all
         self.rep_rows: dict[int, str] = {}     # screen row -> the report listed there, as last drawn
         self.rep_saving = False                # s: a report is being saved, on a thread
         self.rep_drawn: tuple = ()             # (what it was made from, its colored lines)
@@ -581,10 +599,10 @@ class Screen:
             if new:
                 self.var_new, self.var_sel = None, new
                 if (self.edit_var, self.draft) == (vn["variant"], vn["draft"]):
-                    self.close_settings()            # (not one opened since, or changed since)
+                    self.close_edit()            # (not one opened since, or changed since)
         if self.edit_var and self.st.get("variants") and self.vrow(self.edit_var) is None:
             self.say("that variant is gone" + (": the changes were not saved" if self.draft else ""))
-            self.close_settings()                    # deleted meanwhile
+            self.close_edit()                    # deleted meanwhile
             if (self.modal or {}).get("type") == "vname":
                 self.modal = None
 
@@ -604,13 +622,13 @@ class Screen:
             pass
 
     def show_tab(self, name: str) -> None:
-        """1-6, tab: that box fills the screen."""
-        self.tab, self.flash = name, ""
+        """A box's key, tab: that box fills the screen."""
+        self.tab, self.flash, self.set_buf = name, "", None
         self.save_prefs()
 
     def back_to(self, what: str) -> str:
         """How to get to the variants when they aren't on screen."""
-        return f"{BOXES.index('variants') + 1} shows them, {what}"
+        return f"{BOX_KEYS[BOXES.index('variants')]} shows them, {what}"
 
     def shown(self, name: str) -> bool:
         return name == self.tab
@@ -654,17 +672,13 @@ class Screen:
             pass
 
     def box(self, y: int, x: int, h: int, w: int, title: str, color: int, right=()) -> None:
-        """A rounded box, btop style. One of BOXES has the tabs on its top border, with title at the right end when
-        that says more than its name, and `right`, its keys, on its bottom border. Any other box has its title on the
-        top border and `right` at that border's right end. `right` holds segments: a plain string (grey info) or a
+        """A rounded box, btop style. One of BOXES has the tabs on its top border and `right`, its keys, on its bottom
+        border. Any other box has its title on the top border and `right` at that border's right end. `right` holds segments: a plain string (grey info) or a
         (key, rest) hint whose key shows in the theme's key color."""
         P = self.P
         a = P(color)
         saved, self.clip = self.clip, None
         tabbed = self.drawing in BOXES
-        focused = self.overlay == "reports" and self.drawing == self.rep_focus
-        if focused:
-            a |= curses.A_BOLD
         tl, hz, tr, vt, bl, br = "╭─╮│╰╯"
         self.put(y, x, tl + hz * (w - 2) + tr, a)
         for r in range(1, h - 1):
@@ -673,13 +687,10 @@ class Screen:
         self.put(y + h - 1, x, bl + hz * (w - 2) + br, a)
         cx = x + 3
         if tabbed:
+            gap = 1 if sum(len(n) + 3 for n in BOXES) + len(BOXES) <= w - 4 else 0   # the border between them, if it fits
+            cx = x + 2
             for i, name in enumerate(BOXES):
-                cx = self.tab_seg(y, cx, i, name, color, a)
-            if title != self.drawing:
-                info = title[:max(0, x + w - 5 - cx)]
-                self.put(y, x + w - 4 - len(info), info, P(WHITE, bold=True))
-        elif focused:   # title in the box's own color with a marker; the border is drawn bold
-            self.put(y, cx, title + " ◂", P(color, bold=True)); cx += len(title) + 2
+                cx = self.tab_seg(y, cx, i, name, color, gap) + gap
         else:
             self.put(y, cx, title, P(WHITE, bold=True)); cx += len(title)
         hy, start = (y + h - 1, x + 2) if tabbed else (y, cx)
@@ -702,17 +713,19 @@ class Screen:
             rx += n + 3
         self.clip = saved
 
-    def tab_seg(self, y: int, x: int, i: int, name: str, color: int, border: int) -> int:
-        """One box's tab on the top border; returns where the next one goes."""
+    def tab_seg(self, y: int, x: int, i: int, name: str, color: int, gap: int) -> int:
+        """One box's tab on the top border, filled like the status line's pieces: bright for the box on screen, dark for
+        the others. Returns where it ends."""
         P = self.P
-        if name == self.drawing:
-            text = f"┤{SUPER[i]}{name}├"
-            self.put(y, x, text, P(color, bold=True)); return x + len(text)
-        self.put(y, x, "─", border)
-        self.put(y, x + 1, SUPER[i], P(P.c("key"), bold=True))
-        self.put(y, x + 2, name, P(P.grey))
-        self.put(y, x + 2 + len(name), "─", border)
-        return x + 3 + len(name)
+        on = name == self.drawing
+        bg = TAB_BG[0 if gap else i % 2]                 # touching, two shades keep them apart
+        key = P(color, bold=True) | curses.A_REVERSE if on else P.on(P.c("key"), bg, bold=True)
+        text = P(color, bold=True) | curses.A_REVERSE if on else P.on(P.c("unit"), bg)
+        parts = [(" ", text), (SUPER[i], key), (name, text)] if i < len(SUPER) else \
+            [(" ", text), (name[0], key), (name[1:], text)]    # help's key is in its name
+        for t, a in [*parts, (" ", text)]:
+            self.put(y, x, t, a); x += len(t)
+        return x
 
     def flashing(self) -> bool:
         return bool(self.flash) and time.time() - self.flash_at < 8
@@ -879,7 +892,7 @@ class Screen:
         row = self.row(self.sel)
         if row:
             strike = strike_of(row["k"])
-        self.box(y, x, h, w, prod.lower(), self.P.border("spot"), PANEL_KEYS["spot"](self))
+        self.box(y, x, h, w, "spot", self.P.border("spot"), PANEL_KEYS["spot"](self))
         gh = h - 3
         if not vals:
             self.put(y + h // 2, x + 3, "waiting for spot…", P(self.P.grey)); return
@@ -933,7 +946,7 @@ class Screen:
         prod = cfgmod.SERIES[self.series]
         coin = prod.split("-")[0]
         title = f"{coin} above ${strike_label(r['k'])}?" if r else "contract"
-        self.box(y, x, h, w, title, self.P.border("contract"), PANEL_KEYS["contract"](self))
+        self.box(y, x, h, w, "contract", self.P.border("contract"), PANEL_KEYS["contract"](self))
         if not r:
             self.put(y + 2, x + 3, "waiting for the hourly event…", P(self.P.grey)); return
         hist = (st.get("hist") or {}).get(self.sel) or []
@@ -953,7 +966,8 @@ class Screen:
         info = [("YES", f"{cents(bid).strip()}/{cents(ask).strip()}¢", GREEN),
                 ("NO", f"{cents(no(ask)).strip()}/{cents(no(bid)).strip()}¢", RED),
                 ("", f"{(mid or 0)*100:.0f}% YES", WHITE), ("vol", f"{r['v']:,.0f}", self.P.grey)]
-        cx = x + 2
+        self.put(y + 1, x + 2, title, P(P.c("sym"), bold=True))
+        cx = x + 2 + len(title) + 3
         for k, v, c in info:
             if k:
                 self.put(y + 1, cx, k + " ", P(c, bold=True)); cx += len(k) + 1
@@ -1235,7 +1249,7 @@ class Screen:
         if self.vrow(self.var_sel) is None:
             self.say("no variants from the engine yet"); return
         if not self.older_engine():
-            self.open_settings(self.var_sel)
+            self.open_edit(self.var_sel)
 
     def live_key(self) -> None:
         """L: live on with the selected variant, off, or (armed with another) moved to the selected one."""
@@ -1248,9 +1262,9 @@ class Screen:
         if st.get("live_enabled") and live == self.variant:
             self.send(op="live", on=False); self.say("disarming live"); return
         L = st.get("live_cfg") or {}
-        gate = f"{name} has passed its gate (g)." if (row.get("gate") or {}).get("passed") else \
-            f"{name} has not passed its gate (g): live waits until it does." if L.get("auto_needs_gate", True) else \
-            f"{name} has not passed its gate (g), and live.auto_needs_gate is off: it trades anyway."
+        gate = f"{name} has passed its gate (7)." if (row.get("gate") or {}).get("passed") else \
+            f"{name} has not passed its gate (7): live waits until it does." if L.get("auto_needs_gate", True) else \
+            f"{name} has not passed its gate (7), and live.auto_needs_gate is off: it trades anyway."
         off = [] if row.get("on", True) else [f"{name} is off: live enters nothing until space turns it on."]
         if st.get("live_enabled"):
             self.modal = {"type": "arm", "title": "MOVE LIVE", "color": RED, "buf": "", "variant": self.variant,
@@ -1265,14 +1279,13 @@ class Screen:
                                 *([] if st.get("keys") else ["", f"No key found yet: live stays off until {cfgmod.KEYFILE_ENV} exists."]),
                                 "", "type live and press enter (esc cancels):", "> "]}
 
-    def open_settings(self, variant: str | None = None) -> None:
-        """The settings box (the desk's and the screen's), or the same box on a variant's settings, as a draft."""
-        self.overlay, self.set_buf, self.edit_var, self.draft = "settings", None, variant, {}
+    def open_edit(self, variant: str) -> None:
+        """The settings rows on a variant's settings, as a draft, over the variants."""
+        self.overlay, self.set_buf, self.edit_var, self.draft = "edit", None, variant, {}
         self.set_sub = 0
-        if variant is not None:
-            self.set_back, self.set_sel = self.set_sel, 0
+        self.set_back, self.set_sel = self.set_sel, 0
 
-    def close_settings(self) -> None:
+    def close_edit(self) -> None:
         self.overlay, self.set_buf = None, None
         if self.edit_var:
             self.edit_var, self.draft = None, {}
@@ -1546,9 +1559,9 @@ class Screen:
         return max(end, min(rows, len(logs)))
 
     def wheel(self, my: int, mx: int, d: int) -> None:
-        """Mouse wheel over a panel: d is -1 (up) or +1 (down)."""
+        """Mouse wheel over a box: d is -1 (up) or +1 (down)."""
         name = next((n for n, (y, x, h, w) in self.rects.items() if y <= my < y + h and x <= mx < x + w), None)
-        self.scroll(name, 3 * d if name == "report" else d)
+        self.scroll(name, 3 * d if name in ("report", "gate", "help") else d)
 
     def scroll(self, name: str | None, d: int) -> None:
         """Move one box d steps (negative is up). Boxes that don't scroll ignore it."""
@@ -1561,6 +1574,14 @@ class Screen:
                 self.var_sel = names[max(0, min(len(names) - 1, i + d))]
         elif name == "book":
             self.pos_off = max(0, self.pos_off + d)    # book_panel clamps the far end
+        elif name in ("gate", "help"):
+            self.offs[name] = max(0, self.offs.get(name, 0) + d)   # lines_panel clamps the far end
+        elif name == "settings":
+            self.set_sel, self.set_sub = (self.set_sel + (1 if d > 0 else -1)) % len(self.set_rows()), 0
+        elif name == "themes":
+            i = themes.NAMES.index(self.P.name) if self.P.name in themes.NAMES else 0
+            self.P.set_theme(themes.NAMES[max(0, min(len(themes.NAMES) - 1, i + d))])
+            self.save_prefs()
         elif name == "reports":
             ids = [r.id for r in self.rep_entries()]
             self.pick_report(ids[max(0, min(len(ids) - 1, ids.index(self.rep_sel) + d))])
@@ -1587,64 +1608,99 @@ class Screen:
             msg = f" {self.flash} "[:max(0, W - 4)]
             self.put(H - 2, 2, msg, self.P(YELLOW, bold=True) | curses.A_REVERSE)
 
-    def draw_overlay(self, lines: list, title: str, color: int = CYAN, scroll: bool = False, hints=None,
-                     pin: int = 0, follow: int | None = None) -> None:
-        """A centered box of lines. A line is a plain string (colored by `rich`) or a list of (text, attr).
-        With scroll, lines that don't fit scroll by self.ov_off (help and gate); ▲▼ and the place show on the border.
-        pin keeps the last pin lines in place (settings: the divider and what the row is) while the lines above
-        them scroll just enough to show line `follow` (the cursor's)."""
+    def lines_panel(self, y: int, x: int, h: int, w: int, name: str, lines: list, pin: int = 0, follow: int | None = None) -> None:
+        """A box of lines (gate, help, settings). A line is a plain string (colored by `rich`) or a list of (text, attr).
+        ↑↓ scroll lines that don't fit. pin keeps the last pin lines at the bottom while the ones above them scroll
+        just enough to show line `follow` (the cursor's)."""
+        P = self.P
+        self.box(y, x, h, w, name, P.border(BORDER[name]), PANEL_KEYS[name](self))
+        lines = [self.rich(l) if isinstance(l, str) else l for l in lines]
+        body, foot = (lines[:-pin], lines[-pin:]) if pin else (lines, [])
+        room = h - 2 - pin
+        off = max(0, min(self.offs.get(name, 0), len(body) - room))
+        if follow is not None:
+            off = min(max(off, follow - room + 1), follow)
+        self.offs[name] = off
+        saved, self.clip = self.clip, x + w - 2
+        at = [(y + 1 + j, l) for j, l in enumerate(body[off:off + room])] + [(y + h - 1 - pin + j, l) for j, l in enumerate(foot)]
+        for yy, l in at:
+            cx = x + 2
+            for text, attr in l:
+                if text == RULE_LINE:                      # a divider across the box
+                    text = "─" * (w - 4)
+                self.put(yy, cx, text, attr); cx += len(text)
+        self.clip = saved
+        if off > 0:
+            self.put(y + 1, x + w - 2, "▲", P(YELLOW))
+        if off + room < len(body):
+            self.put(y + room, x + w - 2, "▼", P(YELLOW))
+        if len(body) > room and not pin and not self.flashing():
+            self.put(y + h - 1, x + 3, f" {off + 1}-{min(len(body), off + room)} of {len(body)} ", P(P.grey))
+
+    def gate_panel(self, y, x, h, w) -> None:
+        self.lines_panel(y, x, h, w, "gate", self.gate_lines())
+
+    def help_panel(self, y, x, h, w) -> None:
+        self.lines_panel(y, x, h, w, "help", self.help_lines(w + 4))
+
+    def settings_panel(self, y, x, h, w) -> None:
+        if self.edit_var:                                  # (never drawn: the editor is over the variants)
+            return
+        lines = self.settings_lines()
+        self.lines_panel(y, x, h, w, "settings", lines, pin=len(lines) - self.set_foot, follow=self.set_line)
+
+    def themes_panel(self, y, x, h, w) -> None:
+        """Every theme, with its colors; the highlighted one is in use."""
+        P = self.P
+        self.box(y, x, h, w, "themes", P.border(BORDER["themes"]), PANEL_KEYS["themes"](self))
+        names, cw, room = themes.NAMES, 32, h - 2
+        cols = max(1, (w - 4) // cw)
+        self.theme_rows = rows = max(1, -(-len(names) // cols))
+        at = names.index(P.name) if P.name in names else 0
+        off = max(0, min(at % rows - room + 1, rows - room)) if rows > room else 0
+        for i, name in enumerate(names):
+            c, r = divmod(i, rows)
+            if not 0 <= r - off < room:
+                continue
+            yy, cx, on = y + 1 + r - off, x + 2 + c * cw, i == at
+            self.put(yy, cx, ("▸ " if on else "  "), P(P.c("key"), bold=True))
+            self.put(yy, cx + 2, f"{name:<17}", P(P.c("variant") if on else WHITE, bold=on))
+            t = themes.THEMES[name]
+            for j, col in enumerate([t["key"], *t["grads"]["yes"]][:9]):
+                self.put(yy, cx + 19 + j, "█", P(col) if P.many else 0)
+        if not P.many:
+            self.put(y + h - 2, x + 2, "full color needs a 256-color terminal", P(YELLOW))
+
+    def draw_overlay(self, lines: list, title: str, color: int = CYAN, hints=None, pin: int = 0, follow: int | None = None) -> None:
+        """A centered box of lines over the screen: a question, or a variant being edited. pin and follow as in
+        lines_panel."""
         H, W = self.s.getmaxyx()
         lines = [self.rich(l) if isinstance(l, str) else l for l in lines]
         w = min(W - 4, max(sum(len(t) for t, _ in l) for l in lines) + 4)
         h = min(H - 2, len(lines) + 2)
         y, x = (H - h) // 2, (W - w) // 2
-        room = h - 2
-        off = 0
-        if pin and len(lines) > room and room > pin:
-            body, foot = lines[:-pin], lines[-pin:]
-            br = room - pin
+        room, off = h - 2, 0
+        body, foot = (lines[:-pin], lines[-pin:]) if pin else (lines, [])
+        br = room - pin
+        if len(body) > br:
             off = self.pin_off = max(0, min(getattr(self, "pin_off", 0), len(body) - br))
             if follow is not None:
                 off = self.pin_off = min(max(off, follow - br + 1), follow)
-            for r in range(h):
-                self.put(y + r, x, " " * w)
-            self.box(y, x, h, w, title, color, hints or [("any key", " closes")])
-            saved, self.clip = self.clip, x + w - 2
-            for j, l in enumerate(body[off:off + br] + foot):
-                cx = x + 2
-                for text, attr in l:
-                    if text == RULE_LINE:
-                        text = "─" * (w - 4)
-                    self.put(y + 1 + j, cx, text, attr); cx += len(text)
-            self.clip = saved
-            if off > 0:
-                self.put(y + 1, x + w - 2, "▲", self.P(YELLOW))
-            if off + br < len(body):
-                self.put(y + br, x + w - 2, "▼", self.P(YELLOW))
-            return
-        if scroll:
-            self.ov_room, self.ov_len = room, len(lines)
-            self.ov_off = off = max(0, min(self.ov_off, len(lines) - room))
         for r in range(h):
             self.put(y + r, x, " " * w)
-        long = scroll and len(lines) > room
-        self.box(y, x, h, w, title, color, hints or ([("↑↓", " scroll"), ("esc", " close")] if long else [("any key", " closes")]))
+        self.box(y, x, h, w, title, color, hints or [("any key", " closes")])
         saved, self.clip = self.clip, x + w - 2
-        for j, l in enumerate(lines[off:off + room]):
+        for j, l in enumerate(body[off:off + br] + foot):
             cx = x + 2
             for text, attr in l:
-                if text == RULE_LINE:                      # a divider across the box
+                if text == RULE_LINE:
                     text = "─" * (w - 4)
                 self.put(y + 1 + j, cx, text, attr); cx += len(text)
         self.clip = saved
-        if long:
-            P = self.P
-            if off > 0:
-                self.put(y, x + w - 2, "▲", P(YELLOW))
-            if off + room < len(lines):
-                self.put(y + h - 1, x + w - 2, "▼", P(YELLOW))
-            where = f" {off + 1}-{min(len(lines), off + room)} of {len(lines)} "
-            self.put(y + h - 1, x + w - 4 - len(where), where, P(P.grey))
+        if off > 0:
+            self.put(y + 1, x + w - 2, "▲", self.P(YELLOW))
+        if off + br < len(body):
+            self.put(y + br, x + w - 2, "▼", self.P(YELLOW))
 
     def rich(self, line: str) -> list[tuple[str, int]]:
         """Color a line of help, gate or prompt text: a leading CAPS heading, [x] / [ ] checks, (k) key
@@ -1787,16 +1843,17 @@ class Screen:
         if rid != self.rep_sel:
             self.rep_sel, self.rep_off = rid, 0
 
-    def reports_screen(self, H: int, W: int) -> None:
-        """Two boxes over the whole screen but the status line: the list, and the report picked in it."""
+    def reports_panel(self, y, x, h, w) -> None:
+        """The list on the left, and the report picked in it."""
         P = self.P
         entries = self.rep_entries()
-        h, lw = H - 1, REPORT_LIST_W
-        # the list: LIVE, then SAVED
-        self.drawing = "reports"
-        self.rects["reports"] = (0, 0, h, lw)
-        self.box(0, 0, h, lw, "reports", P.border("book"), ["↑↓"])
-        rows: list = []                                   # a heading, "" or an entry
+        cur = next(r for r in entries if r.id == self.rep_sel)
+        lw = REPORT_LIST_W
+        self.box(y, x, h, w, "reports", P.border(BORDER["reports"]), PANEL_KEYS["reports"](self))
+        self.rects = {"reports": (y, x, h, lw + 1), "report": (y, x + lw + 1, h, w - lw - 1)}
+        for r in range(1, h - 1):
+            self.put(y + r, x + lw, "│", P(P.border(BORDER["reports"])))
+        rows: list = []                                   # a heading, "" or an entry: LIVE, then SAVED
         for saved, title in ((False, "LIVE"), (True, "SAVED")):
             these = [r for r in entries if r.saved == saved]
             rows += ([""] if rows else []) + [title] + (these or ["  none yet"])
@@ -1806,54 +1863,48 @@ class Screen:
         self.rep_top = min(max(self.rep_top, at - room + 1), max(0, at - 1))   # the first entry: its heading too
         self.rep_rows = {}
         for j, r in enumerate(rows[self.rep_top:self.rep_top + room]):
-            yy = 1 + j
+            yy = y + 1 + j
             if isinstance(r, str):
-                self.put(yy, 2, r, P(P.c("head"), bold=True) if r.isupper() else P(WHITE))
+                self.put(yy, x + 2, r, P(P.c("head"), bold=True) if r.isupper() else P(WHITE))
                 continue
             sel = r.id == self.rep_sel
             base = curses.A_REVERSE if sel else 0
-            name = r.label if len(r.label) <= lw - 6 else r.label[:lw - 7] + "…"
-            self.put(yy, 1, f"   {name}".ljust(lw - 2), P(P.pick("rows", entries.index(r) / max(1, len(entries) - 1)), bold=sel) | base)
+            name = r.label if len(r.label) <= lw - 5 else r.label[:lw - 6] + "…"
+            self.put(yy, x + 1, f"   {name}".ljust(lw - 1), P(P.pick("rows", entries.index(r) / max(1, len(entries) - 1)), bold=sel) | base)
             self.rep_rows[yy] = r.id
         if self.rep_top > 0:
-            self.put(1, lw - 1, "▲", P(YELLOW))
+            self.put(y + 1, x + lw - 1, "▲", P(YELLOW))
         if self.rep_top + room < len(rows):
-            self.put(h - 2, lw - 1, "▼", P(YELLOW))
-        # the report
-        cur = next(r for r in entries if r.id == self.rep_sel)
-        x, w = lw, W - lw
-        self.drawing = "report"
-        self.rects["report"] = (0, x, h, w)
-        self.box(0, x, h, w, cur.label, P.border("ladder"),
-                 ([] if cur.saved else [("s", "ave")]) + [("←→", " box"), ("↑↓", " scroll" if self.rep_focus == "report" else " pick"), ("esc", " close")])
-        self.drawing = ""
+            self.put(y + h - 2, x + lw - 1, "▼", P(YELLOW))
+        # the report: what it is and where it comes from, then its lines
+        rx, rw = x + lw + 2, w - lw - 4
+        room = h - 4
         got = reports.FEED.get(self.runtime, cur.id)
+        src = f"runtime/{cur.id[len('saved:'):]}" if cur.saved else \
+            reports.command(cur.id) + (time.strftime(" · worked out %H:%M:%S", time.localtime(got.at)) if got else "")
+        self.put(y + 1, rx, cur.label, P(P.c("head"), bold=True))
+        self.put(y + 1, rx + len(cur.label) + 2, src, P(P.c("ticker")))
         if got is None:
             self.rep_room, self.rep_len = room, 0
-            self.put(2, x + 3, "reading the records…", P(WHITE)); return
-        key = (got, w, P.name, P.many)
+            self.put(y + 3, rx, "reading the records…", P(WHITE)); return
+        key = (got, rw, P.name, P.many)
         if not self.rep_drawn or self.rep_drawn[0][0] is not got or self.rep_drawn[0][1:] != key[1:]:
-            self.rep_drawn = (key, self.report_spans(wrap_report(got.lines, w - 4)))
+            self.rep_drawn = (key, self.report_spans(wrap_report(got.lines, rw)))
         lines = self.rep_drawn[1]
         self.rep_room, self.rep_len = room, len(lines)
         self.rep_off = off = max(0, min(self.rep_off, len(lines) - room))
         saved, self.clip = self.clip, x + w - 2
         for j, spans in enumerate(lines[off:off + room]):
-            cx = x + 2
+            cx = rx
             for text, attr in spans:
-                self.put(1 + j, cx, text, attr); cx += len(text)
+                self.put(y + 3 + j, cx, text, attr); cx += len(text)
         self.clip = saved
-        # the bottom border: where it comes from, and the place in it
-        src = f"runtime/{cur.id[len('saved:'):]}" if cur.saved else \
-            reports.command(cur.id) + time.strftime(" · worked out %H:%M:%S", time.localtime(got.at))
-        self.put(h - 1, x + 3, f" {src} ", P(P.c("ticker")))
         if off > 0:
-            self.put(1, x + w - 1, "▲", P(YELLOW))
+            self.put(y + 3, x + w - 2, "▲", P(YELLOW))
         if off + room < len(lines):
-            self.put(h - 2, x + w - 1, "▼", P(YELLOW))
-        if len(lines) > room:
-            where = f" {off + 1}-{off + room} of {len(lines)} "
-            self.put(h - 1, x + w - 3 - len(where), where, P(P.c("key"), bold=True))
+            self.put(y + h - 2, x + w - 2, "▼", P(YELLOW))
+        if len(lines) > room and not self.flashing():
+            self.put(y + h - 1, rx, f" {off + 1}-{off + room} of {len(lines)} ", P(P.grey))
 
     def report_spans(self, lines: list[str]) -> list[list[tuple[str, int]]]:
         """A report's lines, colored: tables as in the variants box, headings, names, and what rich colors."""
@@ -1886,28 +1937,6 @@ class Screen:
             out[-1] = [(t, a) for t, a in out[-1] if t]
         return out
 
-    def reports_key(self, ch: int) -> None:
-        step = {curses.KEY_UP: -1, ord("k"): -1, curses.KEY_DOWN: 1, ord("j"): 1}.get(ch)
-        page = {curses.KEY_PPAGE: -1, curses.KEY_NPAGE: 1, ord(" "): 1}.get(ch)
-        if ch in (27, ord("o"), ord("q"), ord("Q")):
-            self.overlay = None
-        elif step:
-            self.scroll(self.rep_focus, step)
-        elif page:                                        # these page the report from either box
-            self.scroll("report", page * max(1, self.rep_room - 1))
-        elif ch in (curses.KEY_HOME, curses.KEY_END):
-            self.scroll(self.rep_focus, -10 ** 6 if ch == curses.KEY_HOME else 10 ** 6)
-        elif ch in (curses.KEY_LEFT, curses.KEY_RIGHT, 10, 13, curses.KEY_ENTER):
-            self.rep_focus = "reports" if ch == curses.KEY_LEFT else "report"
-        elif ch == ord("s"):
-            self.save_report()
-        elif ch == ord("P"):
-            self.engine_key()
-        elif ch in (9, curses.KEY_BTAB):
-            self.rep_focus = "report" if self.rep_focus == "reports" else "reports"
-        elif ch in (ord("t"), ord("T")):
-            self.next_theme(-1 if ch == ord("T") else 1)
-
     def engine_key(self) -> None:
         """P: pause the engine (asks first): it saves and stops until it is started again. Or start it."""
         if engine_alive(self.runtime):
@@ -1936,11 +1965,6 @@ class Screen:
             self.rep_saving, self.rep_at = False, 0.0     # the list is looked up again
             self.say(msg)
         threading.Thread(target=work).start()             # not a daemon: closing the screen lets it finish
-
-    def next_theme(self, d: int) -> None:
-        self.P.set_theme(themes.next_name(self.P.name, d))
-        self.save_prefs()
-        self.say(f"theme {self.P.name}" + ("" if self.P.many else " (needs a 256-color terminal)"))
 
     # ------------------------------------------------------------ settings (s)
     def set_rows(self) -> list:
@@ -2164,17 +2188,15 @@ class Screen:
         elif ord("0") <= ch <= ord("9"):
             if row.kind in ("usd", "n", "p", "cap"):      # the rest have nothing to type
                 self.set_buf = chr(ch)
-        elif not self.edit_var:                           # esc, s or anything else closes it
-            self.close_settings()
-        elif ch == ord("s"):
+        elif self.edit_var and ch == ord("s"):
             self.save_draft()
-        elif ch == 27:                                    # a draft goes only with esc, not with a stray key
+        elif self.edit_var and ch == 27:                                    # a draft goes only with esc, not with a stray key
             vn = self.var_new
             if vn and (self.edit_var, self.draft) == (vn["variant"], vn["draft"]):
                 self.say("closed: it is being saved")
             elif self.draft:
                 self.say("changes thrown away" + ("" if vn else ": nothing was saved"))
-            self.close_settings()
+            self.close_edit()
 
     def logs_shown(self) -> list:
         """The engine's log lines the log box shows, after the log filter (settings, s)."""
@@ -2200,26 +2222,17 @@ class Screen:
             self.put(0, 0, f"tern needs at least 100x30 (now {W}x{H})", self.P(RED, bold=True)); self.s.refresh(); return
         self.header(H, W)
         self.rects = {}
-        if self.overlay == "reports":
-            self.reports_screen(H, W)
-            self.footer(H, W)
-            if self.modal:                           # P: pause the engine?
-                self.draw_overlay(self.modal["lines"], self.modal["title"], self.modal.get("color", YELLOW))
-            self.s.refresh(); return
         self.pick_strike()
         self.rects[self.tab] = (0, 0, H - 1, W)          # the status line takes the last row
         self.clip, self.drawing = W - 1, self.tab
         getattr(self, self.tab + "_panel")(0, 0, H - 1, W)
         self.clip, self.drawing = None, ""
         self.footer(H, W)
-        if self.overlay == "settings":
+        if self.overlay == "edit":
             lines = self.settings_lines()
-            self.draw_overlay(lines, f"edit {self.vn(self.edit_var)}" if self.edit_var else "settings", self.P.border("contract"), pin=len(lines) - self.set_foot,
-                              follow=self.set_line, hints=[("↑↓", " pick"), ("←→", " step"), ("enter", " type")] +
-                              ([("s", "ave as new"), ("esc", " discard")] if self.edit_var else [("esc", " close")]))
-        elif self.overlay:
-            lines = self.help_lines(W) if self.overlay == "help" else self.gate_lines()
-            self.draw_overlay(lines, self.overlay, self.P.border("contract"), scroll=True)
+            self.draw_overlay(lines, f"edit {self.vn(self.edit_var)}", self.P.border("contract"), pin=len(lines) - self.set_foot,
+                              follow=self.set_line, hints=[("↑↓", " pick"), ("←→", " step"), ("enter", " type"),
+                                                           ("s", "ave as new"), ("esc", " discard")])
         if self.modal:
             self.draw_overlay(self.modal["lines"], self.modal["title"], self.modal.get("color", YELLOW))
         self.s.refresh()
@@ -2232,12 +2245,8 @@ class Screen:
             except curses.error:
                 return True
             d = -1 if bs & curses.BUTTON4_PRESSED else 1 if bs & curses.BUTTON5_PRESSED else 0
-            if d and self.overlay == "settings" and not self.modal:
+            if d and self.overlay == "edit" and not self.modal:
                 self.set_sel = (self.set_sel + d) % len(self.set_rows())
-            elif d and self.overlay == "reports":
-                self.wheel(my, mx, d)
-            elif d and self.overlay and not self.modal:
-                self.ov_off = max(0, self.ov_off + 3 * d)
             elif d and not self.modal:
                 self.wheel(my, mx, d)
             return True
@@ -2302,26 +2311,25 @@ class Screen:
                     self.say("engine kept running")
                 return True
             return True
-        if self.overlay == "settings":
+        if self.overlay == "edit":
             self.settings_key(ch)
             return True
-        if self.overlay == "reports":
-            self.reports_key(ch)
-            return True
-        if self.overlay:
-            step = {curses.KEY_UP: -1, ord("k"): -1, curses.KEY_DOWN: 1, ord("j"): 1, curses.KEY_PPAGE: -(self.ov_room - 1),
-                    curses.KEY_NPAGE: self.ov_room - 1, ord(" "): self.ov_room - 1,
-                    curses.KEY_HOME: -10 ** 6, curses.KEY_END: 10 ** 6}.get(ch)
-            if step is not None and self.ov_len > self.ov_room:   # draw_overlay clamps the far end
-                self.ov_off = max(0, min(self.ov_len - self.ov_room, self.ov_off + step))
-            else:
-                self.overlay = None
+        tab_key = ch in (9, curses.KEY_BTAB)
+        if self.tab == "settings" and not tab_key and (self.set_buf is not None or ch in (
+                curses.KEY_UP, curses.KEY_DOWN, curses.KEY_LEFT, curses.KEY_RIGHT, ord("j"), ord("k"), ord("-"), ord("+"),
+                ord("="), ord(" "), 10, 13, curses.KEY_ENTER)):
+            self.settings_key(ch)                        # (a value being typed takes every key but tab)
             return True
         if ch in (ord("q"), ord("Q")):
             return False
         if ch in (curses.KEY_UP, curses.KEY_DOWN, curses.KEY_PPAGE, curses.KEY_NPAGE, ord("k"), ord("j")):
-            self.scroll(self.tab, {curses.KEY_UP: -1, ord("k"): -1, curses.KEY_DOWN: 1, ord("j"): 1,
+            page = ch in (curses.KEY_PPAGE, curses.KEY_NPAGE)
+            self.scroll("report" if self.tab == "reports" and page else self.tab, {curses.KEY_UP: -1, ord("k"): -1, curses.KEY_DOWN: 1, ord("j"): 1,
                                      curses.KEY_PPAGE: -10, curses.KEY_NPAGE: 10}[ch])
+        elif ch in (curses.KEY_HOME, curses.KEY_END):
+            self.scroll("report" if self.tab == "reports" else self.tab, -10 ** 6 if ch == curses.KEY_HOME else 10 ** 6)
+        elif ch in (curses.KEY_LEFT, curses.KEY_RIGHT) and self.tab == "themes":
+            self.scroll("themes", -self.theme_rows if ch == curses.KEY_LEFT else self.theme_rows)
         elif ch in (10, 13, curses.KEY_ENTER):
             self.select_variant()
         elif ch in (ord("D"), ord(" ")):
@@ -2332,16 +2340,14 @@ class Screen:
                          self.back_to("highlight one first"))
         elif ch == ord("r"):
             self.rename_ask()
-        elif ord("1") <= ch <= ord(str(len(BOXES))):
-            self.show_tab(BOXES[ch - ord("1")])
-        elif ch in (9, curses.KEY_BTAB):
+        elif 0 < ch < 128 and chr(ch) in BOX_KEYS:
+            self.show_tab(BOXES[BOX_KEYS.index(chr(ch))])
+        elif tab_key:
             self.show_tab(BOXES[(BOXES.index(self.tab) + (-1 if ch == curses.KEY_BTAB else 1)) % len(BOXES)])
         elif ch == ord("C"):
             order = list(cfgmod.SERIES)
             self.series = order[(order.index(self.series) + 1) % len(order)] if self.series in order else order[0]
             self.sel = None; self.write_view(); self.save_prefs(); self.say(f"viewing {cfgmod.SERIES[self.series]}")
-        elif ch in (ord("t"), ord("T")):
-            self.next_theme(-1 if ch == ord("T") else 1)
         elif ch == ord("c") and self.shown("spot"):
             order = list(CHARTS)
             self.chart = order[(order.index(self.chart) + 1) % len(order)] if self.chart in order else "15m"
@@ -2349,21 +2355,15 @@ class Screen:
         elif ch == ord("V") and self.shown("book"):
             cur = self.book_view or ("live" if self.st.get("mode") == "live" else "paper")
             self.book_view = "live" if cur == "paper" else "paper"
-        elif ch == ord("g"):
-            self.overlay, self.ov_off = "gate", 0
         elif ch == ord("e"):
             if self.shown("variants"):
                 self.edit_variant()
             else:
                 self.say("e edits a variant: " + self.back_to("highlight one, then e"))
-        elif ch == ord("o"):
-            self.overlay, self.rep_focus, self.rep_at = "reports", "reports", 0.0
-        elif ch == ord("?") or ch == ord("h"):
-            self.overlay, self.ov_off = "help", 0
         elif ch == ord("P"):
             self.engine_key()
-        elif ch == ord("s"):
-            self.open_settings()
+        elif ch == ord("s") and self.shown("reports"):
+            self.save_report()
         elif ch == ord("L"):
             self.live_key()
         return True

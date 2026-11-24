@@ -1325,13 +1325,13 @@ class Renames(Rig, unittest.TestCase):
 
 
 class SettingsBox(Rig, unittest.TestCase):
-    """s: the desk's settings and the screen's, and nothing of a variant's."""
+    """The desk's settings and the screen's, and nothing of a variant's."""
 
     def test_it_holds_the_desks_settings_only(self):
         from tern import config as cfgmod
         with tempfile.TemporaryDirectory() as d:
             k, scr = self.setup(d)
-            self.press("s")
+            self.press("9")
             rows = [r.key for r in scr.set_rows()]
             self.assertEqual(rows, [r.key for r in cfgmod.SETTINGS] + ["screen.log"])
             self.assertFalse([x for x in rows if x.startswith(("rule.", "strategy.")) or x == "paper_capital"])
@@ -1346,7 +1346,7 @@ class SettingsBox(Rig, unittest.TestCase):
             k, scr = self.setup(d)
             k.cfg.live.enabled = True; k.cfg.live.variant = "base"; self.sync()
             scr.variant = "band90"; self.sync(); self.cmds()                   # whichever variant is selected
-            self.press("s")
+            self.press("9")
             rows = [r.key for r in scr.set_rows()]
             for key, ch in (("live.capital_usd", self.curses.KEY_RIGHT), ("gate.min_entries", self.curses.KEY_LEFT)):
                 scr.set_sel = rows.index(key)
@@ -1368,7 +1368,7 @@ class SettingsBox(Rig, unittest.TestCase):
             k = self.desk(d); k.seeded.add(self.T)
             with mock.patch.object(dash, "Pal", web.WebPal):
                 scr = dash.Screen(web.VTerm(31, 104), d)
-            k._read_view(); k._status(); scr.read(); scr.key(ord("s"))
+            k._read_view(); k._status(); scr.read(); scr.key(ord("9"))
             text = lambda: "\n".join("".join(r) for r in scr.s.ch)
             scr.set_sel = [r.key for r in scr.set_rows()].index("web.port"); scr.draw()
             self.assertIn("▸ port", text())
@@ -1388,12 +1388,27 @@ class SettingsBox(Rig, unittest.TestCase):
             for key in "reDL ":
                 scr.key(ord(key)); scr.draw()
                 self.assertIsNone(scr.overlay, key); self.assertIsNone(scr.modal, key)
-            scr.key(ord("s"))
+            scr.key(ord("9"))
             rows = [r.key for r in scr.set_rows()]
             for key, ch in (("alerts", ord(" ")), ("live.contracts", 261)):
                 scr.set_sel = rows.index(key); scr.key(ch)
             scr.draw()
             self.assertEqual(os.listdir(scr.cmd_dir), [])
+
+    def test_numbers_are_the_tabs_until_a_value_is_being_typed(self):
+        with tempfile.TemporaryDirectory() as d:
+            k, scr = self.setup(d)
+            self.press("9", self.curses.KEY_DOWN)                              # the largest order
+            self.press("3"); self.assertEqual((scr.tab, scr.set_buf), ("ladder", None))
+            self.press("9", 10, "4", "0", 10)
+            [c] = self.cmds()
+            self.assertEqual((c["key"], c["value"], scr.tab), ("live.max_order_usd", 40, "settings"))
+            self.press(10, "7", 27)                                            # esc leaves it as it was
+            self.assertEqual((scr.set_buf, scr.tab, self.cmds()), (None, "settings", []))
+            self.press(10, "7", 9)                                             # so does leaving the box
+            self.assertEqual((scr.set_buf, scr.tab, self.cmds()), (None, "themes", []))
+            self.press("9", "q" if False else "x", "e", "s")                   # nothing else is its
+            self.assertEqual((scr.tab, scr.overlay, self.cmds()), ("settings", None, []))
 
 
 class Tabs(Rig, unittest.TestCase):
@@ -1411,27 +1426,47 @@ class Tabs(Rig, unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             k, scr = self.setup(d)
             self.assertEqual(scr.tab, "spot")
-            for i, name in enumerate(dash.BOXES):
-                self.press(str(i + 1))
-                self.assertEqual((scr.tab, scr.rects), (name, {name: (0, 0, 39, 120)}))
+            self.assertEqual(len(dash.BOXES), len(dash.BOX_KEYS))
+            for key, name in zip(dash.BOX_KEYS, dash.BOXES):
+                self.press(key)
+                self.assertEqual(scr.tab, name)
+                self.assertTrue(all(r[1] + r[3] <= 120 and r[0] + r[2] <= 39 for r in scr.rects.values()))
                 top, _ = self.rows()
-                self.assertIn(f"┤{dash.SUPER[i]}{name}├", top)                  # this one, marked
-                for j, other in enumerate(dash.BOXES):                          # and every other
-                    self.assertIn(dash.SUPER[j] + other, top)
-                self.assertFalse(any(a & self.curses.A_REVERSE for a in scr.s.at[0]))
+                for other, sup in zip(dash.BOXES, dash.SUPER + " "):            # every box has a tab, whichever is shown
+                    self.assertIn(f"{sup}{other} ", top)
+                at = [top.index(f" {name} ") if name == "help" else top.index(name) for name in dash.BOXES]
+                self.assertEqual(at, sorted(at))
+                lit = {n for n, x in zip(dash.BOXES, at) if scr.s.at[0][x + 1] & self.curses.A_REVERSE}
+                self.assertEqual(lit, {name})                                   # the one on screen is the bright one
+                dark = [(scr.s.at[0][x + 1] >> 9) & 0x1FF for n, x in zip(dash.BOXES, at) if n != name]
+                self.assertTrue(all(b - 1 in dash.TAB_BG for b in dark))         # the others are filled too
             seen = []
             for key in (9, 9, self.curses.KEY_BTAB, self.curses.KEY_BTAB, self.curses.KEY_BTAB):
                 self.press(key); seen.append(scr.tab)
-            self.assertEqual(seen, ["spot", "contract", "spot", "log", "variants"])   # tab wraps, shift+tab goes back
-            self.press("7", "8", "9", "0", "v", "p", "n", "N", "R", 27, 260, 261)     # nothing there any more
+            self.assertEqual(seen, ["spot", "contract", "spot", "help", "themes"])   # tab wraps, shift+tab goes back
+            self.press("5")
+            self.press("v", "p", "n", "N", "R", "g", "o", "s", "t", "T", "?", 27, 260, 261)   # nothing there any more
             self.assertEqual((scr.tab, scr.overlay, scr.modal, self.cmds()), ("variants", None, None, []))
+
+    def test_tabs_fit_the_smallest_screen(self):
+        from tern import dash
+        with tempfile.TemporaryDirectory() as d:
+            k, scr = self.setup(d, 30, 100)
+            for W in (100, 104, 108, 111, 148):
+                self.size(30, W)
+                for key in dash.BOX_KEYS:
+                    self.press(key)
+                    top = self.rows()[0]
+                    self.assertTrue(top.endswith("╮") and top.startswith("╭"), (W, top))
+                    self.assertIn(" help ", top)
 
     def test_each_box_has_its_keys_below_and_the_log_the_rest(self):
         with tempfile.TemporaryDirectory() as d:
             k, scr = self.setup(d)
             want = {"1": ["Coin", "chart 15m"], "2": ["Coin", "↑↓ strike"], "3": ["Coin", "↑↓ strike"], "4": ["View", "Live", "↑↓"],
                     "5": ["⏎ select", "edit", "space on/off", "rename", "Delete", "Live", "↑↓"],
-                    "6": ["theme", "gate", "settings", "reports", "Pause" if scr.alive else "P start", "help", "quit", "↑↓"]}
+                    "6": ["Pause" if scr.alive else "P start", "quit", "↑↓"], "7": ["Live", "↑↓"], "8": ["save", "↑↓ pick", "PgUp PgDn scroll"],
+                    "9": ["↑↓ pick", "←→ step", "enter type"], "0": ["↑↓ ←→ pick"], "h": ["↑↓"]}
             for H, W in ((30, 100), (31, 104), (50, 160)):
                 self.size(H, W)
                 for key, hints in want.items():
@@ -1440,20 +1475,54 @@ class Tabs(Rig, unittest.TestCase):
                     for h in hints:
                         if h != "↑↓":                                           # (the first to go when they don't all fit)
                             self.assertIn(h, low, (key, W, low))
-                    others = {x for kk, hh in want.items() if kk != key for x in hh} - set(hints) - {"↑↓", "edit"}
-                    for x in others:
-                        self.assertNotIn(x, low, (key, W, low))
-                    self.assertFalse([h for h in hints if h in top and h not in ("Live", "edit")], top)
+                    for x in ("Coin", "View", "Delete", "quit", "save", "enter type"):
+                        if x not in hints:
+                            self.assertNotIn(x, low, (key, W, low))
 
-    def test_the_top_right_says_the_coin_and_the_bet(self):
+    def test_the_contract_says_the_bet(self):
         with tempfile.TemporaryDirectory() as d:
             k, scr = self.setup(d)
-            self.assertIn("btc-usd", self.rows()[0])
-            self.press("2")
-            self.assertIn("BTC above $", self.rows()[0])
-            for H, W in ((30, 100), (33, 111)):
-                self.size(H, W)
-                self.assertTrue(self.rows()[0].startswith("╭") and self.rows()[0].endswith("╮"))
+            self.press("2")                                                     # without having seen the ladder
+            self.assertIn("BTC above $", self.text().splitlines()[1])
+
+    def test_the_gate_and_the_help_scroll(self):
+        with tempfile.TemporaryDirectory() as d:
+            k, scr = self.setup(d, 30, 100)
+            for _ in range(12):                                                 # the gate lists every variant
+                self.new(k)
+            for key in "7h":
+                self.press(key)
+                first = self.text().splitlines()[1]
+                self.assertRegex(self.rows()[1], r" 1-\d+ of \d+ ")
+                self.press(self.curses.KEY_DOWN)
+                self.assertNotEqual(self.text().splitlines()[1], first)
+                self.press(self.curses.KEY_END, self.curses.KEY_DOWN); end = self.text()
+                self.assertNotIn("▼", end)
+                self.press(self.curses.KEY_UP)                                  # no slack built up past the end
+                self.assertNotEqual(self.text(), end)
+                self.press(self.curses.KEY_HOME)
+                self.assertEqual(self.text().splitlines()[1], first)
+
+    def test_the_themes_box_picks_as_it_moves(self):
+        import json
+        from tern import themes
+        with tempfile.TemporaryDirectory() as d:
+            k, scr = self.setup(d, 31, 104)
+            self.press("0")
+            for name in themes.NAMES:
+                self.assertIn(f" {name} ", self.text())
+            self.assertIn(f"▸ {scr.P.name}", self.text())
+            at = themes.NAMES.index(scr.P.name)
+            self.press(self.curses.KEY_DOWN)
+            self.assertEqual(scr.P.name, themes.NAMES[at + 1])
+            self.press(self.curses.KEY_RIGHT)
+            self.assertEqual(scr.P.name, themes.NAMES[at + 1 + scr.theme_rows])
+            self.press(self.curses.KEY_LEFT, self.curses.KEY_UP)
+            with open(os.path.join(d, "dash.json")) as fh:
+                self.assertEqual(json.load(fh)["theme"], themes.NAMES[at])
+            self.press(self.curses.KEY_HOME, self.curses.KEY_UP); self.assertEqual(scr.P.name, themes.NAMES[0])
+            self.press(self.curses.KEY_END, self.curses.KEY_DOWN, self.curses.KEY_RIGHT); self.assertEqual(scr.P.name, themes.NAMES[-1])
+            self.press("3", self.curses.KEY_LEFT); self.assertEqual(scr.P.name, themes.NAMES[-1])   # only on that box
 
     def test_coins_and_the_chart(self):
         from tern import config
@@ -1537,10 +1606,10 @@ class Tabs(Rig, unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             k, scr = self.setup(d, 31, 104)
             self.press("6")
-            scr.say("a message " * 5); self.sync()
+            scr.say("a message " * 8); self.sync()
             low = self.rows()[1]
             self.assertIn("a message a message", low)
-            self.assertNotIn("theme", low)
+            self.assertNotIn("Pause" if scr.alive else "P start", low)
             self.assertIn("quit", low)
             scr.say("x" * 300); self.sync()
             self.assertEqual(len(self.rows()[1]), 104)
@@ -1866,18 +1935,14 @@ class ScreenVariants(Rig, unittest.TestCase):
             self.press(10)                                                     # enter selects it
             self.assertEqual((self.cmds(), scr.variant), ([], "mine"))
 
-    def test_e_edits_and_s_is_the_settings(self):
+    def test_e_edits(self):
         with tempfile.TemporaryDirectory() as d:
             k, scr = self.setup(d)
             scr.variant, scr.var_sel = "late", "band90"; self.sync()
             self.press("e")
             self.assertIsNone(scr.overlay); self.assertIn("5 shows them", scr.flash)
-            self.press("s")
-            self.assertEqual((scr.overlay, scr.edit_var), ("settings", None))
-            self.press(27); self.press("5"); self.press("s")                   # from the variants too
-            self.assertEqual((scr.overlay, scr.edit_var), ("settings", None))
-            self.press(27); self.press("e")
-            self.assertEqual((scr.overlay, scr.edit_var), ("settings", "band90"))
+            self.press("5", "e")
+            self.assertEqual((scr.overlay, scr.edit_var), ("edit", "band90"))
             self.assertIn("edit band90", self.text())
             self.press(self.curses.KEY_RIGHT, "s", *"mine", 10); self.run_cmds()
             self.assertEqual((k.shadow.own.rule("mine")["band_lo"], k.shadow.own.all["mine"]["from"]), (0.91, "band90"))
@@ -1885,6 +1950,8 @@ class ScreenVariants(Rig, unittest.TestCase):
             self.assertEqual((scr.edit_var, scr.set_value("rule.band_lo")), ("mine", 0.91))
             self.press(27); self.press("n", "E")                               # there is only e
             self.assertEqual((scr.overlay, self.cmds()), (None, []))
+            self.press("9")                                                    # the settings box is the desk's again
+            self.assertIn("most at risk", self.text())
 
     def test_esc_throws_the_draft_away_and_other_keys_do_not(self):
         with tempfile.TemporaryDirectory() as d:
@@ -1893,7 +1960,7 @@ class ScreenVariants(Rig, unittest.TestCase):
             self.press(self.curses.KEY_RIGHT, self.curses.KEY_LEFT)
             self.assertEqual(scr.draft, {})                                    # back where it was: not a change
             self.press(self.curses.KEY_RIGHT, "e", "q", "x", "p")
-            self.assertEqual((scr.overlay, scr.draft), ("settings", {"band_lo": 0.81}))
+            self.assertEqual((scr.overlay, scr.draft), ("edit", {"band_lo": 0.81}))
             self.press("s", 27)                                                # out of the name: back in the draft
             self.assertEqual((scr.modal, scr.draft), (None, {"band_lo": 0.81}))
             self.press(27)
@@ -1909,7 +1976,7 @@ class ScreenVariants(Rig, unittest.TestCase):
             self.open()
             self.press(self.curses.KEY_RIGHT, "s", *"late", 10); self.run_cmds()   # a name already taken
             self.assertIn("already a variant's name", scr.flash)
-            self.assertEqual((scr.overlay, scr.edit_var, scr.draft, scr.var_new), ("settings", "band80", {"band_lo": 0.81}, None))
+            self.assertEqual((scr.overlay, scr.edit_var, scr.draft, scr.var_new), ("edit", "band80", {"band_lo": 0.81}, None))
             self.press("s", *"later", 10); self.run_cmds()
             self.assertEqual((k.shadow.own.active(), scr.overlay), (["later"], None))
 
@@ -2131,10 +2198,10 @@ class VariantSettingsReview(Rig, unittest.TestCase):
                 self.row(key); self.press("2", "0", 10)                        # (enter turns the choice on or off)
                 self.assertIsNone(scr.set_buf)
                 self.assertTrue(all(isinstance(v, list) for v in scr.draft.values()), scr.draft)
-            self.press(27); self.press("s")
+            self.press(27); self.press("9")
             scr.set_sel = [r.key for r in scr.set_rows()].index("alerts")
             self.press("1")
-            self.assertEqual((scr.set_buf, scr.overlay, self.cmds()), (None, "settings", []))
+            self.assertEqual((scr.set_buf, scr.overlay, self.cmds()), (None, None, []))
 
     # 2, 9
     def test_a_save_still_on_its_way_never_closes_another_draft(self):
@@ -2148,7 +2215,7 @@ class VariantSettingsReview(Rig, unittest.TestCase):
             self.assertIn("being saved", scr.flash)
             scr.var_sel = "band90"; self.press("e", self.curses.KEY_RIGHT)
             k.results[c["id"]] = k._command(c); self.sync()
-            self.assertEqual((scr.overlay, scr.edit_var, scr.draft), ("settings", "band90", {"band_lo": 0.91}))
+            self.assertEqual((scr.overlay, scr.edit_var, scr.draft), ("edit", "band90", {"band_lo": 0.91}))
             self.assertEqual(k.shadow.own.active(), ["mine"])
 
     def test_changes_made_after_the_save_stay_open(self):
@@ -2394,9 +2461,8 @@ class OneList(Rig, unittest.TestCase):
             self.assertIn("● +wide", self.text())
             self.press("4")
             self.assertIn("wide on paper", self.text())
-            self.press("g")
+            self.press("7")
             self.assertIn("wide trades live only when every one passes", self.text())
-            self.press(27)
             import json
             with open(os.path.join(d, "dash.json")) as fh:
                 self.assertEqual(json.load(fh)["variant"], "wide")             # the screen remembers it
@@ -2863,10 +2929,10 @@ class Web(unittest.TestCase):
             self.assertEqual(os.listdir(os.path.join(d, "cmd")), [])          # no command reached the engine
             self.assertFalse(os.path.exists(os.path.join(d, "dash.json")))     # the screen's prefs are its own
             self.assertIn("view only", "".join(t for t, _ in f["rows"][38]))
-            for k in ("t", "1", "c", "Tab", "BackTab", "Escape", "C"):
+            for k in ("0", "ArrowDown", "1", "c", "Tab", "BackTab", "Escape", "C"):
                 f = hub.handle({"sid": sid, "w": 120, "h": 40, "key": k})
             self.assertEqual(f["prefs"]["variant"], "band90")                  # ↓ then enter: selected, for this viewer
-            self.assertNotEqual(f["prefs"]["theme"], "classic")
+            self.assertEqual(f["prefs"]["theme"], "tokyo night")                # the themes box, for this viewer too
             self.assertEqual((f["prefs"]["chart"], f["prefs"]["tab"], f["prefs"]["series"]), ("1h", "spot", "KXETHD"))
             self.assertFalse({"hidden", "zoom", "page"} & set(f["prefs"]))
             row = "".join(t for t, _ in f["rows"][0])
@@ -2885,7 +2951,7 @@ class Web(unittest.TestCase):
             self.assertEqual((scr.tab, f["prefs"]["tab"]), ("book", "book"))   # a reload keeps it
             self.assertFalse({"page", "hidden", "zoom", "slot3"} & set(f["prefs"]))
             go = lambda **req: ["".join(t for t, _ in r) for r in hub.handle({"sid": sid, "w": 111, "h": 33, **req})["rows"]]
-            for i, name in enumerate(("spot", "contract", "ladder", "book", "variants", "log")):
+            for name in ("spot", "contract", "ladder", "book", "variants", "log", "gate", "reports", "settings", "themes", "help"):
                 rows = go()
                 go(click={"y": 0, "x": rows[0].index(name)})
                 self.assertEqual(scr.tab, name)
@@ -2896,8 +2962,9 @@ class Web(unittest.TestCase):
             go(key="6"); scr.flash = ""; rows = go()
             for hint in ("Pause", "start", "quit"):                            # the keys that change something are not drawn
                 self.assertNotIn(hint, rows[31])
-            go(click={"y": 31, "x": rows[31].index("gate")})                   # the rest are clicked as they are pressed
-            self.assertEqual(scr.overlay, "gate")
+            go(key="1"); rows = go()
+            go(click={"y": 31, "x": rows[31].index("chart")})                  # the rest are clicked as they are pressed
+            self.assertEqual(scr.chart, "1h")
             self.assertEqual(os.listdir(os.path.join(d, "cmd")), [])
             self.assertFalse(os.path.exists(os.path.join(d, "dash.json")))
 
@@ -2930,7 +2997,7 @@ class Web(unittest.TestCase):
             self.status(d)
             hub = Hub(d)
             sid = hub.handle({"w": 120, "h": 40})["sid"]
-            for k in ("s", "ArrowDown", "ArrowRight", "ArrowLeft", "Enter", "5", "Enter", " "):
+            for k in ("9", "ArrowDown", "ArrowRight", "ArrowLeft", "Enter", "5", "Enter", " "):
                 f = hub.handle({"sid": sid, "w": 120, "h": 40, "key": k})
             text = "\n".join("".join(t for t, _ in r) for r in f["rows"])
             self.assertIn("settings", text)                                    # the box is up
@@ -2945,7 +3012,7 @@ class Web(unittest.TestCase):
             self.status(d)
             hub = Hub(d)
             sid = hub.handle({"w": 120, "h": 40})["sid"]
-            for k in ("s", "ArrowUp", "ArrowRight"):                           # the last row: log shows
+            for k in ("9", "ArrowUp", "ArrowRight"):                           # the last row: log shows
                 f = hub.handle({"sid": sid, "w": 120, "h": 40, "key": k})
             self.assertEqual(f["prefs"]["log_filter"], "no_shadow")
             self.assertIn("saved at once", "\n".join("".join(t for t, _ in r) for r in f["rows"]))
@@ -3052,54 +3119,48 @@ class Reports(Rig, unittest.TestCase):
             self.until("this report could not be read", lambda: "\n".join(
                 (feed.get(d, "gone") or reports.Report([], 0)).lines))
 
-    def test_o_opens_the_reports_and_esc_closes_them(self):
+    def test_the_reports_box(self):
         with tempfile.TemporaryDirectory() as d:
             k, scr = self.setup(d)
             self.save(d, "report-2026-11-23.txt", "saved on a Monday\n")
             status = "".join(scr.s.ch[39])
-            self.cmds(); self.press("o")
-            self.assertEqual(scr.overlay, "reports")
+            self.cmds(); self.press("8")
             self.until("base: the rule")
-            for what in ("LIVE", "SAVED", "variants", "by period", "2026-11-23"):
+            for what in ("LIVE", "SAVED", "variants", "by period", "2026-11-23", "tern report · worked out"):
                 self.assertIn(what, self.text())
             self.assertEqual("".join(scr.s.ch[39])[:20], status[:20])          # the status line stays
-            for key in (27, "o", "q"):
-                self.press(key)
-                self.assertIsNone(scr.overlay, key)                            # q closes the reports, not the screen
-                self.press("o")
-            self.assertEqual(self.cmds(), [])
+            self.press(27, "o")
+            self.assertEqual((scr.tab, self.cmds()), ("reports", []))          # left as any box is
 
-    def test_arrows_pick_a_report_and_scroll_it(self):
+    def test_arrows_pick_a_report_and_pages_scroll_it(self):
         with tempfile.TemporaryDirectory() as d:
             k, scr = self.setup(d)
             self.save(d, "report-2026-11-23.txt", "".join(f"line {i:03}\n" for i in range(200)))
             c = self.curses
-            self.press("o", c.KEY_DOWN)
+            self.press("8", c.KEY_DOWN)
             self.until("settings 1")
-            self.press(c.KEY_END)                                              # the list: its last report
+            self.press(c.KEY_DOWN)                                             # the last report
             self.until("line 000")
-            self.press(c.KEY_RIGHT, c.KEY_DOWN)
+            self.press(c.KEY_NPAGE)
             self.assertNotIn("line 000", self.text())
-            self.assertIn("line 001", self.text())
+            self.assertIn("line 010", self.text())
             self.press(c.KEY_END)
             self.assertIn("line 199", self.text())
             self.assertIn("of 200", self.text())
-            self.press(c.KEY_DOWN, c.KEY_DOWN, c.KEY_UP)                       # no slack built up past the end
+            self.press(c.KEY_NPAGE, c.KEY_NPAGE, c.KEY_PPAGE)                  # no slack built up past the end
             self.assertNotIn("line 199", self.text())
             self.press(c.KEY_HOME)
             self.assertIn("line 000", self.text())
-            self.press(c.KEY_LEFT, c.KEY_NPAGE)                                # PgDn pages the report from the list too
-            self.assertNotIn("line 000", self.text())
-            self.press(c.KEY_UP)
-            self.until("settings 1")                                     # a new pick starts at its top
+            self.press(c.KEY_NPAGE, c.KEY_UP)
+            self.until("settings 1")                                           # a new pick starts at its top
             self.assertEqual(scr.rep_off, 0)
 
     def test_a_small_screen_shows_every_column_and_wraps_sentences(self):
         with tempfile.TemporaryDirectory() as d:
             k, scr = self.setup(d, 30, 100)
-            self.press("o")
+            self.press("8")
             self.until("multi: every coin at once")
-            self.press(" ")
+            self.press(self.curses.KEY_NPAGE)
             self.assertIn("2026-11-20)", self.text())                          # calm's description, wrapped, not cut
             row = next(l for l in self.text().splitlines() if "calm" in l and "+0.00" in l) if "+0.00" in self.text() else "+0.00"
             self.assertIn("+0.00", row)
@@ -3108,7 +3169,7 @@ class Reports(Rig, unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             k, scr = self.setup(d)
             self.save(d, "report-2026-11-23.txt", "".join(f"line {i:03}\n" for i in range(200)))
-            self.press("o", self.curses.KEY_END)
+            self.press("8", self.curses.KEY_DOWN, self.curses.KEY_DOWN)
             self.until("line 000")
             y, x, h, w = scr.rects["report"]
             scr.wheel(y + 3, x + 3, 1); self.sync()
@@ -3121,7 +3182,7 @@ class Reports(Rig, unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             k, scr = self.setup(d)
             self.save(d, "report-2026-11-23.txt", "old one\n")
-            self.press("o", self.curses.KEY_END)
+            self.press("8", self.curses.KEY_DOWN, self.curses.KEY_DOWN)
             self.until("old one")
             os.remove(os.path.join(d, "report-2026-11-23.txt"))
             scr.rep_at = 0
@@ -3148,14 +3209,12 @@ class Reports(Rig, unittest.TestCase):
             hub = Hub(d)
             sid = hub.handle({"w": 120, "h": 40})["sid"]
             go = lambda **req: ["".join(t for t, _ in r) for r in hub.handle({"sid": sid, "w": 120, "h": 40, **req})["rows"]]
-            self.until("base: the rule", lambda: "\n".join(go(key="o") if not hub.sessions[sid][0].overlay else go()))
+            go(key="8")
+            self.until("base: the rule", lambda: "\n".join(go()))
             rows = go()
             y = next(i for i, r in enumerate(rows) if "2026-11-23" in r[:24])
             go(click={"y": y, "x": rows[y].index("2026-11-23")})               # a click picks it
             self.until("saved on a Monday", lambda: "\n".join(go()))
-            rows = go()
-            go(click={"y": 0, "x": rows[0].index("close")})
-            self.assertIsNone(hub.sessions[sid][0].overlay)
             self.assertEqual(os.listdir(os.path.join(d, "cmd")), [])
             self.assertEqual(sorted(os.listdir(d)), ["cmd", "report-2026-11-23.txt"])
 
@@ -3184,14 +3243,14 @@ class Reports(Rig, unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             k, scr = self.setup(d)
             saved = lambda: [n for n in os.listdir(d) if n.startswith("report-")]
-            self.cmds(); self.press("o", self.curses.KEY_DOWN)
+            self.cmds(); self.press("8", self.curses.KEY_DOWN)
             self.assertIn("─save─", self.text())
             self.press("s")
             self.until("saved runtime/report-")
             [name] = saved()
             self.assertTrue(name.endswith("-by-period.txt"), name)
             self.until(f"{name[12:17]} {name[18:20]}:{name[20:22]} by-period")     # listed, whole
-            self.press(self.curses.KEY_END)
+            self.press(self.curses.KEY_DOWN)
             self.until("· tern report --periods")
             self.press("s")
             self.assertIn("already saved", self.text())
@@ -3204,20 +3263,20 @@ class Reports(Rig, unittest.TestCase):
         with tempfile.TemporaryDirectory() as d, mock.patch.object(dash, "engine_alive", lambda r: True), \
                 mock.patch.object(dash, "stop_engine", lambda *a: "asked to stop"):
             k, scr = self.setup(d)
-            self.press("6"); self.assertIn("─Pause─", self.text()); self.assertIn("─settings─", self.text())
+            self.press("6"); self.assertIn("─Pause─", self.text())
             self.cmds(); self.press("S")
             self.assertIsNone(scr.modal)                                       # S is gone
             self.press("P")
             self.assertEqual(scr.modal["type"], "stop")
             self.assertIn("Pause the engine?", self.text())
             self.press("n")
-            self.press("o", "P")                                               # from the reports too, asking over them
+            self.press("8", "P")                                               # from any box
             self.assertIn("Pause the engine?", self.text())
             self.press("y")
             self.assertIn("asked to stop", self.text())
-            self.assertEqual((scr.overlay, self.cmds()), ("reports", []))
+            self.assertEqual((scr.tab, self.cmds()), ("reports", []))
             with mock.patch.object(dash, "engine_alive", lambda r: False):
-                scr.alive_at = 0; self.press(27)
+                scr.alive_at = 0; self.press("6")
                 self.assertIn("─P start─", self.text())
 
     def test_a_save_that_fails_says_so(self):
@@ -3225,7 +3284,7 @@ class Reports(Rig, unittest.TestCase):
         from tern import reports
         with tempfile.TemporaryDirectory() as d:
             k, scr = self.setup(d)
-            self.press("o")
+            self.press("8")
             with mock.patch.object(reports, "lines", side_effect=OSError(28, "No space left on device")):
                 self.press("s")
                 self.until("not saved: No space left on device")
@@ -3239,11 +3298,11 @@ class Reports(Rig, unittest.TestCase):
             hub = Hub(d)
             sid = hub.handle({"w": 120, "h": 40})["sid"]
             go = lambda **req: "\n".join("".join(t for t, _ in r) for r in hub.handle({"sid": sid, "w": 120, "h": 40, **req})["rows"])
-            self.assertNotIn("─save─", go(key="o"))
+            self.assertNotIn("─save─", go(key="8"))
             self.assertIn("view only", go(key="s"))
             self.assertIn("view only", go(key="P"))                            # nor pauses the engine from in here
             self.assertIsNone(hub.sessions[sid][0].modal)
-            go(key="Escape")
+            go(key="6")
             for k in "P":
                 self.assertIn("view only", go(key=k))
                 self.assertIsNone(hub.sessions[sid][0].modal)
@@ -3292,9 +3351,9 @@ class Reports(Rig, unittest.TestCase):
     def test_the_hint_and_the_help_name_the_key(self):
         with tempfile.TemporaryDirectory() as d:
             k, scr = self.setup(d)
-            self.press("6"); self.assertIn("─reports─", self.text())
+            self.assertIn("⁸reports", self.text())
             text = "\n".join(l if isinstance(l, str) else "".join(t for t, _ in l) for l in scr.help_lines(200))
-            self.assertIn("reports: every record, live and saved", text)
+            self.assertIn("every record: worked out now, or saved", text)
 
 
 class WebLogin(unittest.TestCase):

@@ -4,8 +4,8 @@ The browser does not draw its own copy of the dash. Each browser tab gets a real
 drawing into a virtual terminal here; the cells go to the page, which paints them like foot does.
 So the web view always looks and behaves like the screen, minus the keys that change anything:
 no quit, engine stop or start, or live, and no making, renaming, turning on/off or deleting a
-variant. Selecting one (enter) only views it, for that viewer. The settings box (s) opens and its cursor moves,
-but only its log filter row changes (for that viewer). Reports (o) can be read but not saved. It sends
+variant. Selecting one (enter) only views it, for that viewer. The settings box opens and its cursor moves,
+but only its log filter row changes (for that viewer). Reports can be read but not saved. It sends
 no command files and never writes the screen's own view.json or dash.json. Its viewers' coins
 and strikes go to view-web.json, so the engine also sends those strikes' contract history.
 """
@@ -44,9 +44,9 @@ NAMED = {"ArrowUp": curses.KEY_UP, "ArrowDown": curses.KEY_DOWN, "ArrowLeft": cu
          "Home": curses.KEY_HOME, "End": curses.KEY_END, "Tab": 9, "BackTab": curses.KEY_BTAB,
          "Enter": 10, "Escape": 27, "Backspace": 127}
 # keys that only change what this viewer sees: they reach the screen; everything else stops here
-VIEW_KEYS = set("123456jktTcCVgseoh?") | {"Enter", "Escape", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "PageUp", "PageDown",
+VIEW_KEYS = set("1234567890hjkcCVe") | {"Enter", "Escape", "Home", "End", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "PageUp", "PageDown",
                                        "Tab", "BackTab"}
-CONTROL_KEYS = {"q": "quit", "Q": "quit", "P": "engine pause/start", "L": "live",
+CONTROL_KEYS = {"q": "quit", "Q": "quit", "P": "engine pause/start", "s": "saving a report", "L": "live",
                 "r": "renaming", " ": "turning a variant on or off",
                 "D": "deleting"}
 # border hints whose key changes something: not drawn on the web (⏎ selects a variant: it only views)
@@ -125,6 +125,10 @@ class WebPal(dash.Pal):
             a |= curses.A_DIM
         return a
 
+    def on(self, fg: int, bg: int, bold: bool = False) -> int:
+        """fg on bg: the background's index + 1 is in bits 9-17 (under curses' own bits, the ones the page reads)."""
+        return self(fg, bold=bold) | (bg + 1) << 9
+
 
 def clean_prefs(d) -> dict:
     """The parts of a dash.json-shaped dict the screen accepts, checked the way Screen.__init__ checks them."""
@@ -156,7 +160,7 @@ class WebScreen(dash.Screen):
             finally:
                 dash.Pal = real
         self.hub = hub
-        self.hits: list[tuple[int, int, int, str]] = []    # (y, x0, x1, key) of clickable hints and box numbers
+        self.hits: list[tuple[int, int, int, str]] = []    # (y, x0, x1, key) of clickable tabs and hints
         self.rowmap: dict[str, dict[int, str]] = {}         # box -> screen row -> ladder ticker / variant name
         self.apply_prefs(prefs or {})
         self.prefs = self.current_prefs()
@@ -230,9 +234,9 @@ class WebScreen(dash.Screen):
         segs = [s for s in segs if isinstance(s, str) or not set(s[0::2]) & CONTROL_HINTS and s[:2] not in (("e", "dit"), ("s", "ave"))]   # any key piece
         super().box(y, x, h, w, title, color, segs)
 
-    def tab_seg(self, y, x, i, name, color, border) -> int:
-        end = super().tab_seg(y, x, i, name, color, border)
-        self.hits.append((y, x, end, str(i + 1)))   # a click shows that box, as its number does
+    def tab_seg(self, y, x, i, name, color, gap) -> int:
+        end = super().tab_seg(y, x, i, name, color, gap)
+        self.hits.append((y, x, end, dash.BOX_KEYS[i]))   # a click shows that box, as its key does
         return end
 
     def hint(self, y, x, seg, border) -> None:
@@ -263,31 +267,22 @@ class WebScreen(dash.Screen):
         code = NAMED.get(name, ord(name) if len(name) == 1 else None)
         if code is None:
             return
-        if self.overlay:                         # help / gate: scroll keys scroll, any other key closes
-            self.key(code); return
-        if name in VIEW_KEYS:
+        if name in VIEW_KEYS or self.tab == "settings" and name in (" ", "+", "-", "="):   # (a setting: send_setting)
             self.key(code)
         elif name in CONTROL_KEYS:
             self.say(f"view only: {CONTROL_KEYS[name]} is done from the screen in the terminal")
 
     def wheel_at(self, cy: int, cx: int, d: int) -> None:
-        if self.overlay == "reports":
-            self.wheel(cy, cx, d)
-        elif self.overlay:
-            self.ov_off = max(0, self.ov_off + 3 * d)
-        else:
-            self.wheel(cy, cx, d)
+        self.wheel(cy, cx, d)
 
     def click(self, cy: int, cx: int) -> None:
         for y, x0, x1, k in self.hits:
             if y == cy and x0 <= cx < x1:
                 self.press(k); return
-        if self.overlay == "reports":            # a listed report is picked; elsewhere a click focuses the box
-            if cx < dash.REPORT_LIST_W and cy in self.rep_rows:
+        if self.tab == "reports":                # a listed report is picked
+            if cx <= dash.REPORT_LIST_W and cy in self.rep_rows:
                 self.pick_report(self.rep_rows[cy])
-            self.rep_focus = "reports" if cx < dash.REPORT_LIST_W else "report"; return
-        if self.overlay:
-            self.overlay = None; return
+            return
         for name, rows in self.rowmap.items():
             r = self.rects.get(name)
             if r and cy in rows and r[1] < cx < r[1] + r[3] - 1:

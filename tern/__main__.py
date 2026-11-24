@@ -5,7 +5,7 @@
   tern status           a plain-text summary
   tern report           the variants side by side, built in and your own (paper records)
   tern report --periods the same, split by settings period
-  tern report --save    save a summary (status, variants) as runtime/report-*.txt; o on the screen shows it
+  tern report --save    save a summary (status, variants) as runtime/report-*.txt; 8 on the screen shows it
   tern report-timer     write a systemd user timer that does that every Monday at 10:00
   tern live-check       test the Kalshi key: balance and positions, no orders
   tern web [--host H] [--port P] | --config
@@ -152,7 +152,7 @@ def _web_service(runtime: str, network: bool | None = None) -> int:
     print(f"Wrote {path}\n\nStart it now and at every login:\n"
           "  systemctl --user daemon-reload\n  systemctl --user enable --now tern-web\n\n"
           f"Then open http://localhost:{cfg.web.port}/ (https:// once tern web-cert has made a certificate).\n"
-          "Its port, on/off and network access are in the screen's settings box (s), WEB.")
+          "Its port, on/off and network access are in the screen's settings box (9), WEB.")
     return 0
 
 
@@ -187,7 +187,7 @@ def _report_timer(runtime: str) -> int:
             fh.write(text)
         print(f"Wrote {os.path.join(unit_dir, name)}")
     print("\nStart it:\n  systemctl --user daemon-reload\n  systemctl --user enable --now tern-save-report.timer\n\n"
-          "It saves a report every Monday at 10:00; o on the screen lists them.")
+          "It saves a report every Monday at 10:00; 8 on the screen lists them.")
     return 0
 
 
@@ -285,7 +285,7 @@ def main(argv: list[str]) -> int:
         if "--config" in argv:                   # the unit's way: the settings box's WEB rows
             W = cfgmod.load(runtime).web
             if not W.enabled:
-                print("tern web is off in the settings box (s, WEB): not starting"); return 0
+                print("tern web is off in the settings box (9, WEB): not starting"); return 0
             serve(runtime, host(W), W.port); return 0
         opt = dict(zip(argv[1::2], argv[2::2]))
         serve(runtime, opt.get("--host", "127.0.0.1"), int(opt.get("--port", 8787))); return 0

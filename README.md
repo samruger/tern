@@ -62,9 +62,10 @@ The write-up is [research/RESEARCH.md](research/RESEARCH.md).
 
 ## The screen
 
-One box fills the screen: spot, contract, ladder, book, variants or log. The others are tabs on its top border: `1` to
-`6` show one, and `tab` and shift+tab step through them. A box's own keys are on its bottom border, and the log's has
-every key that isn't one box's. The status line is always at the bottom.
+One box fills the screen: spot, contract, ladder, book, variants, log, gate, reports, settings, themes or help. The
+others are tabs on its top border: the key on a tab (`1` to `9`, `0`, `h`) shows it, and `tab` and shift+tab step
+through them. A box's own keys are on its bottom border, and the log's has every key that isn't one box's. The status
+line is always at the bottom.
 
 <img width="1364" height="668" alt="The variants, and the highlighted one's P&L by hour" src="docs/screenshots/02-page2-compare.png" />
 
@@ -152,7 +153,7 @@ hour's P&L divided by its standard error. These are paper results.
 
 ## Settings
 
-`s` opens the desk's settings: LIVE (its limits and contracts a strike), GATE, ALERTS, WEB, and what the log box shows.
+The settings box (`9`) has the desk's settings: LIVE (its limits and contracts a strike), GATE, ALERTS, WEB, and what the log box shows.
 How anything trades is in its variant. Every change is written down with its time in `runtime/settings-log.jsonl`. A
 hand edit of the strategy in `config.json` changes the built-in variants and starts a new settings period; rows are
 stamped with theirs, and `python3 -m tern report --periods` splits the results by it.
@@ -182,10 +183,10 @@ Selecting another variant later does not move live. `L` with another one selecte
 turn it off), and `L` with live's own selected turns it off. Once live:
 
 - **The variant goes live only after its own paper record passes the
-  gate** (`g`): 14 days, 300 settled entries, and P&L ≥ $0 after fees. Days are
+  gate** (`7`): 14 days, 300 settled entries, and P&L ≥ $0 after fees. Days are
   counted as hours it actually traded ÷ 24, so time with the engine or the variant off does
   not count. Moving live to another variant never skips this: that one needs its own record.
-  14, 300 and $0 are the defaults; the settings box (`s`) changes them.
+  14, 300 and $0 are the defaults; the settings box (`9`) changes them.
   Set `live.auto_needs_gate` to `false` to skip the gate.
 - **Size:** live buys `live.contracts` a strike, within the variant's most an hour. Live never falls back to another
   variant: one that is off or gone enters nothing until you pick one.
@@ -202,7 +203,7 @@ turn it off), and `L` with live's own selected turns it off. Once live:
 
 <img width="1364" height="668" alt="The log: paper settlements and each variant's running record" src="docs/screenshots/06-log-shadow.png" />
 
-The gate box (`g`) shows the checks, the variants and the live caps. Here it has been set stricter than
+The gate box (`7`) shows the checks, the variants and the live caps. Here it has been set stricter than
 the defaults, to 1000 entries and $100:
 
 <img width="1364" height="668" alt="The gate box" src="docs/screenshots/07-gate.png" />
@@ -229,30 +230,27 @@ Requests are signed (Ed25519 or RSA-PSS) in pure Python, checked against openssl
 
 | Key | What it does |
 |---|---|
-| `1`–`6` `tab` shift+tab | show a box |
+| `1`–`9` `0` `h` `tab` shift+tab | show a box |
 | `↑↓` `j` `k` `PgUp` `PgDn` | move in the box; so does the mouse wheel |
 | `C` | next coin |
 | `c` | chart span: 5m, 15m, 1h, 24h |
-| `t` / `T` | next / previous color theme |
+| `↑↓` `←→` | themes: pick one; settings: pick and step |
 | `V` | paper / live book |
 | `enter` | select the highlighted variant |
 | `e` | edit the highlighted variant; `s` saves a new variant, `esc` discards |
 | `space` | turn the highlighted variant on / off |
 | `D` `r` | delete / rename it |
-| `g` | the gate |
-| `s` | settings; in the reports, save the one shown |
-| `o` | reports (below) |
+| `s` | reports: save the one shown |
 | `L` | live: on with the selected variant, off, or moved to it |
 | `P` | pause (asks `y`) / start the engine |
-| `h` or `?` | help |
 | `q` | close the screen; the engine keeps running |
 
 ### Reports
 
-`o` opens the reports over the whole screen; the status line stays. The list on the left has two parts:
+The reports box (`8`) has the list on the left, in two parts:
 
 - **LIVE:** what `tern report` prints, worked out from the records as they stand: the variants side by side, and by
-  settings period. A report is worked out again when its records change; its bottom border says when it was.
+  settings period. A report is worked out again when its records change; its first line says when it was.
 - **SAVED:** the files named `report-*.txt` in `runtime/`, newest first, shown as written. `s` saves the live report
   on screen, `python3 -m tern report --save` a summary, and the weekly timer does that by itself:
 
@@ -262,8 +260,7 @@ systemctl --user daemon-reload
 systemctl --user enable --now tern-save-report.timer
 ```
 
-`←→` moves between the list and the report, `↑↓` picks or scrolls, `PgUp` `PgDn` page the report, and `esc` closes
-them. Reading one changes nothing, so the web screen has them too, without `s`.
+`↑↓` picks one and `PgUp` `PgDn` `Home` `End` scroll it. Reading one changes nothing, so the web screen has them too, without `s`.
 
 <img width="1364" height="668" alt="The reports: the list, and the variants by settings period" src="docs/screenshots/13-reports.png" />
 
@@ -271,7 +268,7 @@ them. Reading one changes nothing, so the web screen has them too, without `s`.
 
 ## Themes
 
-`t` and `T` step through 54 color themes. Full color needs a 256-color terminal. Sunset and mint chip:
+The themes box (`0`) lists 54 color themes; `↑↓` and `←→` pick one. Full color needs a 256-color terminal. Sunset and mint chip:
 
 <img width="1364" height="668" alt="The sunset theme" src="docs/screenshots/09-theme-sunset.png" />
 
@@ -282,12 +279,12 @@ them. Reading one changes nothing, so the web screen has them too, without `s`.
 `tern web` serves the screen at http://localhost:8787/ (`--port` to move it). It is not a copy of the
 screen: each browser tab runs the real screen code on a virtual terminal, and the page paints its cells
 with the colors and font from foot's config if there is one, or a built-in set. So it looks and behaves the same: the tabs, `c`
-chart span, `C` coins, `t`/`T` themes, `V` paper/live, `enter` selects a variant (for that browser), `g` gate, `h`
-help, `↑↓ ←→` and the wheel. Clicking a tab, a key on a box's border, or a ladder or variant row
+chart span, `C` coins, `V` paper/live, `enter` selects a variant (for that browser),
+themes, `↑↓ ←→` and the wheel. Clicking a tab, a key on a box's border, or a ladder or variant row
 does what the key would; on a phone, drag to scroll.
 
 It is view only. `q`, `P`, `L`, `r`, `D`, `space` and `e` do nothing there, and their
-hints are not drawn. The settings box (`s`) shows the settings but changes only what that browser's log box shows.
+hints are not drawn. The settings box shows the settings but changes only what that browser's log box shows.
 The web screen writes no command files and never touches the terminal's `dash.json` or `view.json`: each browser keeps its own settings. It writes `view-web.json` (in the same tmpfs folder)
 with the coins and strikes its viewers have up, so the engine sends those strikes' contract history
 too; the engine ignores the file 30 seconds after the last viewer leaves.
@@ -317,7 +314,7 @@ Secure, SameSite=Strict cookie. After a new password, restart `tern-web`: every 
 everyone make every sign-in wait. To reach it from another network, allow the port (8787 by default) through
 the host's firewall, and forward it to the host if there is NAT in between.
 
-**Settings box (`s`), WEB.** `web screen` turns it on and off, `port` moves it and `open to the
+**Settings box (`9`), WEB.** `web screen` turns it on and off, `port` moves it and `open to the
 network` switches between every address and localhost only. tern-web.service runs
 `tern web --config`, which reads those from `config.json`'s `web` section and exits (and stays down)
 when it is off. The engine restarts or stops the service as soon as one changes, from the box or by

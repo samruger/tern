@@ -1,4 +1,4 @@
-"""The reports: what `tern report` prints and the screen's reports box (o) shows.
+"""The reports: what `tern report` prints and the screen's reports box (8) shows.
 
 Live reports are worked out from the records each time: the variants side by side, and by settings period. Saved ones are the runtime folder's report-*.txt, shown as
 written; save() makes one (s on the screen, tern report --save, the weekly timer). Reading a report changes

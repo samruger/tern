@@ -104,7 +104,8 @@
   }
   function colors(a) {
     const n = (a & 0x1FF) - 1;
-    let fg = n >= 0 ? pal[n] : look.fg, bg = null;
+    const nb = ((a >> 9) & 0x1FF) - 1;
+    let fg = n >= 0 ? pal[n] : look.fg, bg = nb >= 0 ? pal[nb] : null;
     if (a & A.dim) fg = blend(fg, look.bg, 0.45);
     if (a & A.reverse) { bg = fg; fg = look.bg; }
     return [fg, bg, !!(a & A.bold)];
