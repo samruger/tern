@@ -1502,19 +1502,36 @@ class Tabs(Rig, unittest.TestCase):
                 if key == "h":
                     self.press(c.KEY_DOWN)                                      # the variants: more than fits
                     self.assertIn("VARIANTS", self.text()); self.assertNotIn("ABOUT", self.text())
-                first = self.text().splitlines()[1:8]
+                first = self.text().splitlines()[1:-3]
                 self.assertRegex(self.rows()[1], r" 1-\d+ of \d+ ")
                 self.press(down)
-                self.assertNotEqual(self.text().splitlines()[1:8], first)
+                self.assertNotEqual(self.text().splitlines()[1:-3], first)
                 self.press(c.KEY_END, down); end = self.text()
                 self.assertNotIn("▼", end)
                 self.press(up)                                                  # no slack built up past the end
                 self.assertNotEqual(self.text(), end)
                 self.press(c.KEY_HOME)
-                self.assertEqual(self.text().splitlines()[1:8], first)
+                self.assertEqual(self.text().splitlines()[1:-3], first)
             for _ in range(9):
                 self.press(c.KEY_DOWN)                                          # stops at the last section
             self.assertIn("COMMANDS", self.text()); self.assertIn("tern live-check", self.text())
+
+    def test_the_gates_variants_scroll_under_its_checks(self):
+        for H, W in ((30, 100), (32, 148)):
+            with tempfile.TemporaryDirectory() as d:
+                k, scr = self.setup(d, H, W)
+                c = self.curses
+                for n in range(24):
+                    self.new(k, name=f"v{n}")
+                self.sync(); self.press("7")
+                fixed = ("PAPER CHECKS", "GO LIVE", "LIMITS", "VARIANTS", "variant ")
+                for keys in ((), (c.KEY_DOWN,), (c.KEY_NPAGE, c.KEY_NPAGE), (c.KEY_END,)):
+                    self.press(*keys) if keys else None
+                    for want in fixed:
+                        self.assertIn(want, self.text(), (H, keys))
+                self.assertIn(" v23 ", self.text()); self.assertNotRegex(self.text(), r"base +\d+ +\d+ +\d+ "); self.assertNotIn("▼", self.text())
+                self.assertRegex(self.rows()[1], r" \d+-34 of 34 ")
+                self.press(c.KEY_HOME); self.assertRegex(self.text(), r"base +\d+ +\d+ +\d+ "); self.assertIn("▼", self.text())
 
     def test_every_help_section_draws_at_every_size(self):
         with tempfile.TemporaryDirectory() as d:

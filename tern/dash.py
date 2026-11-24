@@ -1836,10 +1836,13 @@ class Screen:
             self.put(y + r, x + lw, "│", self.P(self.P.border(name)))
 
     def gate_panel(self, y, x, h, w) -> None:
+        """The checks, going live and the limits stay put; the variants scroll under their heading."""
         self.box(y, x, h, w, "gate", self.P.border("gate"), PANEL_KEYS["gate"](self))
-        lines, room = self.gate_lines(w - 4), h - 2
-        self.offs["gate"] = off = self.pane(y + 1, x + 2, room, w - 4, lines, self.offs.get("gate", 0))
-        self.count_lines(y + h - 1, x + 3, off, room, len(lines))
+        top, rows = self.gate_lines(w - 4)
+        self.pane(y + 1, x + 2, h - 2, w - 4, top)
+        room = max(1, h - 2 - len(top))
+        self.offs["gate"] = off = self.pane(y + 1 + len(top), x + 2, room, w - 4, rows, self.offs.get("gate", 0))
+        self.count_lines(y + h - 1, x + 3, off, room, len(rows))
 
     def help_panel(self, y, x, h, w) -> None:
         """The sections on the left, and the one picked."""
@@ -2030,8 +2033,9 @@ class Screen:
         k = int(max(0.0, min(1.0, frac)) * n + 0.5)
         return [("■", P(g[i * (len(g) - 1) // max(1, n - 1)])) for i in range(k)] + [("■" * (n - k), P(P.t["fill"] if P.many else P.grey))]
 
-    def gate_lines(self, w: int = 100) -> list:
-        """The checks with how far each has come and what going live takes, then every variant side by side."""
+    def gate_lines(self, w: int = 100) -> tuple[list, list]:
+        """(the checks with how far each has come, what going live takes, the limits and the variants' heading; every
+        variant, side by side)."""
         st, P = self.st, self.P
         lw = (w - 3) // 2
         head = lambda text, note="": [(text, P(P.c("head"), bold=True)), (note, P(P.grey))]
@@ -2068,7 +2072,7 @@ class Screen:
         r = (self.vrow(self.variant) or {}).get("rule") or {}
         out += [[], head("LIMITS") + self.rich(f"   ${r.get('max_risk', 0):,.0f} at risk · ${r.get('max_order', 0):,.0f} per order · "
                                                f"-${r.get('day_loss', 0):,.0f} a day turns live off") + note]
-        rows = st.get("shadow") or []
+        rows, listed = st.get("shadow") or [], []
         if rows:
             table = shadowmod.table(rows)
             most = max([abs(r["pnl"]) for r in rows] + [1e-9])
@@ -2078,11 +2082,11 @@ class Screen:
                 num = P(P.pick("rows", j / max(1, len(rows) - 1)))
                 m = re.match(r"(\s*\S+)(.*)$", l)
                 n = int(abs(r["pnl"]) / most * bar + 0.5)
-                out.append([("  " + m[1], P(P.c("variant"), bold=True))] +
+                listed.append([("  " + m[1], P(P.c("variant"), bold=True))] +
                            [(t, P(GREEN, bold=True) if "+" in t else P(RED, bold=True) if re.match(r"-\d", t) else num)
                             for t in re.split(r"([+-]\d[\d.,]*)", m[2]) if t] +
                            [("   " + "■" * n, P(GREEN if r["pnl"] >= 0 else RED))])
-        return out
+        return out, listed
 
     # ------------------------------------------------------------ reports (o)
     def rep_entries(self) -> list:
