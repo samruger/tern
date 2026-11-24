@@ -24,6 +24,11 @@ def afford(n: float, unit: float, price: float, cash: float, rate: float = 0.07)
     return float(k)
 
 
+def limited(n: float, unit: float, at_risk: float, most: float, order: float) -> float:
+    """The most whole contracts, up to n, at unit each, with at_risk in open bets already: `most` at once, `order` at a time."""
+    return float(int(max(0.0, min(n, order / max(unit, 1e-6) + 1e-9, (most - at_risk) / max(unit, 1e-6) + 1e-9))))
+
+
 def latest(trades: list[dict], n: int = 20) -> list[dict]:
     """The last n fills and the last n settlements, in the order they came: a busy hour of one leaves the other in."""
     left, out = {"fill": n, "settle": n}, []

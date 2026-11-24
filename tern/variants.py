@@ -1,8 +1,13 @@
 """Your own variants: complete rules made on the screen.
 
 A variant here is everything about how it trades: band, slots, spread, coins, the two optional caps, contracts a
-strike, most an hour and its paper start. shadow.TABLE's variants are built in and take theirs from config.json. No variant ever changes once it is saved: e on the screen opens one as a draft, and saving that draft makes a
-new variant with an empty record (engine._variant_new), so a record is always one rule's.
+strike, most an hour, its limits (most at risk, largest order, daily loss) and its paper start. shadow.TABLE's variants
+are built in and take theirs from config.json. No variant ever changes once it is saved: e on the screen opens one as a
+draft, and saving that draft makes a new variant with an empty record (engine._variant_new), so a record is always one
+rule's.
+
+Paper and live both keep to a variant's limits. One made before limits were part of variants (2026-11-24) got the desk's of
+that day, and only live keeps to them (paper_limits False): its record goes on as it was made. So do the built-in ones.
 
 They are in variants.json beside the records, with the variants that are turned off. A variant that bought something and was then deleted
 stays listed there as deleted: its open entries still settle and its key is never used again.
@@ -17,7 +22,7 @@ import os
 import re
 import time
 
-from .config import SERIES, Setting
+from .config import GONE, SERIES, Setting, coin
 
 FILE = "variants.json"
 MAX_OWN = 24                                     # of your own
@@ -41,13 +46,21 @@ RULE_SETTINGS = [
     Setting("rule", "max_vol", "most volatility", 0, 50, 0.1, kind="cap",
             what="skip a slot when the coin's last hour moved more than this (bp a minute); off: never skip"),
     Setting("rule", "contracts", "contracts a strike", 1, 100, 1, kind="n", group="SIZE",
-            what="contracts it buys per strike per slot ($ P&L scales with it; live has its own, in settings)"),
+            what="contracts it buys per strike per slot"),
     Setting("rule", "max_hour_cost", "most an hour", 5, 2_000, 5,
-            what="$ it may put into one coin's hour, on paper and live"),
+            what="$ it may put into one coin's hour"),
+    Setting("rule", "max_risk", "most at risk", 5, 10_000, 5, group="LIMITS",
+            what="$ of open bets it may have at once, over all its coins"),
+    Setting("rule", "max_order", "largest order", 1, 1_000, 1,
+            what="$ one buy may cost; a bigger one is cut to fit"),
+    Setting("rule", "day_loss", "daily loss limit", 5, 5_000, 5,
+            what="$ it may lose since midnight before it stops for the day; live turns off"),
     Setting("rule", "paper_capital", "paper start", 100, 1_000_000, 100, group="PAPER",
             what="the cash it starts with; it never buys more than it has left"),
 ]
 SIZES = ("contracts", "max_hour_cost", "paper_capital")   # what variants saved before 2026-11-23 evening took from config.json
+LIMITS = ("max_risk", "max_order", "day_loss")            # and before 2026-11-24
+FILLED = (*SIZES, *LIMITS)
 RULE = {r.name: r for r in RULE_SETTINGS}
 FIELDS = tuple(RULE)
 
@@ -95,12 +108,12 @@ def checked(changes, rule: dict) -> dict:
         raise ValueError("the band must be two numbers") from None
 
 
-def as_rule(params: tuple, contracts: float, max_hour_cost: float, paper_capital: float) -> dict:
-    """shadow.params()'s tuple, with the size and the paper start, as a rule."""
+def as_rule(params: tuple, contracts: float, max_hour_cost: float, limits: tuple, paper_capital: float) -> dict:
+    """shadow.params()'s tuple, with the size, the limits and the paper start, as a rule."""
     lo, hi, cap, mins, spread, coins, mvol = params
     return {"band_lo": lo, "band_hi": hi, "minutes": list(mins), "max_spread": spread, "series": list(coins),
             "cap": cap, "max_vol": mvol, "contracts": contracts, "max_hour_cost": max_hour_cost,
-            "paper_capital": paper_capital}
+            **dict(zip(LIMITS, limits)), "paper_capital": paper_capital}
 
 
 def same(a: dict, b: dict) -> bool:
@@ -108,15 +121,17 @@ def same(a: dict, b: dict) -> bool:
     return key(a) == key(b)
 
 
-def describe(rule: dict) -> str:
-    """A rule in a line, as the variants box and tern report say it."""
+def describe(rule: dict, limits: bool = False) -> str:
+    """A rule in a line, as the variants box and tern report say it; its limits too, if its paper keeps to them."""
     out = [f"{rule['band_lo'] * 100:.0f}-{rule['band_hi'] * 100:.0f}¢", "slots " + " ".join(str(m) for m in rule["minutes"]),
-           f"≤{rule['max_spread'] * 100:.0f}¢ wide", " ".join(SERIES.get(c, c).split("-")[0] for c in rule["series"])]
+           f"≤{rule['max_spread'] * 100:.0f}¢ wide", " ".join(coin(c) for c in rule["series"])]
     if rule.get("cap"):
         out.append(f"{rule['cap']} a strike")
     if rule.get("max_vol"):
         out.append(f"vol ≤{rule['max_vol']:g}")
     out.append(f"{rule['contracts']:g}/strike · ${rule['max_hour_cost']:g}/h")
+    if limits:
+        out.append(f"risk ${rule['max_risk']:g} · order ${rule['max_order']:g} · day -${rule['day_loss']:g}")
     return " · ".join(out)
 
 
@@ -143,18 +158,19 @@ def why_bad(rule) -> str:
         return "its entries a strike is not a count"
     if rule["max_vol"] is not None and not (num(rule["max_vol"]) and rule["max_vol"] > 0):
         return "its most volatility is not a number"
-    if not all(num(rule[f]) and rule[f] >= 0 for f in SIZES):      # (a size of 0, config.json's only, buys nothing)
-        return "its size or paper start is not a number"
+    if not all(num(rule[f]) and rule[f] >= 0 for f in FILLED):     # (a size of 0, config.json's only, buys nothing)
+        return "its size, limits or paper start is not a number"
     return ""
 
 
 def _loaded(key, d, sizes: dict) -> dict | None:
     """One variant from variants.json, or None when it can't be used. Its name and dates are only for show.
-    sizes: what one saved before variants held their size and paper start gets."""
+    sizes: what one saved before variants held their size, limits and paper start gets."""
     if not (isinstance(key, str) and KEY.fullmatch(key) and isinstance(d, dict)):
         return None
     if isinstance(d.get("rule"), dict):
-        d = {**d, "rule": {**sizes, **d["rule"]}}
+        had = all(f in d["rule"] for f in LIMITS)
+        d = {"paper_limits": had, **d, "rule": {**sizes, **d["rule"]}}
     if why_bad(d.get("rule")):
         return None
     if not isinstance(d.get("deleted", False), bool):
@@ -163,35 +179,44 @@ def _loaded(key, d, sizes: dict) -> dict | None:
     return {"rule": d["rule"], "title": title if 0 < len(title) <= NAME_MAX else key,
             "from": d["from"] if isinstance(d.get("from"), str) else "",
             "was": d["was"] if isinstance(d.get("was"), str) else "",
-            "made": made if isinstance(made, (int, float)) else 0, "deleted": d.get("deleted", False)}
+            "made": made if isinstance(made, (int, float)) else 0, "deleted": d.get("deleted", False),
+            "paper_limits": d["paper_limits"] is True}
 
 
 class VariantSet:
     """The variants made on the screen. reserved: the names shadow.py holds (built in and retired). sizes: config.json's
-    contracts, most an hour and paper start, for variants saved before they held their own; guessed: config.json
+    contracts, most an hour, limits and paper start, for variants saved before they held their own; guessed: config.json
     could not be read, so sizes are the defaults and are never saved as those variants' own."""
 
     def __init__(self, dir: str, reserved=(), sizes: dict | None = None, guessed: bool = False):
         self.path = os.path.join(dir, FILE)
         self.reserved = tuple(reserved)
-        self.all: dict[str, dict] = {}           # key -> {rule, title, from, made, deleted, was (the profile it came from)}
+        self.all: dict[str, dict] = {}           # key -> {rule, title, from, made, deleted, was (the profile it came
+                                                 # from), paper_limits}
         self.off: set[str] = set()               # turned off (space), built in or own: no new entries
         self.changes = 0                         # goes up with every change: the engine's summaries cache on it
         self.by: dict[str, str] = {}             # variant -> the id of the command that made it, since the start
         self.used = lambda: set()                # keys that have records (Shadow sets it): never given to another
         self.unsized: dict[str, list] = {}       # variant -> the fields it got from sizes: keep_filled() saves them
         self.guessed = guessed
+        self.trimmed: dict[str, list] = {}       # variant -> its coins that are not traded any more, taken out as it loaded
         self.off_lost = False                    # which ones are off could not be read: all of them are on
         self.damaged = False                     # something in the file would not load: save() keeps a copy of it
         try:
             with open(self.path) as fh:
                 whole = json.load(fh)
             items = whole["variants"]
-            sizes = {**{"contracts": 5.0, "max_hour_cost": 60.0, "paper_capital": 1000.0}, **(sizes or {})}
+            sizes = {**{"contracts": 5.0, "max_hour_cost": 60.0, "paper_capital": 1000.0,
+                        "max_risk": 100.0, "max_order": 25.0, "day_loss": 30.0}, **(sizes or {})}
             got = {k: _loaded(k, v, sizes) for k, v in items.items() if k not in self.reserved}
             self.all = {k: v for k, v in got.items() if v is not None}
-            self.unsized = {k: fs for k in self.all if (fs := [f for f in SIZES if f not in items[k]["rule"]])}
+            self.unsized = {k: fs for k in self.all if (fs := [f for f in FILLED if f not in items[k]["rule"]])}
             self.damaged = len(self.all) != len(items)
+            for k, v in self.all.items():        # (a deleted one's rule says what it traded)
+                left = [c for c in v["rule"]["series"] if c not in GONE]
+                if not v["deleted"] and left and left != v["rule"]["series"]:
+                    self.trimmed[k] = [c for c in v["rule"]["series"] if c in GONE]
+                    v["rule"]["series"] = left
             off = whole.get("off", [])
             self.off_lost = not isinstance(off, list)
             self.damaged |= self.off_lost
@@ -209,7 +234,7 @@ class VariantSet:
                 if k in self.all:
                     self.all[k]["rule"].update({f: sizes[f] for f in fs})
             self.guessed = False
-        if self.unsized and not self.guessed:
+        if self.unsized and not self.guessed or self.trimmed:
             self.save()                          # (what would not load is kept in a copy, as with any change)
 
     def save(self) -> None:
@@ -244,6 +269,10 @@ class VariantSet:
     def rule(self, name) -> dict | None:
         v = self.all.get(name)
         return v["rule"] if v else None
+
+    def paper_limits(self, name) -> bool:
+        """Whether paper keeps to a variant's limits too."""
+        return name in self.all and self.all[name].get("paper_limits") is True
 
     def title(self, name: str) -> str:
         return self.all[name]["title"] if name in self.all else name
@@ -287,7 +316,7 @@ class VariantSet:
                 i += 1
             key = name = cand
         self.all[key] = {"rule": copy.deepcopy(rule), "title": name, "from": parent, "made": round(time.time(), 3),
-                         "deleted": deleted, "was": ""}
+                         "deleted": deleted, "was": "", "paper_limits": True}
         self.save()
         return key
 

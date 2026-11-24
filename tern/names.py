@@ -16,7 +16,7 @@ import time
 
 from . import config as cfgmod
 from . import variants as varmod
-from .config import SERIES, Config, Setting, Strategy
+from .config import Config, Setting, Strategy
 from .shadow import ORDER, VARIANTS
 
 NAMES_FILE = "names.json"                        # runtime/: the built-in variants' display names
@@ -106,7 +106,7 @@ def show(key: str, v) -> str:
     if kind == "cap":
         return f"{v:g}" if v else "off"
     if isinstance(v, list):
-        return " ".join(SERIES.get(x, str(x)).split("-")[0] if isinstance(x, str) else str(x) for x in v)
+        return " ".join(cfgmod.coin(x) if isinstance(x, str) else str(x) for x in v)
     if kind == "usd":
         return f"${v:,.2f}".replace(".00", "")
     return f"{v:g}" if isinstance(v, (int, float)) else str(v)

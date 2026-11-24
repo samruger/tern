@@ -15,6 +15,7 @@ import threading
 import time
 import uuid
 
+from . import about as aboutmod
 from . import config as cfgmod
 from . import names as namesmod
 from . import reports
@@ -338,7 +339,8 @@ HELP = [
                  "{variants}\n"
                  "(5) shows them. Highlight one with ↑↓ and press (enter) to select it, marked ●: the book, ladder, "
                  "contract and gate show it. Selecting changes nothing that trades.\n"
-                 "A variant holds everything about how it trades: its rule, contracts a strike, most an hour and paper start. "
+                 "A variant holds everything about how it trades: its rule, contracts a strike, most an hour, its limits and its paper "
+                 "start. Paper and live both keep to its limits (one from before 2026-11-24, and the built-in ones: only live). "
                  "It never buys more than the cash it has left. Once saved it never changes. Make your own, marked +: (e) there opens "
                  "the highlighted one's settings as a draft, and (s) there saves your changes as a new variant with an empty "
                  "record; the one it came from and its record stay. (space) turns one off or on, (D) deletes one, (r) renames "
@@ -353,7 +355,7 @@ HELP = [
              "move live; (L) with another selected asks whether to move it there, and (L) with live's own selected turns it "
              "off. It needs KALSHI_KEY_ID and KALSHI_KEY_FILE in "
              "~/.config/tern/kalshi.env. The status line turns red (● LIVE) once Kalshi accepts the key. "
-             "Caps: ${risk:,.0f} at risk at once and ${order:,.0f} per order; a loss of ${day:,.0f} since local midnight "
+             "{variant} keeps to ${risk:,.0f} at risk at once and ${order:,.0f} an order; a loss of ${day:,.0f} since local midnight "
              "turns live off and leaves open positions to settle. Every order is immediate-or-cancel. Kalshi "
              "is the record: its positions overwrite the engine's every 15 seconds."),
 ]
@@ -372,7 +374,7 @@ HELP_BOXES = [
     ("⁶", "log", "what the engine did, newest at the bottom; scroll back with ↑↓"),
     ("⁷", "gate", "what the selected variant still needs to go live, caps, and every variant side by side"),
     ("⁸", "reports", "every record: worked out now, or saved"),
-    ("⁹", "settings", "live limits, gate, alerts, web, what the log shows"),
+    ("⁹", "settings", "gate, alerts, web, what the log shows"),
     ("⁰", "themes", f"{len(themes.NAMES)} color themes: the one highlighted is in use"),
     ("", "help", "(h) this"),
     ("", "tabs", "one box fills the screen; the others are tabs on its top border: their keys show one, (tab) steps through. "
@@ -485,7 +487,7 @@ PANEL_KEYS = {
     "log": lambda s: [("t", "heme ", s.P.name), ("P", "ause" if s.alive else " start"), ("q", "uit"), "↑↓"],
     "gate": lambda s: [("L", "ive"), "↑↓"],
     "reports": lambda s: ([] if s.rep_sel.startswith("saved:") else [("s", "ave")]) + [("↑↓", " pick"), ("PgUp PgDn", " scroll")],
-    "settings": lambda s: [("↑↓", " pick"), ("←→", " step"), ("enter", " type")],
+    "settings": lambda s: [("↑↓", " pick"), ("←→", " step"), ("enter", " type"), ("PgUp PgDn", " scroll")],
     "themes": lambda s: [("↑↓ ←→", " pick")],
     "help": lambda s: [("↑↓", " pick"), ("PgUp PgDn", " scroll")],
 }
@@ -532,6 +534,7 @@ class Screen:
         self.set_sent: dict[str, tuple] = {}   # key -> (value, time) sent but not yet in the status
         self.log_filter = "all"                # what the log box shows: LOG_FILTERS
         self.offs: dict[str, int] = {}         # box -> the first line shown (gate, help, settings)
+        self.about_of = None                   # the setting the right side of the settings box was scrolled on
         self.help_sel, self.help_rows = 0, {}   # the help section picked; row -> section, for clicks
         self.theme_rows = 1                    # the themes box: rows in a column, as last drawn
         self.modal: dict | None = None
@@ -1240,6 +1243,8 @@ class Screen:
         tip, col = "", GREEN
         if not cur.get("on", True):
             tip, col = f"{name} is off: no new entries, open ones settle · space turns it on", YELLOW
+        elif cur.get("stopped"):
+            tip, col = f"{name} is past its daily loss limit: no new entries until midnight", YELLOW
         elif cur.get("cash") is not None and cur["cash"] < (cur.get("rule") or {}).get("band_lo", 0) and not cur.get("open"):
             tip, col = f"{name} has {money(cur['cash'])} left: it buys nothing · e, s makes a fresh one", YELLOW
         elif live:
@@ -1309,7 +1314,10 @@ class Screen:
         st, name, live = self.st, self.vn(self.variant), self.live_variant()
         if st.get("live_enabled") and live == self.variant:
             self.send(op="live", on=False); self.say("disarming live"); return
-        L = st.get("live_cfg") or {}
+        L, rule = st.get("live_cfg") or {}, row.get("rule") or {}
+        size = [f"It buys {rule.get('contracts', 0):g} contracts a strike, at most {money(rule.get('max_hour_cost', 0))} an hour a coin,",
+                f"{money(rule.get('max_order', 0))} an order and {money(rule.get('max_risk', 0))} at risk at once.",
+                f"Live turns itself off after -{money(rule.get('day_loss', 0))} in a day."]
         gate = f"{name} has passed its gate (7)." if (row.get("gate") or {}).get("passed") else \
             f"{name} has not passed its gate (7): live waits until it does." if L.get("auto_needs_gate", True) else \
             f"{name} has not passed its gate (7), and live.auto_needs_gate is off: it trades anyway."
@@ -1317,13 +1325,12 @@ class Screen:
         if st.get("live_enabled"):
             self.modal = {"type": "arm", "title": "MOVE LIVE", "color": RED, "buf": "", "variant": self.variant,
                           "lines": [f"Live trades {self.vn(live)}. Move it to {name}? Real money would trade {name} instead.",
-                                    gate, *off, "Open live positions ride to settlement. Live's caps and size stay as they are.",
+                                    gate, *off, *size, "Open live positions ride to settlement.",
                                     "", "type live to move it, off to turn live off (esc cancels):", "> "]}
             return
         self.modal = {"type": "arm", "title": "ARM LIVE", "color": RED, "buf": "", "variant": self.variant,
                       "lines": [f"Live trading uses real money on Kalshi. It would trade {name}.", gate, *off,
-                                f"Caps: ${L.get('capital_usd', 0):,.0f} at risk, ${L.get('max_order_usd', 0):,.0f} per order,",
-                                f"live turns itself off after -${L.get('max_daily_loss', 0):,.0f} in a day.",
+                                *size,
                                 *([] if st.get("keys") else ["", f"No key found yet: live stays off until {cfgmod.KEYFILE_ENV} exists."]),
                                 "", "type live and press enter (esc cancels):", "> "]}
 
@@ -1361,10 +1368,12 @@ class Screen:
                                 f"It starts with an empty record. {self.vn(self.edit_var)} and its record stay as they are.",
                                 f"name, up to {varmod.NAME_MAX} characters (enter alone picks one, esc goes back):", "> "]}
 
+    def older_rows(self) -> bool:
+        return any("on" not in v or "max_risk" not in (v.get("rule") or {}) for v in self.raw.get("variants") or [])
+
     def older_engine(self) -> bool:
-        """Whether the engine is from before there was one list: it would do something else with these commands."""
-        rows = self.raw.get("variants") or []
-        if not rows or all("on" in v for v in rows):
+        """Whether the engine is from before variants held all of this: it would do something else with these commands."""
+        if not self.older_rows():
             return False
         self.say("the engine running is older than this screen: restart it (P, P)")
         return True
@@ -1404,7 +1413,7 @@ class Screen:
             self.put(yy, cx, text, attr); cx += len(text)
         if not b:
             return
-        g, L = st.get("gate") or {}, st.get("live_cfg") or {}
+        g = st.get("gate") or {}
         for tiles in (self.book_money(b), self.book_record(g)):
             cw = (w - 4) // 5
             for i, (label, text, color) in enumerate(tiles):
@@ -1413,8 +1422,9 @@ class Screen:
             yy += 3
         if v == "live":
             yy += 2
-            self.put(yy, x + 2, f"caps   at risk {money(L.get('capital_usd'))} · an order {money(L.get('max_order_usd'))} · "
-                                f"a day's loss {money(L.get('max_daily_loss'))}", P(self.P.grey))
+            r = (self.vrow(self.live_variant()) or {}).get("rule") or {}
+            self.put(yy, x + 2, f"limits   at risk {money(r.get('max_risk'))} · an order {money(r.get('max_order'))} · "
+                                f"a day's loss {money(r.get('day_loss'))}", P(self.P.grey))
         # the open positions on the left, what settled and was filled on the right; they scroll together
         yy += 2
         cw = (w - 6) // 2
@@ -1465,7 +1475,7 @@ class Screen:
         """A table row's first cells: the coin, the strike, the side."""
         series = (ticker or "").split("-")[0]
         m = re.search(r"-[TB]([0-9.]+)$", ticker or "")
-        return [(cfgmod.SERIES.get(series, series[2:]).split("-")[0][:5], self.P(self.P.c("variant"))),
+        return [(cfgmod.coin(series)[:5], self.P(self.P.c("variant"))),
                 (strike_label(float(m.group(1))) if m else "?", ROW),
                 ("YES" if q > 0 else "NO", self.P(GREEN if q > 0 else MAGENTA, bold=True)), (f"{abs(q):g}", ROW)]
 
@@ -1589,7 +1599,7 @@ class Screen:
         hour changed (by how much, and its record now) or that bought (how many strikes, and of what): sub 1, 2..., no text,
         cells of (text, role). Every other line is one row: sub 0, no cells."""
         split = lambda text: [m for m in map(SHADOW_CELL.match, text.split(" · ")) if m]
-        coin = lambda series: cfgmod.SERIES.get(series, series).split("-")[0]
+        coin = cfgmod.coin
         groups: dict[tuple, dict] = {}                           # (slot or "", hour) -> its lines' last place, coins, cells
         of: dict[int, dict] = {}                                 # line -> its group
         for n, (ts, lvl, msg) in enumerate(logs):
@@ -1656,7 +1666,7 @@ class Screen:
     def wheel(self, my: int, mx: int, d: int) -> None:
         """Mouse wheel over a box: d is -1 (up) or +1 (down)."""
         name = next((n for n, (y, x, h, w) in self.rects.items() if y <= my < y + h and x <= mx < x + w), None)
-        self.scroll(name, 3 * d if name in ("report", "gate", "helptext") else d)
+        self.scroll(name, 3 * d if name in ("report", "gate", "helptext", "about") else d)
 
     def scroll(self, name: str | None, d: int) -> None:
         """Move one box d steps (negative is up). Boxes that don't scroll ignore it."""
@@ -1664,6 +1674,8 @@ class Screen:
             self.step_ladder(d)
         elif name == "help":
             self.help_sel, self.offs["help"] = max(0, min(len(HELP) + 2, self.help_sel + d)), 0
+        elif name == "about":
+            self.offs["about"] = max(0, self.offs.get("about", 0) + d)   # pane clamps the far end
         elif name == "helptext":
             self.offs["help"] = max(0, self.offs.get("help", 0) + d)   # pane clamps the far end
         elif name == "variants":
@@ -1772,7 +1784,12 @@ class Screen:
         self.offs["settings"] = off = min(max(off, n - room + 1), max(0, n - 1))   # the one picked, and what's above it
         lines[n] = [*lines[n], (" " * max(0, lw - 2 - size(lines[n])), P.row(True)(WHITE))]
         self.pane(y + 1, x + 1, room, lw - 2, [[(" ", P.row(i == n)(WHITE))] + l for i, l in enumerate(lines)], off)
-        self.pane(y + 1, x + lw + 3, room, w - lw - 5, self.settings_about(w - lw - 5))
+        self.rects = {"settings": (y, x, h, lw + 1), "about": (y, x + lw + 1, h, w - lw - 1)}
+        about = self.settings_about(w - lw - 5)
+        if self.about_of != (self.edit_var, self.set_sel):   # another setting: from its top
+            self.about_of, self.offs["about"] = (self.edit_var, self.set_sel), 0
+        self.offs["about"] = off = self.pane(y + 1, x + lw + 3, room, w - lw - 5, about, self.offs.get("about", 0))
+        self.count_lines(y + h - 1, x + 3, off, room, len(about))
 
     def themes_panel(self, y, x, h, w) -> None:
         """Every theme, with its colors; the highlighted one is in use."""
@@ -1853,18 +1870,18 @@ class Screen:
         P, st = self.P, self.st
         S = st.get("strategy") or cfgmod.Strategy().__dict__
         G = st.get("gate_cfg") or cfgmod.Gate().__dict__
-        L = st.get("live_cfg") or cfgmod.Live().__dict__
+        R = (self.vrow(self.variant) or {}).get("rule") or {}
         mins = [str(m) for m in S.get("minutes", [])]
         caps = (f", {S['cap']:g} a strike an hour" if S.get("cap") else "") + \
             (f", no slot after an hour over {S['max_vol']:g} bp a minute" if S.get("max_vol") else "")
         fill = dict(
             variant=self.vn(S["variant"]) if S.get("variant") else "base", caps=caps, max_own=varmod.MAX_OWN,
-            rule_coins=" ".join(cfgmod.SERIES.get(c, c).split("-")[0] for c in S.get("series") or []),
+            rule_coins=" ".join(cfgmod.coin(c) for c in S.get("series") or []),
             minutes=", ".join(mins[:-1]) + " and " + mins[-1] if len(mins) > 1 else "".join(mins),
             band=f"{S['band_lo']*100:.0f}-{S['band_hi']*100:.0f}c", spread=f"{S['max_spread']*100:g}",
             contracts=S["contracts"], hour_cost=S["max_hour_cost"],
             days=G["min_days"], entries=G["min_entries"], pnl=G["min_pnl"],
-            risk=L["capital_usd"], order=L["max_order_usd"], day=L["max_daily_loss"],
+            risk=R.get("max_risk", 100), order=R.get("max_order", 25), day=R.get("day_loss", 30),
             coins=" ".join(v.split("-")[0] for v in cfgmod.SERIES.values()), paper=((self.vrow(self.variant) or {}).get("rule") or {}).get("paper_capital") or cfgmod.Config().paper_capital,
             variants="\n".join(f"|  {n:<8} {d}" for n, d in shadowmod.DESC.items()),
             retired="\n".join(f"|  {n:<8} {d}" for n, d in shadowmod.RETIRED.items()))
@@ -1928,7 +1945,6 @@ class Screen:
     def gate_lines(self, w: int = 100) -> list:
         """The checks with how far each has come and what going live takes, then every variant side by side."""
         st, P = self.st, self.P
-        L = st.get("live_cfg") or {}
         lw = (w - 3) // 2
         head = lambda text, note="": [(text, P(P.c("head"), bold=True)), (note, P(P.grey))]
         box = lambda ok: ("[x] " if ok else "[ ] ", P(GREEN if ok else RED, bold=True))
@@ -1961,8 +1977,9 @@ class Screen:
         for j in range(max(len(left), len(right))):
             l, r = (left[j] if j < len(left) else []), (right[j] if j < len(right) else [])
             out.append([*l, (" " * max(0, lw + 3 - sum(len(t) for t, _ in l)), 0), *r])
-        out += [[], head("CAPS") + self.rich(f"   ${L.get('capital_usd', 0):,.0f} at risk · ${L.get('max_order_usd', 0):,.0f} per order · "
-                                              f"-${L.get('max_daily_loss', 0):,.0f} a day turns live off") + note]
+        r = (self.vrow(self.variant) or {}).get("rule") or {}
+        out += [[], head("LIMITS") + self.rich(f"   ${r.get('max_risk', 0):,.0f} at risk · ${r.get('max_order', 0):,.0f} per order · "
+                                               f"-${r.get('day_loss', 0):,.0f} a day turns live off") + note]
         rows = st.get("shadow") or []
         if rows:
             table = shadowmod.table(rows)
@@ -2152,7 +2169,7 @@ class Screen:
         if row.kind == "p":
             return f"{v * 100:.0f}¢"
         if row.kind in ("slots", "coins"):
-            return " ".join(str(x) if row.kind == "slots" else cfgmod.SERIES.get(x, x).split("-")[0] for x in v)
+            return " ".join(str(x) if row.kind == "slots" else cfgmod.coin(x) for x in v)
         if row.kind == "n":
             return f"{v:g}"
         return ("-" if v < 0 else "") + f"${abs(v):,.2f}".replace(".00", "")
@@ -2196,21 +2213,38 @@ class Screen:
         return out
 
     def settings_about(self, w: int) -> list:
-        """What the setting picked is, what it can be, and what saving it does."""
+        """What the setting picked is, with examples worked from its values, what saving it does, and who uses what."""
         P = self.P
         rows = self.set_rows()
         row = rows[self.set_sel]
         out: list = [[(row.label, P(P.c("key"), bold=True))], []]
-        say = lambda text, color, bold=False: out.extend([[(t, P(color, bold=bold))] for t in textwrap.wrap(text, max(10, w))])
-        say(row.what, WHITE)
+        looks = {"text": (WHITE, False), "head": (P.c("head"), True), "note": (P.grey, False), "fact": (P.c("value"), False)}
+        wide = max(20, min(w, HELP_WIDTH))
+
+        def say(text: str, color: int, bold: bool = False) -> None:
+            out.extend([[(t, P(color, bold=bold))] for t in textwrap.wrap(text, wide)])
+
+        def told(lines: list) -> None:
+            for n, (style, text) in enumerate(lines):
+                if n and (style in ("head", "text") or lines[n - 1][0] == "text" or style == "note" and lines[n - 1][0] == "fact"):
+                    out.append([])                       # a paragraph; a heading's own lines follow it at once
+                say(text, *looks[style])
+        older = any(r.key not in (self.raw.get("settings") or {}) for r in rows if r.sec not in ("screen", "rule")) or \
+            self.edit_var and self.older_rows()
+        r = {f.name: self.set_value(f.key) for f in varmod.RULE_SETTINGS} if self.edit_var else {}
+        if row.sec == "rule" and not older and all(v is not None for f, v in r.items() if f not in ("cap", "max_vol")):
+            me = self.vrow(self.edit_var) or {}
+            told(aboutmod.rule(row.name, r, {"vol": self.vols(r["series"]), "price": self.price(r["series"][0]),
+                                             "limits": me.get("paper_limits", False), "name": self.vn(self.edit_var)}))
+        else:
+            told(aboutmod.DESK.get(row.key) or [("text", row.what[:1].upper() + row.what[1:] + ".")])
         out.append([])
         saved = "Saved at once." if self.saves_here(row) else "View only here."
         if row.sec == "rule":
             say("←→ pick one · space or enter turns it on / off" if row.kind in ("slots", "coins") else
                 f"{self.set_fmt(row, row.lo)} to {self.set_fmt(row, row.hi)}, steps of " + ("1¢" if row.kind == "p" else f"{row.step:g}"), P.grey)
         elif row.kind in ("usd", "n"):
-            say(f"{self.set_fmt(row, row.lo)} to {self.set_fmt(row, row.hi)}, steps of {self.set_fmt(row, row.step)}", P.grey)
-            say(saved, P.grey)
+            say(f"{self.set_fmt(row, row.lo)} to {self.set_fmt(row, row.hi)}, steps of {self.set_fmt(row, row.step)}. {saved}", P.grey)
         else:
             say("←→ or enter changes it. " + saved, P.grey)
         if row.sec == "web":                             # what the service is doing now, and where to open it
@@ -2220,21 +2254,73 @@ class Screen:
                    "failed": ("failed: journalctl --user -u tern-web", RED),
                    "activating": ("starting… (stuck here: the port may be taken; journalctl --user -u tern-web)", YELLOW),
                    "deactivating": ("stopping…", YELLOW)}.get(st, (st, P.grey))
-            out += [[], [("web screen now", P(P.c("head"), bold=True))]]
+            out += [[], [("WEB SCREEN NOW", P(P.c("head"), bold=True))]]
             say(*now, True)
             if st == "active":
                 out.extend([[(u, P(P.c("ticker")))] for u in ws.get("url", "").split(" · ")])
+        if row.sec == "gate":
+            out += self.gate_now(row, wide)
         if self.edit_var:
             changed = self.draft_lines()
-            out += [[], [("CHANGES", P(P.c("head"), bold=True))]] + [[(t, P(YELLOW))] for t in changed or ["none yet"]] + [[]]
-            say(f"Nothing is saved until s: that makes a new variant; {self.vn(self.edit_var)} stays as it is.", P.grey)
-        if any(r.key not in (self.raw.get("settings") or {}) for r in rows if r.sec not in ("screen", "rule")) or \
-                self.edit_var and any("on" not in v for v in self.raw.get("variants") or []):
+            out += [[], [("CHANGES", P(P.c("head"), bold=True))]] + [[(t, P(YELLOW))] for t in changed or ["none yet"]]
+            say(f"Nothing is saved until s: that makes a new variant, and {self.vn(self.edit_var)} stays as it is.", P.grey)
+        if older:
             out.append([])
             say("The engine running is older than this screen: restart it (P, P) to change these.", YELLOW, True)
-        elif not self.edit_var and self.armed():
+        elif self.edit_var:
+            out += self.who_uses(row, wide)
+        elif self.armed() and row.sec == "gate":
             out.append([])
-            say("Live is armed: raising a live limit or lowering a gate asks you to type \"live\".", YELLOW, True)
+            say("Live is armed: lowering a gate asks you to type \"live\".", YELLOW, True)
+        return out
+
+    def price(self, series: str) -> float | None:
+        return ((self.st.get("spot") or {}).get(cfgmod.SERIES.get(series, "")) or {}).get("now")
+
+    def vols(self, coins: list) -> dict:
+        """The coins' volatility over the last hour, worked out as the engine does (shadow.vol). Only coins the engine fetches
+        have one."""
+        spot = self.st.get("spot") or {}
+        return {c: shadowmod.vol((spot.get(cfgmod.SERIES.get(c, "")) or {}).get("min") or [], time.time()) for c in coins}
+
+    def gate_now(self, row, w: int) -> list:
+        """How far each variant is on one of the gate's checks."""
+        P = self.P
+        out: list = [[], [("VARIANTS NOW", P(P.c("head"), bold=True))]]
+        rows = []
+        for v in self.st.get("variants") or []:
+            c = next((c for c in (v.get("gate") or {}).get("checks", []) if c["key"] == row.name[4:]), None)
+            if c:
+                have = c["have"]
+                rows.append((self.vn(v["name"]), f"{have:.1f}" if c["key"] == "days" else f"{have:,}" if c["key"] == "entries" else money(have, True),
+                             c["ok"], have / c["need"] if c["need"] > 0 else float(c["ok"])))
+        nw, vw = (max([len(r[k]) for r in rows] + [0]) for k in (0, 1))
+        bar = min(40, w - nw - vw - 8)
+        for name, val, ok, frac in rows:
+            out.append([("✓ " if ok else "  ", P(GREEN, bold=True)), (f"{name:<{nw}}  ", P(P.c("variant"))), (f"{val:>{vw}}  ", P(GREEN if ok else YELLOW))] +
+                       (self.meter(1.0 if ok else frac, bar) if bar > 5 else []))
+        return out
+
+    def who_uses(self, row, w: int) -> list:
+        """Every value the variants have for this setting, and whose it is. The draft's own is marked."""
+        P = self.P
+        out: list = [[], [("WHO USES WHAT", P(P.c("head"), bold=True))]]
+        fmt = lambda v: self.set_fmt(row, v)
+        by: dict[str, list] = {}
+        for v in self.st.get("variants") or []:
+            if row.name in (v.get("rule") or {}):
+                val = v["rule"][row.name]
+                by.setdefault(fmt(val), [val, []])[1].append(self.vn(v["name"]))
+        mine = fmt(self.set_value(row.key))
+        num = lambda x: (isinstance(x[1][0], list), x[1][0] if isinstance(x[1][0], (int, float)) else 0, x[0])
+        vw = min(34, max([len(t) for t in by] + [len(mine)]))
+        for text, (_, names) in sorted(by.items(), key=num):
+            on = text == mine
+            for k, t in enumerate(textwrap.wrap(" · ".join(names), max(10, w - vw - 4))):
+                out.append([("▸ " if on and not k else "  ", P(P.c("key"), bold=True)),
+                            (f"{text if not k else '':<{vw}}  ", P(P.c("key") if on else P.c("value"), bold=on)), (t, P(P.c("variant") if on else P.grey))])
+        if mine not in by:
+            out.append([("▸ ", P(P.c("key"), bold=True)), (f"{mine:<{vw}}  ", P(P.c("key"), bold=True)), ("none yet", P(P.grey))])
         return out
 
     def saves_here(self, row) -> bool:
@@ -2410,7 +2496,7 @@ class Screen:
                 return True
             d = -1 if bs & curses.BUTTON4_PRESSED else 1 if bs & curses.BUTTON5_PRESSED else 0
             if d and self.overlay == "edit" and not self.modal:
-                self.scroll("settings", d)
+                self.wheel(my, mx, d)
             elif d and not self.modal:
                 self.wheel(my, mx, d)
             return True
@@ -2479,7 +2565,10 @@ class Screen:
             self.next_theme(-1 if ch == ord("T") else 1)
             return True
         if self.overlay == "edit":
-            self.settings_key(ch)
+            if ch in (curses.KEY_PPAGE, curses.KEY_NPAGE) and self.set_buf is None:
+                self.scroll("about", -10 if ch == curses.KEY_PPAGE else 10)
+            else:
+                self.settings_key(ch)
             return True
         tab_key = ch in (9, curses.KEY_BTAB)
         if self.tab == "settings" and not tab_key and (self.set_buf is not None or ch in (
@@ -2495,7 +2584,7 @@ class Screen:
             return True
         if ch in (curses.KEY_UP, curses.KEY_DOWN, curses.KEY_PPAGE, curses.KEY_NPAGE, ord("k"), ord("j")):
             page = ch in (curses.KEY_PPAGE, curses.KEY_NPAGE)
-            self.scroll({"reports": "report", "help": "helptext"}.get(self.tab, self.tab) if page else self.tab, {curses.KEY_UP: -1, ord("k"): -1, curses.KEY_DOWN: 1, ord("j"): 1,
+            self.scroll({"reports": "report", "help": "helptext", "settings": "about"}.get(self.tab, self.tab) if page else self.tab, {curses.KEY_UP: -1, ord("k"): -1, curses.KEY_DOWN: 1, ord("j"): 1,
                                      curses.KEY_PPAGE: -10, curses.KEY_NPAGE: 10}[ch])
         elif ch in (curses.KEY_HOME, curses.KEY_END):
             self.scroll({"reports": "report", "help": "helptext"}.get(self.tab, self.tab), -10 ** 6 if ch == curses.KEY_HOME else 10 ** 6)

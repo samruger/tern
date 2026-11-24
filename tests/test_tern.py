@@ -332,16 +332,16 @@ class Commands(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             k = self.desk(d)
             from tern import config
-            self.assertIn("25 → 40", k._command({"op": "set", "key": "live.max_order_usd", "value": 40}))
-            self.assertEqual(config.load(d).live.max_order_usd, 40.0)
-            for key, v in (("strategy.contracts", 3), ("strategy.max_hour_cost", 50), ("paper_capital", 2000), ("strategy.band_lo", 0.8)):
+            self.assertIn("300 → 350", k._command({"op": "set", "key": "gate.min_entries", "value": 350}))
+            self.assertEqual(config.load(d).gate.min_entries, 350)
+            for key, v in (("live.capital_usd", 90), ("live.max_order_usd", 20), ("live.max_daily_loss", 20), ("strategy.contracts", 3), ("strategy.max_hour_cost", 50), ("paper_capital", 2000), ("strategy.band_lo", 0.8)):
                 self.assertIn("not set", k._command({"op": "set", "key": key, "value": v}), key)   # a variant's
             self.assertEqual((k.cfg.strategy, k.cfg.paper_capital), (config.Strategy(), 1000.0))
             self.assertIn("not set", k._command({"op": "set", "key": "live.enabled", "value": 1}))
-            self.assertIn("not set", k._command({"op": "set", "key": "live.capital_usd", "value": -5}))
-            self.assertIn("not set", k._command({"op": "set", "key": "live.capital_usd", "value": "100"}))
+            self.assertIn("not set", k._command({"op": "set", "key": "gate.min_entries", "value": -5}))
+            self.assertIn("not set", k._command({"op": "set", "key": "gate.min_entries", "value": "400"}))
             self.assertFalse(config.load(d).live.enabled)
-            self.assertEqual(config.load(d).live.capital_usd, 100.0)
+            self.assertEqual((config.load(d).live.capital_usd, config.load(d).gate.min_entries), (100.0, 350))
 
     def test_web_settings_drive_the_service(self):
         from unittest import mock
@@ -604,7 +604,7 @@ class Robust(unittest.TestCase):
             k.events["KXBTCD"] = {"event": "E1", "title": "", "close": now + 1200, "fetched": now,
                                   "markets": [mk("E1-A", 1, "0.93", "0.94"), mk("E1-B", 2, "0.75", "0.76")]}
             S = k.cfg.strategy
-            S.minutes = [20]; k.cfg.live.contracts = 10.0
+            S.minutes = [20]; k.cfg.strategy.contracts = 10.0
             sent = []
             k._exec = lambda book, t, delta, *a: sent.append(t) or {"delta": delta, "fee": 0.0}
             k.ev_close["E1"] = now + 1200
@@ -656,7 +656,7 @@ class Live(unittest.TestCase):
                 return kw.get("fills", [])
         return Api()
 
-    def test_live_has_its_own_size(self):
+    def test_live_buys_the_variants_own_size(self):
         with tempfile.TemporaryDirectory() as d:
             got = []
             class Api:
@@ -665,12 +665,12 @@ class Live(unittest.TestCase):
                     return {"order_id": "o1", "fill_count": str(n), "average_fill_price": "0.82", "average_fee_paid": "0"}
             k = self.desk(d, Api())
             k.cfg.live.auto_needs_gate = False
-            k.cfg.live.contracts = 2.0
+            k.cfg.strategy.contracts = 2.0
             k._auto()
             self.assertEqual(got, [2.0])
             self.assertAlmostEqual(k.live.pos[self.T]["q"], 2)
             k._shadow()
-            self.assertEqual(next(r["n"] for r in k.shadow.rows if r["v"] == "base"), 5)   # paper keeps the variant's own
+            self.assertEqual(next(r["n"] for r in k.shadow.rows if r["v"] == "base"), 2)   # as paper does
 
     def live_api(self):
         got = []
@@ -1046,7 +1046,7 @@ class Shadows(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             sh, S = Shadow(d), Strategy()
             self.assertEqual(all_coins(S)[0], "KXBTCD")
-            self.assertIn("KXHYPED", all_coins(S))
+            self.assertEqual(all_coins(S), ["KXBTCD", "KXETHD", "KXSOLD", "KXXRPD"])
             for ev in ("KXBTCD-H1", "KXSOLD-H1"):
                 sh.step(ev, 1000.0, [self.m(ev + "-T1", 0.92, 0.93, 1)], S, 1000.0 - 25 * 60 + 1)
             on = lambda v: sorted(r["event"] for r in sh.rows if r["v"] == v)
@@ -1341,24 +1341,24 @@ class SettingsBox(Rig, unittest.TestCase):
             [c] = self.cmds()
             self.assertEqual((c["op"], c["key"], c["value"]), ("set", "web.port", 8788))
 
-    def test_raising_a_live_limit_asks_while_armed(self):
+    def test_lowering_a_gate_asks_while_armed(self):
         with tempfile.TemporaryDirectory() as d:
             k, scr = self.setup(d)
             k.cfg.live.enabled = True; k.cfg.live.variant = "base"; self.sync()
             scr.variant = "band90"; self.sync(); self.cmds()                   # whichever variant is selected
             self.press("9")
             rows = [r.key for r in scr.set_rows()]
-            for key, ch in (("live.capital_usd", self.curses.KEY_RIGHT), ("gate.min_entries", self.curses.KEY_LEFT)):
+            for key in ("gate.min_days", "gate.min_entries", "gate.min_pnl"):
                 scr.set_sel = rows.index(key)
-                self.press(ch)
+                self.press(self.curses.KEY_LEFT)
                 self.assertEqual(scr.modal["type"], "setlive", key)
                 self.press(27)
             self.assertEqual(self.cmds(), [])
-            scr.set_sel = rows.index("live.capital_usd")
-            self.press(self.curses.KEY_LEFT)                                   # lowering it does not
-            self.assertEqual([(c["op"], c["key"], c["value"]) for c in self.cmds()], [("set", "live.capital_usd", 95)])
-            scr.set_sel = rows.index("live.capital_usd")
-            self.press(self.curses.KEY_RIGHT, *"live", 10)
+            scr.set_sel = rows.index("gate.min_days")
+            self.press(self.curses.KEY_RIGHT)                                  # raising it does not
+            self.assertEqual([(c["op"], c["key"], c["value"]) for c in self.cmds()], [("set", "gate.min_days", 15)])
+            scr.set_sel = rows.index("gate.min_days")
+            self.press(self.curses.KEY_LEFT, *"live", 10)
             self.assertEqual([c["op"] for c in self.cmds()], ["set"])
 
     def test_it_scrolls_on_a_short_screen_and_shows_the_web_service(self):
@@ -1372,11 +1372,11 @@ class SettingsBox(Rig, unittest.TestCase):
             text = lambda: "\n".join("".join(r) for r in scr.s.ch)
             scr.set_sel = [r.key for r in scr.set_rows()].index("web.port"); scr.draw()
             self.assertIn("▸ port", text())
-            self.assertIn("web screen now", text()); self.assertIn("running", text()); self.assertIn("http", text())
+            self.assertIn("WEB SCREEN NOW", text()); self.assertIn("running", text()); self.assertIn("http", text())
             self.assertIn("sudo ufw allow PORT/tcp", " ".join(" ".join(l.split("│")[2] for l in text().splitlines() if l.count("│") == 3).split()))   # its description, beside it
             scr.set_sel = 0; scr.draw()
-            self.assertIn("▸ most at risk at once", text())
-            self.assertNotIn("web screen now", text())
+            self.assertIn("▸ days of hours traded", text())
+            self.assertNotIn("WEB SCREEN NOW", text())
 
     def test_no_change_before_the_engine_has_said_anything(self):
         from unittest import mock
@@ -1390,7 +1390,7 @@ class SettingsBox(Rig, unittest.TestCase):
                 self.assertIsNone(scr.overlay, key); self.assertIsNone(scr.modal, key)
             scr.key(ord("9"))
             rows = [r.key for r in scr.set_rows()]
-            for key, ch in (("alerts", ord(" ")), ("live.contracts", 261)):
+            for key, ch in (("alerts", ord(" ")), ("gate.min_days", 261)):
                 scr.set_sel = rows.index(key); scr.key(ch)
             scr.draw()
             self.assertEqual(os.listdir(scr.cmd_dir), [])
@@ -1398,11 +1398,11 @@ class SettingsBox(Rig, unittest.TestCase):
     def test_numbers_are_the_tabs_until_a_value_is_being_typed(self):
         with tempfile.TemporaryDirectory() as d:
             k, scr = self.setup(d)
-            self.press("9", self.curses.KEY_DOWN)                              # the largest order
+            self.press("9", self.curses.KEY_DOWN)                              # settled entries
             self.press("3"); self.assertEqual((scr.tab, scr.set_buf), ("ladder", None))
             self.press("9", 10, "4", "0", 10)
             [c] = self.cmds()
-            self.assertEqual((c["key"], c["value"], scr.tab), ("live.max_order_usd", 40, "settings"))
+            self.assertEqual((c["key"], c["value"], scr.tab), ("gate.min_entries", 40, "settings"))
             self.press(10, "7", 27)                                            # esc leaves it as it was
             self.assertEqual((scr.set_buf, scr.tab, self.cmds()), (None, "settings", []))
             self.press(10, "7", 9)                                             # so does leaving the box
@@ -2089,7 +2089,7 @@ class ScreenVariants(Rig, unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             k, scr = self.setup(d)
             self.open()
-            self.assertEqual([r.group for r in scr.set_rows() if r.group], ["RULE", "SIZE", "PAPER"])
+            self.assertEqual([r.group for r in scr.set_rows() if r.group], ["RULE", "SIZE", "LIMITS", "PAPER"])
             self.assertIn("RULE  band80  built in", self.text())
             self.press(self.curses.KEY_RIGHT, self.curses.KEY_RIGHT)           # band low is the first row
             self.row("contracts"); self.press("1", "9", 10)
@@ -2131,7 +2131,7 @@ class ScreenVariants(Rig, unittest.TestCase):
             self.press(27); self.press("n", "E")                               # there is only e
             self.assertEqual((scr.overlay, self.cmds()), (None, []))
             self.press("9")                                                    # the settings box is the desk's again
-            self.assertIn("most at risk", self.text())
+            self.assertIn("days of hours traded", self.text())
 
     def test_esc_throws_the_draft_away_and_other_keys_do_not(self):
         with tempfile.TemporaryDirectory() as d:
@@ -2566,7 +2566,7 @@ class CashLimit(Rig, unittest.TestCase):
     def test_wins_and_losses_change_what_it_can_spend(self):
         with tempfile.TemporaryDirectory() as d:
             k = self.desk(d)
-            self.new(k, contracts=100, max_hour_cost=500, paper_capital=100)
+            self.new(k, contracts=100, max_hour_cost=500, paper_capital=100, max_risk=10000, max_order=1000)
             for pnl, want in ((-60.0, 40), (-50.0, 0), (1000.0, 500)):          # 40 left, then under water, then plenty (the hour's limit)
                 k.shadow._count({"v": "base-2", "event": f"E{pnl}", "pnl": pnl, "n": 1, "fee": 0, "close": 1.0})
                 ev = f"KXBTCD-{pnl}"
@@ -2580,7 +2580,7 @@ class CashLimit(Rig, unittest.TestCase):
     def test_settling_gives_the_money_back(self):
         with tempfile.TemporaryDirectory() as d:
             k = self.desk(d)
-            self.new(k, contracts=100, max_hour_cost=500, paper_capital=100)
+            self.new(k, contracts=100, max_hour_cost=500, paper_capital=100, max_risk=10000, max_order=1000)
             self.step(k.shadow, k.cfg, "KXBTCD-H1", 2)
             self.assertLess(k.shadow.cash("base-2", 100), 1.5)
             k.shadow.settle({r["ticker"]: True for r in k.shadow.rows})
@@ -2604,7 +2604,7 @@ class CashLimit(Rig, unittest.TestCase):
             sent = []
             k._exec = lambda book, t, delta, *a: sent.append((book.name, delta))
             k._auto_book(k.live, k.cfg.strategy, "base-2", __import__("time").time(), k.shadow.own)
-            self.assertEqual(sent, [("live", k.cfg.live.contracts)])           # (live's own caps are checked in _exec)
+            self.assertEqual(sent, [("live", k.cfg.strategy.contracts)])           # (live's own caps are checked in _exec)
 
     def test_the_variants_box_says_when_one_is_out_of_cash(self):
         with tempfile.TemporaryDirectory() as d:
@@ -2718,7 +2718,7 @@ class OneList(Rig, unittest.TestCase):
     def test_a_coin_only_an_off_variant_trades_is_not_fetched(self):
         with tempfile.TemporaryDirectory() as d:
             k = self.desk(d)
-            self.assertIn("KXHYPED", k._wanted())
+            self.assertIn("KXXRPD", k._wanted())
             k._command({"op": "variant_on", "variant": "multi", "on": False})
             self.assertEqual(k._wanted(), {"KXBTCD"})
 
@@ -3771,7 +3771,7 @@ class ReviewFixes2(Rig, unittest.TestCase):
             k, scr = self.setup(d)
             c, n = self.curses, len(scr.set_rows())
             self.press("9", c.KEY_HOME); self.assertEqual(scr.set_sel, 0)
-            self.press(c.KEY_NPAGE); self.assertEqual(scr.set_sel, min(10, n - 1))
+            self.press(c.KEY_NPAGE); self.assertEqual(scr.set_sel, 0)          # (they page what the setting is)
             self.press(c.KEY_END); self.assertEqual(scr.set_sel, n - 1)
             self.press(c.KEY_END); self.assertEqual(scr.set_sel, n - 1)
             self.press(c.KEY_DOWN); self.assertEqual(scr.set_sel, 0)           # one at a time goes round
@@ -3785,6 +3785,287 @@ class ReviewFixes2(Rig, unittest.TestCase):
                 got = (P.on(fg, P.t["fill"]) & 0x1FF) - 1
                 if got > 15:
                     self.assertGreaterEqual(themes.contrast(got, P.t["fill"]), 4, (name, fg))
+
+
+class Limits(Rig, unittest.TestCase):
+    """Most at risk, largest order and daily loss limit are a variant's: paper and live both keep to them."""
+
+    T2 = "KXBTCD-H1-T1"
+
+    def step(self, k, ev, slot=25, n=1, size=1000.0, price=0.80):
+        import time
+        now = time.time()
+        ms = [{"ticker": f"{ev}-T{i}", "floor_strike": 100.0 + i, "yes_bid_dollars": f"{price - .01:.2f}", "yes_ask_dollars": f"{price:.2f}",
+               "yes_bid_size_fp": str(size), "yes_ask_size_fp": str(size)} for i in range(n)]
+        k.shadow.step(ev, now + slot * 60 - 1, ms, k.cfg.strategy, now, paper=k.cfg.paper_capital)
+        return [r for r in k.shadow.rows if r["event"] == ev]
+
+    def mine(self, rows, v="base-2"):
+        return [r for r in rows if r["v"] == v]
+
+    def test_paper_cuts_a_buy_to_the_largest_order(self):
+        with tempfile.TemporaryDirectory() as d:
+            k = self.desk(d)
+            self.new(k, contracts=100, max_hour_cost=2000, paper_capital=100000, max_order=40, max_risk=10000)
+            [r] = self.mine(self.step(k, "KXBTCD-H1"))
+            self.assertEqual(r["n"], 50)                                        # $40 at 80¢
+            self.assertEqual(self.mine(k.shadow.rows, "base")[0]["n"], 5)       # the built-in ones as before
+
+    def test_paper_stops_at_most_at_risk_over_all_coins_until_something_settles(self):
+        with tempfile.TemporaryDirectory() as d:
+            k = self.desk(d)
+            self.new(k, contracts=50, max_hour_cost=2000, paper_capital=100000, max_order=1000, max_risk=100,
+                     series=["KXBTCD", "KXETHD"])
+            self.assertEqual([r["n"] for r in self.mine(self.step(k, "KXBTCD-H1", n=2))], [50, 50])   # $40 + $40
+            self.assertEqual([r["n"] for r in self.mine(self.step(k, "KXETHD-H1", n=2))], [25])       # $20 left: 25, then none
+            k.shadow.settle({r["ticker"]: True for r in k.shadow.rows if r["event"] == "KXBTCD-H1"})
+            self.assertEqual([r["n"] for r in self.mine(self.step(k, "KXETHD-H2", n=1))], [50])
+
+    def test_paper_stops_for_the_day_at_its_loss_limit(self):
+        import time
+        with tempfile.TemporaryDirectory() as d:
+            k = self.desk(d)
+            self.new(k, contracts=50, max_hour_cost=2000, paper_capital=100000, max_order=1000, max_risk=10000, day_loss=30)
+            now = time.time()
+            self.assertEqual(k.shadow.watch({}, now), [])                       # the day begins here
+            [r] = self.mine(self.step(k, "KXBTCD-H1"))
+            self.assertEqual(k.shadow.watch({r["ticker"]: 0.60}, now), [])      # $10 down, with the fee
+            got = k.shadow.watch({r["ticker"]: 0.20}, now)                      # $30 and more
+            self.assertEqual([(n, lim) for n, _, lim in got], [("base-2", 30)])
+            self.assertEqual(k.shadow.watch({r["ticker"]: 0.20}, now), [])      # said once
+            self.assertEqual(self.mine(self.step(k, "KXBTCD-H2")), [])          # nothing more today, even if it comes back
+            self.assertTrue(self.mine(k.shadow.rows, "base"))                   # the built-in ones go on
+            k.shadow.save()
+            k2 = self.desk(d)                                                   # a restart remembers
+            self.assertTrue(k2.shadow.stopped("base-2", now))
+            self.assertFalse(k2.shadow.stopped("base-2", now + 86400))
+            k2.shadow.watch({}, now + 86400)                                    # tomorrow it starts again
+            self.assertFalse(k2.shadow.days["base-2"][2])
+            k2._shadow()
+
+    def test_the_engine_says_so_and_the_screen_shows_it(self):
+        import time
+        with tempfile.TemporaryDirectory() as d:
+            k, scr = self.setup(d)
+            self.new(k, name="mine", day_loss=5)
+            k._shadow()
+            k.shadow._count({"v": "mine", "event": "E1", "pnl": -6.0, "n": 1, "fee": 0, "close": 1.0, "ticker": "E1-T1", "side": "yes",
+                             "cost": 0.8, "ts": 1.0})
+            k._shadow()
+            self.assertTrue(any("paper: mine is down $6.00 today, past its daily loss limit $5.00" in m for _, _, m in k.logs))
+            self.sync(); scr.var_sel = "mine"; self.press("5")
+            self.assertIn("past its daily loss limit: no new entries until midnight", self.text())
+
+    def old(self, d, **rule):
+        """variants.json as the engine before limits wrote it."""
+        import json
+        with open(os.path.join(d, "variants.json"), "w") as fh:
+            json.dump({"variants": {"mine": {"rule": {"band_lo": 0.75, "band_hi": 0.95, "minutes": [25], "max_spread": 0.02, "series": ["KXBTCD"],
+                                                      "cap": None, "max_vol": None, "contracts": 100.0, "max_hour_cost": 2000.0,
+                                                      "paper_capital": 100000.0, **rule}, "title": "mine", "from": "base", "made": 1,
+                                             "deleted": False, "was": ""}}, "off": []}, fh)
+
+    def test_one_from_before_keeps_its_paper_and_live_keeps_to_the_desks_limits(self):
+        import json
+        from tern import config
+        with tempfile.TemporaryDirectory() as d:
+            c = config.Config(); c.live.capital_usd, c.live.max_order_usd, c.live.max_daily_loss = 90.0, 20.0, 15.0
+            config.save(c, d); self.old(d)
+            for _ in range(2):                                                  # (the second start reads what the first saved)
+                k = self.desk(d)
+                self.assertFalse(k.shadow.own.paper_limits("mine"))
+                self.assertEqual(k._limits("mine"), (90, 20, 15))
+                self.assertEqual(k._limits("base"), (90, 20, 15))
+            with open(os.path.join(d, "variants.json")) as fh:
+                v = json.load(fh)["variants"]["mine"]
+            self.assertEqual((v["paper_limits"], v["rule"]["max_risk"], v["rule"]["day_loss"]), (False, 90, 15))
+            c.live.capital_usd = 5.0; config.save(c, d)
+            self.assertEqual(self.desk(d)._limits("mine"), (90, 20, 15))        # its own from then on
+            self.assertEqual(self.mine(self.step(k, "KXBTCD-H1"), "mine")[0]["n"], 100)   # $80: over both, on paper as before
+            k.shadow.watch({}, 1e9); k.shadow._count({"v": "mine", "event": "E", "pnl": -500.0, "n": 1, "fee": 0, "close": 1.0})
+            self.assertEqual(k.shadow.watch({}, 1e9), [])
+            self.new(k, "mine", "fresh", cap=2)                                 # a new one from it keeps to them
+            self.assertTrue(k.shadow.own.paper_limits("fresh"))
+            self.assertTrue(self.desk(d).shadow.own.paper_limits("fresh"))      # after a restart too
+            self.assertIn("risk $90 · order $20 · day -$15", k.status_desc("fresh") if hasattr(k, "status_desc") else
+                          __import__("tern.shadow", fromlist=["x"]).desc_of("fresh", k.shadow.own))
+
+    def test_live_keeps_to_the_variant_it_trades(self):
+        got = []
+        class Api:
+            def order(self, t, side, n, price, cid):
+                got.append((n, price))
+                return {"order_id": "o", "fill_count": str(n), "average_fill_price": str(price), "average_fee_paid": "0"}
+        with tempfile.TemporaryDirectory() as d:
+            k = self.desk(d)
+            self.new(k, name="mine", contracts=40, max_hour_cost=2000, max_order=20, max_risk=30, band_lo=0.55, max_spread=0.05)
+            k.api, k.mode = Api(), "live"
+            k.cfg.live.enabled, k.cfg.live.variant, k.cfg.live.auto_needs_gate = True, "mine", False
+            k._auto()
+            self.assertTrue(got)
+            n, price = got[0]
+            unit = k.live.at_risk() / n
+            self.assertEqual(n, int(20 / unit + 1e-9))                          # cut to $20, as paper cuts it
+            from tern.kalshi import KalshiError
+            with self.assertRaisesRegex(KalshiError, "most at risk"):           # and the last check before any order
+                k._exec(k.live, "KXBTCD-E1-T9", 20, 0.8, 100, "auto")
+            with self.assertRaisesRegex(KalshiError, "largest order"):
+                k._exec(k.live, "KXBTCD-E1-T9", 30, 0.8, 100, "auto")
+
+    def test_lives_loss_limit_is_the_variants(self):
+        import time
+        with tempfile.TemporaryDirectory() as d:
+            k = self.desk(d)
+            self.new(k, name="mine", day_loss=5)
+            k.cfg.live.enabled, k.cfg.live.variant, k.mode = True, "mine", "live"
+            k._daily_loss()
+            k.live.realized -= 4.0; k._daily_loss(); self.assertTrue(k.cfg.live.enabled)
+            k.live.realized -= 2.0; k._daily_loss(); self.assertFalse(k.cfg.live.enabled)   # $30 is the built-in ones'
+            self.assertTrue(any("KILL" in m and "limit $5.00" in m for _, _, m in k.logs))
+
+    def test_the_live_prompt_says_the_variants_own(self):
+        with tempfile.TemporaryDirectory() as d:
+            k, scr = self.setup(d)
+            self.new(k, name="mine", contracts=12, max_order=33, max_risk=77, day_loss=44); self.sync()
+            scr.variant = "mine"; self.sync(); self.press("7")
+            for want in ("$77 at risk", "$33 per order", "-$44 a day"):
+                self.assertIn(want, self.text())
+            self.press("L")
+            for want in ("12 contracts a strike", "$33.00 an order", "$77.00 at risk", "-$44.00 in a day"):
+                self.assertIn(want, self.text())
+
+    def test_every_setting_is_explained(self):
+        from tern import about, config, variants
+        from tern.dash import SCREEN_SETTINGS
+        rule = {"band_lo": 0.75, "band_hi": 0.95, "minutes": [25, 20], "max_spread": 0.02, "series": ["KXBTCD", "KXETHD"], "cap": None, "max_vol": None,
+                "contracts": 25.0, "max_hour_cost": 200.0, "max_risk": 100.0, "max_order": 20.0, "day_loss": 30.0, "paper_capital": 1000.0}
+        for r in variants.RULE_SETTINGS:
+            for more in ({}, {"cap": 1, "max_vol": 5.0, "contracts": 1.0, "minutes": [5], "band_lo": 0.5, "band_hi": 0.51, "max_order": 1.0},
+                         {"band_lo": 0.98, "band_hi": 0.99, "contracts": 100.0, "minutes": [75, 30]}):
+                for c in ({}, {"vol": {"KXBTCD": 7.2, "KXETHD": None}, "price": 60000.0, "limits": False, "name": "base"}):
+                    out = about.rule(r.name, {**rule, **more}, c)
+                    self.assertGreater(sum(len(t) for _, t in out), 150, r.name)
+                    self.assertTrue(all(s in ("text", "head", "note", "fact") for s, _ in out))
+                    self.assertFalse([t for _, t in out if "edge" in t.lower().split()])
+        for r in config.SETTINGS + SCREEN_SETTINGS:
+            self.assertIn(r.key, about.DESK)
+        text = " ".join(t for _, t in about.rule("cap", rule, {}))
+        self.assertIn("bought 2 times: 50 contracts for $42.50", text)
+        text = " ".join(t for _, t in about.rule("max_vol", {**rule, "max_vol": 5.0}, {"vol": {"KXBTCD": 7.2, "KXETHD": None}, "price": 60000.0}))
+        self.assertIn("BTC 7.2 (skipped)", text); self.assertIn("ETH: a gap", text); self.assertIn("$60 in a minute", text)
+
+    def test_the_editor_explains_and_says_who_uses_what(self):
+        with tempfile.TemporaryDirectory() as d:
+            k, scr = self.setup(d, 32, 148)
+            self.press("5"); scr.var_sel = "cap1"; self.press("e")
+            for n, r in enumerate(scr.set_rows()):
+                scr.set_sel = n; scr.draw()
+                text = self.text()
+                self.assertIn("WHO USES WHAT", text, r.name); self.assertIn("CHANGES", text)
+                for row in scr.s.ch[1:30]:
+                    self.assertIn("".join(row)[-1], "│")
+            scr.set_sel = [r.name for r in scr.set_rows()].index("cap"); scr.draw()
+            self.assertRegex(self.text(), r"▸ 1 +cap1"); self.assertRegex(self.text(), r"off +base")
+            self.press(self.curses.KEY_RIGHT); self.assertRegex(self.text(), r"▸ 2 +none yet")
+            scr.set_sel = [r.name for r in scr.set_rows()].index("day_loss"); scr.draw()
+            self.assertIn("live keeps to this one", " ".join(self.text().replace("│", " ").split()))
+
+    def test_the_right_side_scrolls(self):
+        with tempfile.TemporaryDirectory() as d:
+            k, scr = self.setup(d, 30, 100)
+            c = self.curses; self.sync()
+            self.press("5", "e"); scr.draw()
+            first = self.text()
+            self.assertRegex("".join(scr.s.ch[28]), r" 1-\d+ of \d+ ")
+            self.press(c.KEY_NPAGE); self.assertNotEqual(self.text(), first); self.assertEqual((scr.set_sel, scr.overlay), (0, "edit"))
+            self.press(c.KEY_DOWN, c.KEY_UP); self.assertEqual(self.text(), first)   # another setting starts at its top
+            x = scr.rects["about"][1] + 3
+            scr.wheel(10, x, 1); scr.draw(); self.assertNotEqual(self.text(), first)
+
+    def test_a_hole_in_the_last_hour_is_filled_once(self):
+        import collections, time
+        from unittest import mock
+        from tern import engine, shadow
+        f = engine.SpotFeed()
+        now = time.time(); m0 = now // 60 * 60
+        have = [[m0 - 60 * i, 100.0 + i] for i in range(70, -1, -1) if not 3 <= i <= 8]
+        f.minute["BTC-USD"] = collections.deque(have, maxlen=2880); f.products.add("BTC-USD")
+        self.assertTrue(f.holes("BTC-USD", now)); self.assertIsNone(shadow.vol(list(f.minute["BTC-USD"]), now))
+        with mock.patch.object(engine, "history", lambda p, g: [[m0 - 60 * i, 5.0 if i == 0 else 200.0] for i in range(80, -1, -1)]):
+            f.fill("BTC-USD")
+        rows = list(f.minute["BTC-USD"])
+        self.assertEqual([r[0] for r in rows], sorted({r[0] for r in rows}))
+        self.assertFalse(f.holes("BTC-USD", now)); self.assertIsNotNone(shadow.vol(rows, now))
+        self.assertEqual(dict(map(tuple, rows))[m0 - 120], 102.0)               # what the feed saw stays
+        self.assertEqual(rows[-1], [m0, 100.0])                                 # and the running minute is its own
+
+
+class GoneCoins(Rig, unittest.TestCase):
+    """BNB and HYPE: not traded since 2026-11-24. What was bought settles, and records keep their names."""
+
+    def test_they_are_nowhere_to_pick(self):
+        from tern import config
+        with tempfile.TemporaryDirectory() as d:
+            k, scr = self.setup(d)
+            self.assertEqual([config.coin(s) for s in config.SERIES], ["BTC", "ETH", "SOL", "XRP"])
+            seen = set()
+            for _ in range(8):
+                self.press("1", "C"); seen.add(scr.series)
+            self.assertEqual(seen, set(config.SERIES))
+            self.press("5", "e"); self.assertNotIn("HYPE", self.text()); self.assertNotIn("BNB", self.text())
+            self.assertIn("must be chosen", k._command({"op": "variant_new", "from": "base", "rule": {"series": ["KXHYPED"]}}))
+            self.assertEqual(config.Config.from_dict({"strategy": {"series": ["KXHYPED", "KXETHD"]}}).strategy.series, ["KXETHD"])
+            self.assertEqual(config.Config.from_dict({"strategy": {"series": ["KXHYPED"]}}).strategy.series, ["KXBTCD"])
+            self.assertEqual(config.coin("KXHYPED"), "HYPE")                    # in what is past
+
+    def test_a_variant_loses_them_and_a_deleted_one_still_says(self):
+        import json
+        with tempfile.TemporaryDirectory() as d:
+            self.new(self.desk(d), name="mine"); self.new(self.desk(d), name="gone"); self.new(self.desk(d), name="only")
+            path = os.path.join(d, "variants.json")
+            with open(path) as fh:
+                j = json.load(fh)
+            j["variants"]["mine"]["rule"]["series"] = ["KXBTCD", "KXBNBD", "KXHYPED"]
+            j["variants"]["gone"]["rule"]["series"] = ["KXHYPED"]; j["variants"]["gone"]["deleted"] = True
+            j["variants"]["only"]["rule"]["series"] = ["KXHYPED"]
+            with open(path, "w") as fh:
+                json.dump(j, fh)
+            k = self.desk(d)
+            own = k.shadow.own
+            self.assertEqual((own.rule("mine")["series"], own.rule("gone")["series"], own.rule("only")["series"]),
+                             (["KXBTCD"], ["KXHYPED"], ["KXHYPED"]))
+            self.assertTrue(any("mine no longer trades BNB HYPE" in m for _, _, m in k.logs))
+            k2 = self.desk(d)                                                   # saved: said once
+            self.assertEqual((k2.shadow.own.trimmed, k2.shadow.own.rule("mine")["series"]), ({}, ["KXBTCD"]))
+            k2._shadow()                                                        # one with nothing left to trade just buys nothing
+            self.assertNotIn("only", {r["v"] for r in k2.shadow.rows})
+
+    def test_open_entries_settle_though_the_coin_is_not_fetched(self):
+        import time
+        with tempfile.TemporaryDirectory() as d:
+            k = self.desk(d)
+            k.shadow.rows.append({"v": "multi", "ts": 1.0, "event": "KXHYPED-E9", "close": time.time() + 0.2, "ticker": "KXHYPED-E9-T1",
+                                  "side": "yes", "n": 1, "cost": 0.8, "fee": 0.01, "slot": 25})
+            self.assertNotIn("KXHYPED", k._wanted())
+            k._refresh_event = k._commands = k._auto = k._settle = k._live_ready = lambda *a: None
+            real, k._shadow = k._shadow, lambda: None
+            k.step(); self.assertNotIn("KXHYPED-E9", k.closed)                  # still open
+            k.shadow.rows[-1]["close"] = time.time() - 100
+            k.step(); self.assertIn("KXHYPED-E9", k.closed)
+            k.pub.event_markets = lambda ev: [{"ticker": "KXHYPED-E9-T1", "result": "yes", "status": "finalized", "floor_strike": 1.0}]
+            real()
+            self.assertFalse([r for r in k.shadow.rows if r["event"] == "KXHYPED-E9"]); self.assertNotIn("KXHYPED-E9", k.closed)
+
+    def test_records_from_here_are_another_period_once(self):
+        with tempfile.TemporaryDirectory() as d:
+            k = self.desk(d)
+            self.assertEqual(k.slog.sv, 1)                                      # nothing recorded yet: nothing to split
+            k.shadow._count({"v": "multi", "event": "E1", "pnl": 1.0, "n": 1, "fee": 0, "close": 1.0})
+            k.shadow._close({"v": "multi", "ts": 1.0, "event": "E2", "close": 2.0, "ticker": "E2-T1", "side": "yes", "n": 1, "cost": 0.8,
+                             "fee": 0.0, "slot": 25}, 0.2)
+            self.assertEqual([self.desk(d).slog.sv for _ in range(2)], [2, 2])
+            from tern import reports
+            self.assertIn("BNB and HYPE are not traded any more", "\n".join(reports.periods(d)))
 
 
 class Themes(unittest.TestCase):

@@ -1,6 +1,6 @@
 # tern
 
-tern is a trading bot for Kalshi's hourly crypto above-or-below markets (BTC, ETH, SOL, XRP, BNB, HYPE),
+tern is a trading bot for Kalshi's hourly crypto above-or-below markets (BTC, ETH, SOL, XRP),
 with a btop-style terminal screen: braille charts, a strike ladder, and paper and live books.
 Every trade comes from its rule; there are no manual orders.
 It paper trades from the start and sends no real order until you arm live.
@@ -101,7 +101,7 @@ that trades. `L` goes live with the selected one (see Paper and live). These are
 | `tight1` | only strikes with a 1¢ spread |
 | `band75` | only favorites at 75–80¢; with `band80` and `band90` it splits the band in three |
 | `early` | only the 25m and 20m slots, the other half of `late` |
-| `multi` | the rule on every coin at once, each coin's hour with its own budget. Its dollars are up to six times `base`'s, so compare it by ¢/contract and t |
+| `multi` | the rule on every coin at once (BNB and HYPE too until 2026-11-24), each coin's hour with its own budget. Its dollars are up to four times `base`'s, so compare it by ¢/contract and t |
 | `calm` | skips a slot when the coin's realized volatility over the last hour (one-minute returns) is above 7.6 bp/min |
 
 Two earlier variants are retired: `stop20` (sell 20¢ under entry) and `arb` (a cross-strike pair under $1).
@@ -109,8 +109,14 @@ Two earlier variants are retired: `stop20` (sell 20¢ under entry) and `arb` (a 
 ### Your own
 
 A variant holds everything about how it trades: band, slots, max spread, coins, entries a strike, most
-volatility, contracts a strike, most an hour and paper start. Once saved it never changes, so a record always
-belongs to one set of settings. The ones you make are marked `+` in the variants box.
+volatility, contracts a strike, most an hour, its limits (most at risk, largest order, daily loss limit) and paper start.
+Once saved it never changes, so a record always belongs to one set of settings. The ones you make are marked `+` in the
+variants box. The editor explains each setting, with examples from the values on screen and what the other variants use.
+
+**Limits.** Paper and live both keep to a variant's limits, so its record is how live would trade. A buy over the largest
+order, or that would pass most at risk, is cut to fit. Down by the daily loss limit since midnight, paper takes no new
+entries until the next one; live turns off until `L`. The built-in variants, and your own from before 2026-11-24, kept
+their paper as it was: only live keeps to their limits ($100, $25 and $30, from `config.json`).
 
 - **`e` edits the highlighted one**, built in or your own: its settings open as a draft in the variants box, with the changes so far beside them. Change as many as you like; nothing is sent yet, and a changed one shows as `19 → 10 *`.
 - **`s` there saves the draft as a new variant**, under a name you type, with an empty record. The one it came from
@@ -153,12 +159,12 @@ $1,220.26, with $166.38 paid in fees. Each variant's record, after fees, from th
 | `calm` | 11-20 | 47 | 501 | +$50.51 | +2.05 | 91% | +0.96 |
 | `stop20` (retired 11-16) | 11-09 | 165 | 2,140 | −$190.72 | −1.82 | 68% | −3.01 |
 
-Hours are the hours a variant traded. `multi` trades all six coins and the rest trade BTC. t is the average
+Hours are the hours a variant traded. `multi` traded six coins then and the rest trade BTC. t is the average
 hour's P&L divided by its standard error. These are paper results.
 
 ## Settings
 
-The settings box (`9`) has the desk's settings: LIVE (its limits and contracts a strike), GATE, ALERTS, WEB, and what the log box shows.
+The settings box (`9`) has the desk's settings: GATE, ALERTS, WEB, and what the log box shows. `PgUp` `PgDn` scroll what a setting is.
 How anything trades is in its variant. Every change is written down with its time in `runtime/settings-log.jsonl`. A
 hand edit of the strategy in `config.json` changes the built-in variants and starts a new settings period; rows are
 stamped with theirs, and `python3 -m tern report --periods` splits the results by it.
@@ -193,12 +199,10 @@ turn it off), and `L` with live's own selected turns it off. Once live:
   not count. Moving live to another variant never skips this: that one needs its own record.
   14, 300 and $0 are the defaults; the settings box (`9`) changes them.
   Set `live.auto_needs_gate` to `false` to skip the gate.
-- **Size:** live buys `live.contracts` a strike, within the variant's most an hour. Live never falls back to another
+- **Size:** live buys the variant's own contracts a strike, within its most an hour. Live never falls back to another
   variant: one that is off or gone enters nothing until you pick one.
-- **Caps:** `live.capital_usd` ($100) is the most at risk at once.
-  `live.max_order_usd` ($25) is the largest single order. Orders that only
-  reduce a position are exempt from both.
-- **Kill switch:** a live loss of `live.max_daily_loss` ($30) since local
+- **Limits:** the variant's most at risk and largest order. Orders that only reduce a position are exempt from both.
+- **Kill switch:** a live loss of the variant's daily loss limit since local
   midnight turns live off. Open positions are left to settle. Every order is
   immediate-or-cancel, so nothing is left resting on the book.
 - **Kalshi is the record.** Every 15 seconds the engine reads your positions
@@ -382,6 +386,7 @@ The major ones, newest first.
 
 | Date | Change |
 |---|---|
+| 2026-11-24 | **Limits are part of a variant:** most at risk, largest order and daily loss limit, on paper and live. Live buys the variant's own contracts a strike (it had a size of its own). The settings box and the editor explain each setting. BNB and HYPE are not traded any more. |
 | 2026-11-23 | **One list of variants.** Profiles, the separate paper book and `w` are gone: `enter` selects the variant the screen shows, `L` goes live with it, `e` there edits one as a new one, `space` turns one on or off and `r` renames one. Every box fills the screen and the others are tabs (`1`–`9`, `0`, `h`, `tab`), the gate, reports, settings, themes and help too; the pages, zooming and the equity box are gone, `P` pauses the engine (was `S`), `C` cycles coins and `V` is the book's paper/live view. The book, gate, settings, help and the variant editor are laid out for the whole screen, and every theme has a color for each box and for the tabs; slate and ledger are new. The log has one entry a slot and an hour. Profiles' own variants move into the list with their records (see Settings). `tern report --profile` and `--profiles` are now `--periods`. |
 | 2026-11-23 | **Cash limit on paper:** no variant, and not the paper book, buys more than the cash it has left. Entries from before could. A variant that is out of cash says so in the variants box. |
 | 2026-11-23 | **Variants hold every trading setting**, contracts a strike, most an hour and paper start too. `E` opens them as a draft and `s` saves it as a new variant; a saved one never changes, and only `enter` changes what trades. Settings (`e`) has the profile and the desk only, the same under every profile. `n` in the variants box, and the rule, paper and "book trades" rows in settings, are gone. Variants saved before keep their profile's size. |

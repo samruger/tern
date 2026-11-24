@@ -15,9 +15,13 @@ SERIES = {  # Kalshi hourly above/below series -> Coinbase spot product; tab cyc
     "KXETHD": "ETH-USD",
     "KXSOLD": "SOL-USD",
     "KXXRPD": "XRP-USD",
-    "KXBNBD": "BNB-USD",
-    "KXHYPED": "HYPE-USD",
 }
+GONE = {"KXBNBD": "BNB-USD", "KXHYPED": "HYPE-USD"}   # traded until 2026-11-24: their records stay, nothing new is bought
+
+
+def coin(series: str) -> str:
+    """BTC for KXBTCD."""
+    return (SERIES.get(series) or GONE.get(series) or series).split("-")[0]
 
 
 @dataclass
@@ -36,11 +40,11 @@ class Strategy:
 @dataclass
 class Live:
     enabled: bool = False          # set from the screen (L, then type "live") or here. The desk never sets it itself.
-    capital_usd: float = 100.0     # most the live book may have at risk (cost of open positions) at once
-    max_order_usd: float = 25.0    # largest single live order the rule may send
-    max_daily_loss: float = 30.0   # live loss since local midnight that cancels everything and returns to paper
+    # the limits live keeps to when it trades a built-in variant (one of your own has its own, and keeps to them on paper too)
+    capital_usd: float = 100.0     # most it may have at risk (cost of open positions) at once
+    max_order_usd: float = 25.0    # most one order may cost
+    max_daily_loss: float = 30.0   # loss since local midnight that turns live off
     auto_needs_gate: bool = True   # live trades a variant only after its paper record passes the gate
-    contracts: float = 5.0         # contracts live buys per strike per slot (paper: the variant's)
     variant: str = ""              # the variant live trades (L on the screen sets it to the one selected). It must pass
                                    # the gate on its own record. Live never falls back to another.
 
@@ -108,6 +112,7 @@ class Config:
             live = {**live, "variant": strat["variant"]}     # from before there was one list: what live would have traded
         top["live"] = Live(**keep(Live, live))
         top["strategy"] = Strategy(**keep(Strategy, d.get("strategy")))
+        top["strategy"].series = [c for c in top["strategy"].series if c not in GONE] or Strategy().series
         top["gate"] = Gate(**keep(Gate, d.get("gate")))
         top["web"] = Web(**keep(Web, d.get("web")))
         return cls(**top)
@@ -137,14 +142,6 @@ class Setting:
 # The settings the screen's settings box (9) may change. The engine checks every change against this list
 # and its bounds; anything else stays a config.json edit.
 SETTINGS = [
-    Setting("live", "capital_usd", "most at risk at once", 1, 10_000, 5, risk=+1, group="LIVE",
-            what="$ of open live positions the rule may hold at once"),
-    Setting("live", "max_order_usd", "largest order", 1, 1_000, 1, risk=+1,
-            what="$ cap on any one live order"),
-    Setting("live", "max_daily_loss", "daily loss limit", 1, 5_000, 5, risk=+1,
-            what="live loss since local midnight that turns live off"),
-    Setting("live", "contracts", "contracts a strike", 1, 100, 1, kind="n", risk=+1,
-            what="contracts live buys per strike per slot; on paper each variant has its own"),
     Setting("gate", "min_days", "days of hours traded", 1, 90, 1, kind="n", risk=-1, group="GATE",
             what="hours a variant has traded on paper, in days, before live may trade it"),
     Setting("gate", "min_entries", "settled entries", 10, 10_000, 50, kind="n", risk=-1,

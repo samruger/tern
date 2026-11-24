@@ -17,10 +17,10 @@ import os
 import time
 from collections import deque
 
-from .book import afford, latest, taker_fee
+from .book import afford, latest, limited, taker_fee
 from .config import SERIES, Config
 from .strategy import due_slot, signals
-from .variants import VariantSet, as_rule, describe
+from .variants import LIMITS, VariantSet, as_rule, describe
 
 # name, (band_lo, band_hi, entries per strike per hour, slots, max spread, coins, max vol), what it does.
 # max vol is the coin's realized volatility over the last hour (vol() below, bp a minute); above it a slot is skipped.
@@ -77,10 +77,11 @@ def own_set(dir: str) -> VariantSet:
 
 
 def sizes_of(cfg: Config) -> dict:
-    """config.json's size and paper start, as a variant may hold them (config.json may say anything)."""
-    S = cfg.strategy
-    return {f: max(0.0, min(1e9, v)) for f, v in (("contracts", S.contracts), ("max_hour_cost", S.max_hour_cost),
-                                                   ("paper_capital", cfg.paper_capital))}
+    """config.json's size, limits and paper start, as a variant may hold them (config.json may say anything)."""
+    S, L = cfg.strategy, cfg.live
+    return {f: max(0.0, min(1e9, v)) for f, v in (
+        ("contracts", S.contracts), ("max_hour_cost", S.max_hour_cost), ("paper_capital", cfg.paper_capital),
+        ("max_risk", L.capital_usd), ("max_order", L.max_order_usd), ("day_loss", L.max_daily_loss))}
 
 
 def params(name: str, S, own: VariantSet | None = None) -> tuple:
@@ -117,6 +118,12 @@ def size_of(name: str, S, own: VariantSet | None = None) -> tuple[float, float]:
     return (mine["contracts"], mine["max_hour_cost"]) if mine is not None else (S.contracts, S.max_hour_cost)
 
 
+def limits_of(name: str, cfg: Config, own: VariantSet | None = None) -> tuple[float, float, float]:
+    """(most at risk, largest order, daily loss limit) for a variant: an own one's are its own, a built-in one's config.json's."""
+    mine = own.rule(name) if own is not None and name not in VARIANTS else None
+    return tuple(mine[f] for f in LIMITS) if mine is not None else (cfg.live.capital_usd, cfg.live.max_order_usd, cfg.live.max_daily_loss)
+
+
 def start_of(name: str, cfg: Config, own: VariantSet | None = None) -> float:
     """A variant's paper start."""
     mine = own.rule(name) if own is not None and name not in VARIANTS else None
@@ -126,12 +133,12 @@ def start_of(name: str, cfg: Config, own: VariantSet | None = None) -> float:
 def rule_of(name: str, cfg: Config, own: VariantSet | None = None) -> dict:
     """Everything about how a variant trades (variants.FIELDS), built in or own."""
     S = cfg.strategy
-    return as_rule(params(name, S, own), *size_of(name, S, own), start_of(name, cfg, own))
+    return as_rule(params(name, S, own), *size_of(name, S, own), limits_of(name, cfg, own), start_of(name, cfg, own))
 
 
 def desc_of(name: str, own: VariantSet | None = None) -> str:
     mine = own.rule(name) if own is not None and name not in VARIANTS else None
-    return describe(mine) if mine is not None else DESC.get(name, "")
+    return describe(mine, own.paper_limits(name)) if mine is not None else DESC.get(name, "")
 
 
 def known(name, own: VariantSet | None = None) -> bool:
@@ -177,6 +184,7 @@ class Shadow:
         self.own.used = lambda: set(self.agg) | {r["v"] for r in self.rows if isinstance(r.get("v"), str)}
         self.rows: list[dict] = []                 # open entries
         self.slots: dict[str, list] = {}           # event -> slots taken
+        self.days: dict[str, list] = {}            # variant -> [local date, its P&L as the day began, past its daily loss limit]
         self.agg: dict[str, dict[str, list]] = {}  # variant -> event -> [pnl, contracts, entries, wins, stops]
         self.by_sv: dict[tuple, dict[str, list]] = {}   # (variant, settings version) -> event -> the same
         self.closes: dict[str, float] = {}         # event -> close time, to order the hours
@@ -191,6 +199,9 @@ class Shadow:
             rows, slots = (d.get("rows"), d.get("slots")) if isinstance(d, dict) else (None, None)
             self.rows = [r for r in rows if isinstance(r, dict)] if isinstance(rows, list) else []
             self.slots = slots if isinstance(slots, dict) else {}
+            days = d.get("days") if isinstance(d, dict) else None
+            self.days = {k: v for k, v in days.items() if isinstance(v, list) and len(v) == 3 and isinstance(v[0], str) and
+                         isinstance(v[1], (int, float)) and isinstance(v[2], bool)} if isinstance(days, dict) else {}
         except (OSError, ValueError):
             pass
         done = set()
@@ -241,7 +252,7 @@ class Shadow:
         if not self.dirty:
             return
         with open(self.open_path + ".tmp", "w") as fh:
-            json.dump({"rows": self.rows, "slots": self.slots}, fh, separators=(",", ":"))
+            json.dump({"rows": self.rows, "slots": self.slots, "days": self.days}, fh, separators=(",", ":"))
         os.replace(self.open_path + ".tmp", self.open_path)
         self.dirty = False
 
@@ -260,6 +271,35 @@ class Shadow:
         """What a variant has left to spend, from its paper start: settled P&L in, open entries' cost and fees out."""
         return start + sum(a[0] for a in self.agg.get(name, {}).values()) - \
             sum(r["n"] * r["cost"] + r["fee"] for r in self.rows if r["v"] == name)
+
+    def stopped(self, name: str, now: float) -> bool:
+        """Past its daily loss limit: no new entries until local midnight."""
+        d = self.days.get(name)
+        return bool(d and d[2] and d[0] == time.strftime("%Y-%m-%d", time.localtime(now)))
+
+    def watch(self, mids: dict, now: float) -> list[tuple[str, float, float]]:
+        """The daily loss limits, as live's is: since local midnight, settled and open bets together, on every variant
+        whose paper keeps to its limits. Returns those that just passed theirs: (variant, down by, its limit)."""
+        names = [n for n in running(self.own) if self.own.paper_limits(n)]
+        if not names:
+            return []
+        today = time.strftime("%Y-%m-%d", time.localtime(now))
+        open_: dict[str, float] = dict.fromkeys(names, 0.0)
+        for r in self.rows:
+            if r["v"] in open_:
+                m = mids.get(r["ticker"])
+                val = r["cost"] if m is None else (m if r["side"] == "yes" else 1 - m)
+                open_[r["v"]] += r["n"] * (val - r["cost"]) - r["fee"]
+        out = []
+        for n in names:
+            pnl = sum(a[0] for a in self.agg.get(n, {}).values()) + open_[n]
+            d, limit = self.days.get(n), self.own.rule(n)["day_loss"]
+            if d is None or d[0] != today:
+                self.days[n] = [today, round(pnl, 4), False]; self.dirty = True
+            elif not d[2] and pnl < d[1] - limit:
+                d[2] = True; self.dirty = True
+                out.append((n, d[1] - pnl, limit))
+        return out
 
     # ------------------------------------------------------------ each engine step
     def step(self, event: str, close: float, markets: list[dict], S, now: float, vol: float | None = None,
@@ -281,8 +321,10 @@ class Shadow:
             mine_rule = self.own.rule(name) if name not in VARIANTS else None
             start = paper if mine_rule is None else mine_rule["paper_capital"]
             cash = math.inf if start is None else self.cash(name, start)
-            if slot not in mins or series not in coins or too_wild(mvol, vol):
+            if slot not in mins or series not in coins or too_wild(mvol, vol) or self.stopped(name, now):
                 continue
+            limits = mine_rule if self.own.paper_limits(name) else None
+            at_risk = sum(r["n"] * r["cost"] for r in self.rows if r["v"] == name) if limits else 0.0
             mine = [r for r in self.rows if r["v"] == name and r["event"] == event]
             spent = sum(r["n"] * r["cost"] + r["fee"] for r in mine)
             held = {}
@@ -293,6 +335,8 @@ class Shadow:
                     continue
                 unit = s["price"] if s["delta_sign"] > 0 else 1 - s["price"]
                 n = float(int(min(size, s["size"], max(0.0, (hour - spent) / max(unit, 1e-6)))))
+                if limits:
+                    n = limited(n, unit, at_risk, limits["max_risk"], limits["max_order"])
                 if cash < math.inf:
                     n = afford(n, unit, s["price"], cash, self.rate)
                 if n < 1:
@@ -300,6 +344,7 @@ class Shadow:
                 fee = self._fee(n, s["price"])
                 spent += n * unit + fee
                 cash -= n * unit + fee
+                at_risk += n * unit
                 held[s["ticker"]] = held.get(s["ticker"], 0) + 1
                 self.rows.append({"v": name, "ts": now, "event": event, "close": close, "ticker": s["ticker"],
                                   "side": s["side"], "n": n, "cost": unit, "fee": fee, "slot": slot, "pnl": None,

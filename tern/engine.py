@@ -17,7 +17,7 @@ import traceback
 import uuid
 
 from . import config as cfgmod
-from .book import Book, latest, taker_fee
+from .book import Book, latest, limited, taker_fee
 from .kalshi import Kalshi, KalshiError, quote
 from .record import Recorder
 from . import merge as mergemod
@@ -30,6 +30,7 @@ from .spot import coinbase, history
 from .strategy import due_slot, signals
 
 
+COINS_NOTE = "BNB and HYPE are not traded any more: multi trades BTC ETH SOL XRP"   # (settings log, once)
 CMD_MAX_AGE = 30.0     # seconds a command from the screen stays valid
 
 
@@ -112,6 +113,7 @@ class SpotFeed(threading.Thread):
         self.sec: dict[str, collections.deque] = {}
         self.minute: dict[str, collections.deque] = {}
         self.now: dict[str, float] = {}
+        self.filled: dict[str, float] = {}       # product -> when its last hour was last asked for again
 
     def want(self, product: str) -> None:
         with self.lock:
@@ -131,9 +133,27 @@ class SpotFeed(threading.Thread):
             sec = self.sec.get(product)
             return sec[-1][1] if sec and time.time() - sec[-1][0] <= max_age else None
 
+    def holes(self, product: str, now: float) -> bool:
+        """Minutes missing from the last hour: Coinbase's history runs a few minutes late at a start, or the network dropped."""
+        with self.lock:
+            ts = [r[0] for r in list(self.minute[product])[-75:] if now - 3660 <= r[0] <= now]
+        return len(ts) < 2 or any(b - a > 60 for a, b in zip(ts, ts[1:]))
+
+    def fill(self, product: str) -> None:
+        """Put the missing minutes in from Coinbase's history. A network call: in a thread of its own."""
+        past = history(product, 60)
+        with self.lock:
+            rows = {r[0]: r for r in past if r[0] < time.time() // 60 * 60}     # (the running minute is the feed's)
+            rows.update((r[0], r) for r in self.minute[product])                # what the feed saw itself stays
+            self.minute[product] = collections.deque((rows[t] for t in sorted(rows)), maxlen=self.minute[product].maxlen)
+
     def run(self) -> None:
         while True:
             t0 = time.time()
+            for prod in list(self.products):     # a hole is asked about again every 5 minutes: some minutes have no trade
+                if t0 - self.filled.setdefault(prod, t0 - 120) > 300 and self.holes(prod, t0):
+                    self.filled[prod] = t0
+                    threading.Thread(target=self.fill, args=(prod,), daemon=True).start()
             for prod in list(self.products):
                 p = coinbase(prod)
                 if p is None:
@@ -160,7 +180,7 @@ class Desk:
         os.makedirs(self.cmd_dir, exist_ok=True)
         self.echo = echo
         self.cfg = cfgmod.load(runtime)
-        # Market data is asked for again within seconds, so a failed call is not retried: with six coins
+        # Market data is asked for again within seconds, so a failed call is not retried: with several coins
         # polled one after another, three slow tries each would hold the loop past an entry slot.
         self.pub = Kalshi(tries=1, timeout=6.0)
         self.api: Kalshi | None = None
@@ -194,6 +214,12 @@ class Desk:
             cfgmod.save(self.cfg, runtime)
             self.log("live switched off: variants.json could not say which variants are off. Press L to go live again.", "error")
         self.shadow.own.keep_filled()
+        for name, coins in self.shadow.own.trimmed.items():
+            self.log(f"{self.vname(name)} no longer trades {' '.join(map(cfgmod.coin, coins))}: tern has no such coins now")
+        said = [ln.get("to") for ln in self.slog.lines() if ln.get("key") == "note"]
+        if self.shadow.agg and COINS_NOTE not in said:   # records made with them: those from here on are another period
+            self.slog.append("note", None, COINS_NOTE, bump=True)
+            self.log(f"settings {self.slog.sv}: {COINS_NOTE}")
         if self.cfg.live.enabled and not self.live_target()["ok"]:
             self.log(f"live waits: {self.live_target()['why']}", "error")
         for ev, close in self.shadow.pending(time.time()).items():
@@ -546,7 +572,7 @@ class Desk:
         except KalshiError as e:
             self.live_error = str(e)[:160]; return
         mids = self._mids()
-        other = sorted(t for t in ex if t.split("-", 1)[0] not in cfgmod.SERIES)
+        other = sorted(t for t in ex if t.split("-", 1)[0] not in {**cfgmod.SERIES, **cfgmod.GONE})
         if other and other != self.foreign:      # positions the desk did not open and cannot settle
             self.log(f"reconcile: leaving {len(other)} position(s) outside tern's markets alone: {', '.join(other[:5])}"
                      + ("…" if len(other) > 5 else ""), "warn")
@@ -575,12 +601,17 @@ class Desk:
         pnl = self.live.realized + self.live.unrealized(self._mids())
         if self.day.get("date") != today or "pnl" not in self.day:
             self.day = {"date": today, "pnl": pnl}
-        if pnl < self.day["pnl"] - self.cfg.live.max_daily_loss:
-            self.log(f"KILL: live down ${self.day['pnl'] - pnl:,.2f} today (limit ${self.cfg.live.max_daily_loss:,.2f}). "
+        limit = self._limits()[2]
+        if pnl < self.day["pnl"] - limit:
+            self.log(f"KILL: live down ${self.day['pnl'] - pnl:,.2f} today (limit ${limit:,.2f}). "
                      "Live switched off; open positions ride to settlement.", "error")
             self.cfg.live.enabled = False
             cfgmod.save(self.cfg, self.runtime)
             self.mode = "paper"; self.api = None
+
+    def _limits(self, name: str | None = None) -> tuple[float, float, float]:
+        """(most at risk, largest order, daily loss limit) of a variant, or of the one live trades."""
+        return shadowmod.limits_of(self.cfg.live.variant if name is None else name, self.cfg, self.shadow.own)
 
     # ------------------------------------------------------------ execution
     def _exec(self, book: Book, ticker: str, delta: float, price: float, avail: float, tag: str) -> dict | None:
@@ -596,12 +627,12 @@ class Desk:
         closing = min(abs(delta), abs(q)) if q and (q > 0) != (delta > 0) else 0.0
         cost = (abs(delta) - closing) * (price if delta > 0 else 1 - price)
         risk_after = book.at_risk() - closing * avg + cost
-        L = self.cfg.live
+        most, order, _ = self._limits()
         if cost > 1e-9:
-            if cost > L.max_order_usd + 1e-9:
-                raise KalshiError(f"order ${cost:,.2f} is over live.max_order_usd ${L.max_order_usd:,.2f}")
-            if risk_after > L.capital_usd + 1e-9:
-                raise KalshiError(f"would put ${risk_after:,.2f} at risk, over live.capital_usd ${L.capital_usd:,.2f}")
+            if cost > order + 1e-9:
+                raise KalshiError(f"order ${cost:,.2f} is over the variant's largest order ${order:,.2f}")
+            if risk_after > most + 1e-9:
+                raise KalshiError(f"would put ${risk_after:,.2f} at risk, over the variant's most at risk ${most:,.2f}")
             if self.balance is not None and cost > self.balance:
                 raise KalshiError(f"order ${cost:,.2f} is over the balance ${self.balance:,.2f}")
         cid = f"tern-{uuid.uuid4().hex[:20]}"
@@ -699,7 +730,8 @@ class Desk:
 
     def _auto_book(self, book, S, var: str, now: float, own=None) -> None:
         lo, hi, cap, mins, spread, coins, mvol = shadowmod.params(var, S, own)
-        hour = shadowmod.size_of(var, S, own)[1]
+        size, hour = shadowmod.size_of(var, S, own)
+        most, order, _ = self._limits(var)
         for series in coins:
             e = self.events.get(series)
             if not e or not e["markets"] or now - e["fetched"] > 10:
@@ -729,8 +761,11 @@ class Desk:
                     break
                 spent = self.hour_cost.get(key, 0.0)
                 unit = s["price"] if s["delta_sign"] > 0 else 1 - s["price"]
-                # whole contracts, no more than the quote shows, at live's own size and the variant's hourly limit
-                n = float(int(min(self.cfg.live.contracts, s["size"], max(0.0, (hour - spent) / max(unit, 1e-6)))))
+                # whole contracts, no more than the quote shows, at the variant's size and within its hour and its limits
+                n = float(int(min(size, s["size"], max(0.0, (hour - spent) / max(unit, 1e-6)))))
+                p = book.pos.get(s["ticker"], {})        # the part that closes what is held adds no risk (as in _exec)
+                closes = min(n, abs(p["q"])) if p.get("q") and (p["q"] > 0) != (s["delta_sign"] > 0) else 0.0
+                n = closes + limited(n - closes, unit, book.at_risk() - closes * p.get("avg", 0.0), most, order)
                 if n < 1:
                     continue                     # a cheaper favorite further on may still fit (as in shadow)
                 try:
@@ -780,6 +815,9 @@ class Desk:
     # ------------------------------------------------------------ shadow variants and the recorder
     def _shadow(self) -> None:
         now = time.time()
+        for name, down, limit in self.shadow.watch(self._mids(), now):
+            self.log(f"paper: {self.vname(name)} is down ${down:,.2f} today, past its daily loss limit ${limit:,.2f}: "
+                     "no new entries until midnight", "warn")
         for series in shadowmod.all_coins(self.cfg.strategy, self.shadow.own):
             e = self.events.get(series)
             if e and e["markets"] and now - e["fetched"] <= 10 and e["close"] > now and e.get("shadowed") != e["fetched"]:
@@ -1031,7 +1069,8 @@ class Desk:
         your own (then its display name, what it was made from and the id of the command that made it)."""
         own = shadow.own
         out = {"desc": shadowmod.desc_of(name, own), "rule": shadowmod.rule_of(name, cfg, own), "own": name in own.all, "on": name not in own.off,
-               "cash": round(shadow.cash(name, shadowmod.start_of(name, cfg, own)), 2)}
+               "cash": round(shadow.cash(name, shadowmod.start_of(name, cfg, own)), 2),
+               "paper_limits": own.paper_limits(name), "stopped": shadow.stopped(name, time.time())}
         if out["own"]:
             out.update(title=own.title(name), parent=own.all[name]["from"], by=own.by.get(name, ""))
         return out
@@ -1154,6 +1193,9 @@ class Desk:
         for s in [s for s, e in self.events.items() if s not in wanted and e["close"] <= now]:
             e = self.events.pop(s)                       # its hour closed with nobody fetching it: it still owes its results
             self.closed[e["event"]] = {"series": s, "close": e["close"]}
+        for ev, close in self.shadow.pending(now).items():   # open entries whose hour closed on a coin nobody fetches
+            if ev not in self.closed and ev not in [e["event"] for e in self.events.values()]:
+                self.closed[ev] = {"series": ev.split("-", 1)[0], "close": close}
         self._live_ready()
         self._commands()
         gate = self.gate()
