@@ -12,7 +12,7 @@ It paper trades from the start and sends no real order until you arm live.
 - **Reports.** Every variant's record on one screen, live or saved, with a weekly one if you want it.
 - **Runs unattended.** The engine is separate from the screen and can run as a systemd service.
 - **Web screen.** The same screen in a browser, view only.
-- **54 color themes.**
+- **56 color themes.**
 
 ## Quick start
 
@@ -77,7 +77,7 @@ line is always at the bottom.
 | ³ ladder | every strike, high to low: bid, ask, probability bar, spread, volume, your position. ★ marks strikes in the rule's band |
 | ⁴ book | the selected variant's money and record, its open positions, and beside them what settled and was filled. `V` switches between paper and live |
 | ⁵ variants | each variant's record and gate progress, ● on the one selected, L on the one live trades, + on the ones you made, and the highlighted one's P&L by hour |
-| ⁶ log | what the engine did; an hour settling is one entry, with how far it moved each variant and its record now |
+| ⁶ log | what the engine did; a slot is one entry, with what each variant bought, and so is an hour settling, with how far it moved each variant |
 | ⁷ gate | what the selected variant still needs to go live, the live caps, and every variant side by side |
 | ⁸ reports | every record: worked out now, or saved |
 | ⁹ settings | the settings, and what the one picked does |
@@ -274,10 +274,13 @@ systemctl --user enable --now tern-save-report.timer
 
 ## Themes
 
-The themes box (`0`) lists 54 color themes; `↑↓` and `←→` pick one. `t` and `T` step through them
-on any screen. Full color needs a 256-color terminal. Sunset and mint chip:
+The themes box (`0`) lists 56 color themes; `↑↓` and `←→` pick one. `t` and `T` step through them
+on any screen. Slate and ledger are the plain ones: one
+accent, and color only for gains, losses and warnings. Full color needs a 256-color terminal. Slate, sunset and mint chip:
 
 <img width="1364" height="668" alt="The themes box" src="docs/screenshots/14-themes.png" />
+
+<img width="1364" height="668" alt="The slate theme" src="docs/screenshots/15-theme-slate.png" />
 
 <img width="1364" height="668" alt="The sunset theme" src="docs/screenshots/09-theme-sunset.png" />
 
@@ -359,7 +362,7 @@ because they are rewritten every second.
 | `merge.py` | moves the profiles of before into the one list, once |
 | `record.py` | writes quotes and results to `runtime/ticks/` |
 | `dash.py` | the curses screen |
-| `themes.py` | the screen's 54 color themes |
+| `themes.py` | the screen's 56 color themes |
 | `web.py`, `web.html` | the same screen in a browser, view only |
 | `webctl.py` | starts, stops and asks about tern-web.service for the settings box's WEB rows |
 | `webauth.py` | tern web's password, sign-in cookie, wrong-guess limits and certificate |
@@ -378,7 +381,7 @@ The major ones, newest first.
 
 | Date | Change |
 |---|---|
-| 2026-11-23 | **One list of variants.** Profiles, the separate paper book and `w` are gone: `enter` selects the variant the screen shows, `L` goes live with it, `e` there edits one as a new one, `space` turns one on or off and `r` renames one. Every box fills the screen and the others are tabs (`1`–`9`, `0`, `h`, `tab`), the gate, reports, settings, themes and help too; the pages, zooming and the equity box are gone, `P` pauses the engine (was `S`), `C` cycles coins and `V` is the book's paper/live view. The book, gate, settings, help and the variant editor are laid out for the whole screen, and every theme has a color for each box and for the tabs. Profiles' own variants move into the list with their records (see Settings). `tern report --profile` and `--profiles` are now `--periods`. |
+| 2026-11-23 | **One list of variants.** Profiles, the separate paper book and `w` are gone: `enter` selects the variant the screen shows, `L` goes live with it, `e` there edits one as a new one, `space` turns one on or off and `r` renames one. Every box fills the screen and the others are tabs (`1`–`9`, `0`, `h`, `tab`), the gate, reports, settings, themes and help too; the pages, zooming and the equity box are gone, `P` pauses the engine (was `S`), `C` cycles coins and `V` is the book's paper/live view. The book, gate, settings, help and the variant editor are laid out for the whole screen, and every theme has a color for each box and for the tabs; slate and ledger are new. The log has one entry a slot and an hour. Profiles' own variants move into the list with their records (see Settings). `tern report --profile` and `--profiles` are now `--periods`. |
 | 2026-11-23 | **Cash limit on paper:** no variant, and not the paper book, buys more than the cash it has left. Entries from before could. A variant that is out of cash says so in the variants box. |
 | 2026-11-23 | **Variants hold every trading setting**, contracts a strike, most an hour and paper start too. `E` opens them as a draft and `s` saves it as a new variant; a saved one never changes, and only `enter` changes what trades. Settings (`e`) has the profile and the desk only, the same under every profile. `n` in the variants box, and the rule, paper and "book trades" rows in settings, are gone. Variants saved before keep their profile's size. |
 | 2026-11-23 | **AGPL license** (version 3 or later). It was MIT, then briefly the GPL; copies from then stay under those. |

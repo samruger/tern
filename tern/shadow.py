@@ -17,7 +17,7 @@ import os
 import time
 from collections import deque
 
-from .book import afford, taker_fee
+from .book import afford, latest, taker_fee
 from .config import SERIES, Config
 from .strategy import due_slot, signals
 from .variants import VariantSet, as_rule, describe
@@ -417,7 +417,7 @@ class Shadow:
         curve = [round(start + c, 2) for c in rec.get("curve") or []]
         return {"cash": cash, "equity": cash + mark, "start": start, "realized": rec["pnl"],
                 "fees": self.fees.get(name, 0.0) + open_fee, "at_risk": open_cost, "pos": pos,
-                "trades": trades[-30:], "curve": [[i, e] for i, e in enumerate(curve)], "hourly": True}
+                "trades": latest(trades), "curve": [[i, e] for i, e in enumerate(curve)], "hourly": True}
 
 
 def table(rows: list[dict], width: int = 8) -> list[str]:

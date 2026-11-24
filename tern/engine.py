@@ -17,7 +17,7 @@ import traceback
 import uuid
 
 from . import config as cfgmod
-from .book import Book, taker_fee
+from .book import Book, latest, taker_fee
 from .kalshi import Kalshi, KalshiError, quote
 from .record import Recorder
 from . import merge as mergemod
@@ -41,6 +41,20 @@ LOG_LINE = re.compile(r"^(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d) (\w[\w ]{4}) (.*)$")  
 TRADES_KEPT, CURVE_KEPT = 5000, 20_000   # history lines read back into memory on start
 OLD_PAPER = "paper-book.json"            # the paper book as it was when variants' own records took its place
 LOST_REPLY_WAITS = (1.0, 2.0, 4.0)   # seconds between looks for an order whose reply never came
+
+
+def take_lock(lock) -> bool:
+    """The engine's lock. A screen checking whether the engine is up takes it for an instant, so one refusal is not
+    proof of another engine: try for a second before believing it."""
+    for attempt in range(LOCK_TRIES):
+        if attempt:
+            time.sleep(0.2)
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return True
+        except BlockingIOError:
+            pass
+    return False
 
 
 class Unconfirmed(KalshiError):
@@ -175,6 +189,10 @@ class Desk:
         self.names = namesmod.Names(runtime)   # the built-in variants' display names
         if self.shadow.own.damaged:
             self.log("variants.json has something unreadable in it: those variants are not running", "error")
+        if self.shadow.own.off_lost and self.cfg.live.enabled:   # live's variant may be one that was turned off
+            self.cfg.live.enabled = False
+            cfgmod.save(self.cfg, runtime)
+            self.log("live switched off: variants.json could not say which variants are off. Press L to go live again.", "error")
         self.shadow.own.keep_filled()
         if self.cfg.live.enabled and not self.live_target()["ok"]:
             self.log(f"live waits: {self.live_target()['why']}", "error")
@@ -188,10 +206,8 @@ class Desk:
                 not os.path.exists(os.path.join(self.runtime, mergemod.BUSY)):
             return
         with open(os.path.join(self.runtime, "engine.lock"), "a") as lock:
-            try:
-                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except BlockingIOError:
-                return                           # (run() then says so and stops)
+            if not take_lock(lock):              # never go on with the profiles' files half read: another engine has them
+                raise SystemExit("tern engine already running")
             try:
                 said = mergemod.merge(self.runtime, self.slog.sv)
             finally:
@@ -201,8 +217,11 @@ class Desk:
         self.cfg = cfgmod.load(self.runtime, self.cfg)
 
     def _wanted(self) -> set[str]:
-        """The coins to fetch: what the variants trade, and what the screen and web viewers look at."""
-        return set(shadowmod.all_coins(self.cfg.strategy, self.shadow.own)) | {self.view["series"]} | set(self.web["series"])
+        """The coins to fetch: what the variants that are on trade, what the screen and web viewers look at, and what is
+        still held (a variant turned off keeps its open entries; live's loss limit needs their prices)."""
+        held = {r["event"].split("-", 1)[0] for r in self.shadow.rows} | {t.split("-", 1)[0] for t in self.live.pos}
+        return set(shadowmod.all_coins(self.cfg.strategy, self.shadow.own)) | {self.view["series"]} | set(self.web["series"]) | \
+            held & set(cfgmod.SERIES)
 
     def _reload_cfg(self, now: float | None = None, force: bool = False) -> None:
         """Re-read config.json every 5 s. A record field changed by hand is logged and bumps the settings version."""
@@ -215,7 +234,7 @@ class Desk:
         if self.cfg is not old:
             if self.shadow.own.guessed:              # it could not be read when the engine started
                 self.shadow.own.keep_filled(shadowmod.sizes_of(self.cfg))
-            for key, was, to in namesmod.diff_record(old.strategy, self.cfg.strategy):
+            for key, was, to in namesmod.diff_record(old, self.cfg):
                 self.slog.append(key, was, to, bump=True)
                 self.log(f"config: {key} {was} → {to} (settings {self.slog.sv})")
             if old.web != self.cfg.web:              # a hand edit of the web section: the service follows it
@@ -1071,7 +1090,7 @@ class Desk:
                             "pnl": None if val is None else abs(p["q"]) * (val - p["avg"])})
             return {"cash": b.cash, "equity": eq, "start": b.start, "realized": b.realized, "fees": b.fees,
                     "at_risk": b.at_risk(), "pos": pos, "curve": b.curve[-1500:],
-                    "trades": b.trades[-30:]}
+                    "trades": latest(b.trades)}
         gate = gate or self.gate()
         shadow = self.shadow.summary()
         variants = [{**r, **self._vinfo(r["name"], self.cfg, self.shadow), "live": r["name"] == self.cfg.live.variant,
@@ -1132,6 +1151,9 @@ class Desk:
             except KalshiError as ex:
                 if now - self.last["everr" + s] > 30:
                     self.last["everr" + s] = now; self.log(f"{s} market data: {ex}", "warn")
+        for s in [s for s, e in self.events.items() if s not in wanted and e["close"] <= now]:
+            e = self.events.pop(s)                       # its hour closed with nobody fetching it: it still owes its results
+            self.closed[e["event"]] = {"series": s, "close": e["close"]}
         self._live_ready()
         self._commands()
         gate = self.gate()
@@ -1146,16 +1168,8 @@ class Desk:
 
     def run(self, once: bool = False) -> None:
         lock = open(os.path.join(self.runtime, "engine.lock"), "a")
-        # A screen checking whether the engine is up takes this lock for an instant, so one refusal
-        # is not proof of another engine: try for a second before believing it.
-        for attempt in range(LOCK_TRIES):
-            try:
-                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                break
-            except BlockingIOError:
-                if attempt + 1 == LOCK_TRIES:
-                    print("tern engine already running"); return
-                time.sleep(0.2)
+        if not take_lock(lock):
+            print("tern engine already running"); return
         self.stopping = False
         def stop(signum, frame):
             self.stopping = True                     # only a flag: the step in progress finishes first

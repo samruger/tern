@@ -1168,6 +1168,48 @@ THEMES: dict[str, dict] = {
             "eq_dn": [235, 53, 89, 125, 168, 204, 211, 218],
         },
     },
+    # one steel blue on cool greys: color only where it says something (gains, losses, warnings)
+    "slate": {
+        "base": {1: 167, 2: 108, 3: 179, 4: 67, 5: 146, 6: 110, 7: 252},
+        "grey": 246, "key": 110, "head": 110,
+        "border": {"spot": 110, "contract": 110, "ladder": 110, "book": 110, "variants": 110, "log": 110,
+                   "gate": 110, "reports": 110, "settings": 110, "themes": 110, "help": 110},
+        "fill": 237, "tab": 239, "tab_text": 252,
+        "sym": 255, "event": 110, "unit": 246,
+        "word_a": 246, "word_b": 246, "word_c": 246,
+        "ticker": 110, "strike": 252, "slot": 252, "verb": 250, "variant": 152, "phrase": 250, "sep": 242,
+        "value": 255,
+        "rows": [255, 254, 253, 252, 251, 250, 249, 248],
+        "fade_txt": [254, 253, 252, 251, 250, 249, 248, 247, 246, 245],
+        "fade_ts": [110, 110, 109, 109, 103, 103, 245, 244, 243, 242],
+        "grads": {
+            "spot": [24, 24, 66, 67, 67, 74, 110, 152],
+            "yes": [59, 66, 66, 67, 67, 74, 110, 152],
+            "eq_up": [22, 65, 65, 71, 71, 108, 108, 151],
+            "eq_dn": [52, 95, 95, 131, 131, 167, 167, 174],
+        },
+    },
+    # ink on warm paper: ivory and tan, green and red kept for money
+    "ledger": {
+        "base": {1: 167, 2: 107, 3: 214, 4: 137, 5: 138, 6: 180, 7: 230},
+        "grey": 144, "key": 180, "head": 180,
+        "border": {"spot": 180, "contract": 180, "ladder": 180, "book": 180, "variants": 180, "log": 180,
+                   "gate": 180, "reports": 180, "settings": 180, "themes": 180, "help": 180},
+        "fill": 237, "tab": 240, "tab_text": 230,
+        "sym": 230, "event": 180, "unit": 144,
+        "word_a": 144, "word_b": 144, "word_c": 144,
+        "ticker": 180, "strike": 187, "slot": 187, "verb": 187, "variant": 223, "phrase": 187, "sep": 101,
+        "value": 230,
+        "rows": [230, 230, 187, 187, 187, 186, 144, 144],
+        "fade_txt": [230, 230, 187, 187, 187, 186, 144, 144, 144, 143],
+        "fade_ts": [180, 180, 180, 144, 144, 144, 137, 137, 101, 101],
+        "grads": {
+            "spot": [59, 101, 101, 137, 137, 144, 180, 223],
+            "yes": [59, 101, 101, 137, 137, 173, 180, 223],
+            "eq_up": [58, 64, 64, 65, 107, 107, 108, 150],
+            "eq_dn": [52, 88, 95, 131, 131, 167, 167, 174],
+        },
+    },
 }
 
 

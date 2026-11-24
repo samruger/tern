@@ -51,8 +51,30 @@ def _lines(path: str) -> list[str]:
         return []
 
 
+def _restore(runtime: str) -> None:
+    """The desk's files as they were before the merge."""
+    P = lambda n: os.path.join(runtime, n)
+    for n in FILES:
+        if os.path.exists(P(n + OLD)):
+            shutil.copy2(P(n + OLD), P(n))
+        elif os.path.exists(P(n)):
+            os.remove(P(n))
+
+
 def merge(runtime: str, sv: int) -> list[str]:
-    """Lines for the log. sv: the desk's settings version, which the rows take (theirs is kept as psv)."""
+    """Lines for the log. What stops it leaves the desk's files as they were, and the next start tries again: never half
+    of it for the engine to run on, and never an engine that won't start."""
+    try:
+        return _merge(runtime, sv)
+    except Exception as ex:
+        if os.path.isdir(os.path.join(runtime, FROM)) and os.path.exists(os.path.join(runtime, BUSY)):
+            _restore(runtime)
+            os.remove(os.path.join(runtime, BUSY))
+        return [f"the profiles in runtime/{FROM}/ could not be moved into the list ({ex}): the next start tries again"]
+
+
+def _merge(runtime: str, sv: int) -> list[str]:
+    """sv: the desk's settings version, which the rows take (theirs is kept as psv)."""
     P = lambda *n: os.path.join(runtime, *n)
     root = P(FROM)
     if not os.path.isdir(root):
@@ -60,12 +82,11 @@ def merge(runtime: str, sv: int) -> list[str]:
             os.remove(P(BUSY))
         return []
     if os.path.exists(P(BUSY)):                  # a start that was cut short: from the files as they were
-        for n in FILES:
-            if os.path.exists(P(n + OLD)):
-                shutil.copy2(P(n + OLD), P(n))
-            elif os.path.exists(P(n)):
-                os.remove(P(n))
-    else:
+        _restore(runtime)
+    raw = _json(P("config.json"), {})            # (one that can't be read stops it here, before anything is touched)
+    if not isinstance(raw, dict):
+        raise ValueError("config.json is not a settings file")
+    if not os.path.exists(P(BUSY)):
         for n in FILES:
             if os.path.exists(P(n + OLD)):
                 os.remove(P(n + OLD))
@@ -77,7 +98,6 @@ def merge(runtime: str, sv: int) -> list[str]:
     said: list[str] = []
     desk = Shadow(runtime)
     own, rows, slots, settled = desk.own, list(desk.rows), dict(desk.slots), []
-    raw = _json(P("config.json"), {})
     live = raw.get("live") if isinstance(raw.get("live"), dict) else {}
     live_pid, live_variant = str(live.get("profile") or "1"), None
 
@@ -92,6 +112,7 @@ def merge(runtime: str, sv: int) -> list[str]:
             order.append((0.0, pid))
     # the running ones' names come first: a deleted one of an earlier profile must not take one
     run_keys: set[str] = set()
+    given: set[str] = set()                      # every key handed out: a record's without a variant is in no list yet
     for _, pid in order:
         run_keys |= set(own_set(os.path.join(root, pid)).active())
     for i, (_, pid) in enumerate(sorted(order), start=2):
@@ -107,13 +128,15 @@ def merge(runtime: str, sv: int) -> list[str]:
             key: dict[str, str] = {}
 
             def free(want: str, runs: bool = False) -> str:
-                taken = set(own.all) | set(add) | set(own.reserved) | own.used() | (set() if runs else run_keys)
+                taken = set(own.all) | set(add) | set(own.reserved) | own.used() | given | (set() if runs else run_keys)
                 if want not in taken:
+                    given.add(want)
                     return want
                 stem, k = f"{want[:9].strip('-')}-p{i}", 2
                 out = stem
                 while out in taken:
                     out, k = f"{stem[:10]}-{k}", k + 1
+                given.add(out)
                 return out
 
             for k, v in p.own.all.items():       # its own
@@ -164,7 +187,7 @@ def merge(runtime: str, sv: int) -> list[str]:
     _put(P("shadow-settled.jsonl"), "".join(have + settled))
     _put(P("shadow.json"), json.dumps({"rows": rows, "slots": slots}, separators=(",", ":")))
     own.save()
-    if live_pid != "1" and isinstance(raw, dict):
+    if live_pid != "1":
         raw["live"] = {**live, "variant": live_variant or ""}
         _put(P("config.json"), json.dumps(raw, indent=2))
     to, n = P(TO), 2

@@ -1744,17 +1744,16 @@ class Tabs(Rig, unittest.TestCase):
                     [5.0, "info", line("ETH", "H2", "+8.50", "+5.00", "-1,100.00", "+1.00") + " · late +2.00"],
                     [6.0, "info", line("BTC", "H3", "+8.50", "+5.00", "-1,100.00", "+1.00")],
                     [7.0, "info", "shadow: odd line · no cells"]]
-            rows = scr.log_rows(logs, 104)
+            rows = scr.log_rows(logs)
             self.assertEqual([(r[0], r[2], r[3]) for r in rows if not r[3]], [
                 (2.0, "shadow: settled BTC ETH", 0), (3.0, "paper: something between", 0), (4.5, "live: a line in the middle", 0),
                 (5.0, "shadow: settled BTC ETH", 0), (6.0, "shadow: settled BTC · no variant changed", 0),
                 (7.0, "shadow: odd line · no cells", 0)])
-            cells = lambda ts: [[c[0].strip() for c in r[4]] for r in rows if r[0] == ts and r[3]]
+            cells = lambda ts: [[c[0].strip() for c in r[4] if c[0] != "now "] for r in rows if r[0] == ts and r[3]]
             self.assertEqual(cells(2.0), [["base", "", "+10.00"], ["high favs", "", "+5.00"], ["multi", "", "-1,132.43"],
                                           ["calm", "", "+1.00"]])              # nothing before it to compare with
             self.assertEqual(cells(5.0), [["base", "-1.50", "+8.50"], ["multi", "+32.43", "-1,100.00"], ["late", "+2.00", "+2.00"]])
             self.assertEqual(len({len("".join(c[0] for c in r[4])) for r in rows if r[0] == 5.0 and r[3]}), 1)   # aligned
-            self.assertEqual({r[5] for r in rows if r[3]}, {len("shadow: ")})
             self.press("6")
             for ts, lvl, msg in logs[:6]:
                 k.log(msg)
@@ -1767,22 +1766,29 @@ class Tabs(Rig, unittest.TestCase):
             under = text.splitlines()[text.splitlines().index(head) + 1]
             self.assertEqual(len(under) - len(under[1:].lstrip()), head.index("settled"))
 
-    def test_slot_lines_wrap_aligned(self):
+    def test_a_slots_lines_are_one_entry(self):
         from tern import dash
         with tempfile.TemporaryDirectory() as d:
             k, scr = self.setup(d)
             k._command({"op": "rename", "variant": "band90", "name": "high favs"})
-            self.press("6")
-            slot = "paper: 25m slot on KXBTCD-E1 bought · base 5 · band90 12 · cap1 1 · late 3"
-            for _ in range(60):                                                # more than the box holds
-                k.log(slot + " · multi 4 · calm 2 · early 11 · tight1 10 · band75 7")
             self.sync()
-            self.assertTrue(dash.TRADE_LINE.match(slot))                        # one of the log filter's trades
-            rows = scr.log_rows([[1.0, "info", slot]], 104)
-            self.assertEqual([(r[2], r[3], r[4]) for r in rows], [("paper: 25m slot on KXBTCD-E1 bought", 0,
-                             [("base", "5"), ("high favs", "12"), ("cap1", "1"), ("late", "3")])])
-            rows = scr.log_rows([[1.0, "info", slot + " · multi 4 · calm 2 · early 11 · tight1 10"]], 100)
-            self.assertEqual([(r[3], r[5]) for r in rows], [(0, len("paper: 25m slot on KXBTCD-E1 bought") + 2), (1, len("paper: "))])
+            logs = [[1.0, "info", "paper: 25m slot on KXBTCD-H1 bought · base 5 · band90 12 · multi 3"],
+                    [1.1, "info", "paper: 25m slot on KXETHD-H1 bought · cap1 2 · multi 4"],
+                    [1.2, "info", "paper: 20m slot on KXBTCD-H1 bought · base 1"],      # another slot
+                    [9.0, "info", "paper: 25m slot on KXBTCD-H2 bought · base 2"],      # another hour
+                    [9.5, "info", "paper: 25m slot on KXBTCD-H2 bought nothing it should"]]
+            self.assertTrue(all(dash.TRADE_LINE.match(l[2]) for l in logs[:4]))   # each one of the log filter's trades
+            rows = scr.log_rows(logs)
+            self.assertEqual([(r[0], r[2]) for r in rows if not r[3]], [
+                (1.1, "paper: 25m slot bought BTC ETH"), (1.2, "paper: 20m slot bought BTC"), (9.0, "paper: 25m slot bought BTC"),
+                (9.5, "paper: 25m slot on KXBTCD-H2 bought nothing it should")])
+            self.assertEqual(["".join(t for t, _ in r[4]) for r in rows if r[0] == 1.1 and r[3]],
+                             ["base         5   BTC", "high favs   12   BTC", "cap1         2   ETH", "multi        7   BTC 3 · ETH 4"])
+            self.press("6")
+            for n in range(30):                                                # more than the box holds
+                k.log(f"paper: 25m slot on KXBTCD-E{n} bought · base 5 · band90 12 · cap1 1 · late 3")
+            self.sync()
+            self.assertIn("high favs   12   BTC ", self.text())
             for r in scr.s.ch:                                                  # nothing runs past the box
                 self.assertIn("".join(r)[-1], "│╯╮ ")
             for _ in range(10):
@@ -2183,7 +2189,8 @@ class VariantReviewFixes(Rig, unittest.TestCase):
                 self.assertFalse(k.live_target()["ok"], how)                   # an unrelated change does not lift it
                 self.assertFalse(self.desk(d).live_target()["ok"], how)        # nor does a restart after it
                 self.assertFalse(k.gate()["passed"])
-                self.assertIn("live moved", k._command({"op": "live", "on": True, "variant": "base"}))   # picking one does
+                self.assertEqual(k.cfg.live.enabled, how == "gone")            # which are off could not be read: not armed
+                self.assertRegex(k._command({"op": "live", "on": True, "variant": "base"}), "live (moved|armed)")   # picking one does
                 self.assertTrue(k.live_target()["ok"], how)
 
     # 3
@@ -2688,7 +2695,7 @@ class OneList(Rig, unittest.TestCase):
                 with open(path, "w") as fh:
                     json.dump(j, fh)
                 own = self.desk(d).shadow.own
-                self.assertEqual((own.off, own.active(), own.damaged), (want, ["mine"], False))
+                self.assertEqual((own.off, own.active(), own.off_lost), (want, ["mine"], not isinstance(off, list)))
 
     def test_r_renames_and_R_is_gone(self):
         with tempfile.TemporaryDirectory() as d:
@@ -2861,10 +2868,57 @@ class Merge(Rig, unittest.TestCase):
             self.two(d)
             with open(os.path.join(d, "engine.lock"), "a") as lock:
                 fcntl.flock(lock, fcntl.LOCK_EX)
-                self.desk(d)
+                with self.assertRaises(SystemExit):                            # it does not go on without them
+                    self.desk(d)
                 self.assertTrue(os.path.isdir(os.path.join(d, "profiles", "no2")))
-            self.desk(d)
+                import threading
+                threading.Timer(0.3, lambda: fcntl.flock(lock, fcntl.LOCK_UN)).start()   # a screen looking if it is up
+                self.desk(d)
             self.assertFalse(os.path.isdir(os.path.join(d, "profiles")))
+
+    def test_what_stops_it_leaves_everything_and_the_engine_starts(self):
+        from unittest import mock
+        from tern import merge
+        def snap(d):
+            out = {}
+            for n in ("variants.json", "shadow.json", "shadow-settled.jsonl"):
+                p = os.path.join(d, n)
+                out[n] = open(p).read() if os.path.exists(p) else None
+            return out
+        for bad in ("{bad", "[]", "disk"):
+            with tempfile.TemporaryDirectory() as d:
+                self.two(d)
+                before = snap(d)
+                path = os.path.join(d, "config.json")
+                if bad == "disk":
+                    put = merge._put
+                    def full(p, text):
+                        if p.endswith("shadow.json"):
+                            raise OSError("No space left on device")
+                        put(p, text)
+                    with mock.patch.object(merge, "_put", full):
+                        k = self.desk(d)
+                else:
+                    with open(path, "w") as fh:
+                        fh.write(bad)
+                    k = self.desk(d)
+                self.assertTrue(any("the next start tries again" in m for _, _, m in k.logs), bad)
+                self.assertEqual(snap(d), before, bad)                         # as they were
+                self.assertFalse(os.path.exists(os.path.join(d, "merging")), bad)
+                self.assertTrue(os.path.isdir(os.path.join(d, "profiles", "no2")), bad)
+                if bad != "disk":
+                    os.remove(path)
+                self.assertIn("shared", self.desk(d).shadow.own.active(), bad)
+                self.assertFalse(os.path.isdir(os.path.join(d, "profiles")), bad)
+
+    def test_two_lost_variants_of_one_name_stay_apart(self):
+        with tempfile.TemporaryDirectory() as d:
+            os.makedirs(d, exist_ok=True)
+            self.folder(d, "a1", "A", {}, [self.entry("wide", 1, 1.0)], created=1.0)      # its variants.json lost it
+            self.folder(d, "b2", "B", {"wide": "deleted"}, [self.entry("wide", 2, 5.0)], created=2.0)
+            k = self.desk(d)
+            rows = {r["name"]: r["pnl"] for r in k.shadow.summary(list(k.shadow.agg)) if r["entries"]}
+            self.assertEqual(sorted(rows.values()), [1.0, 5.0], rows)
 
     def test_reading_a_report_moves_nothing(self):
         from tern import reports
@@ -3591,6 +3645,94 @@ class WebLogin(unittest.TestCase):
                 self.assertEqual(sorted(wrong).count(401), webauth.PER_IP)       # the right password cleared the earlier one
 
 
+class ReviewFixes2(Rig, unittest.TestCase):
+    """From the review of 2026-11-23: one list, tabs, themes."""
+
+    def test_a_coin_still_held_is_fetched_and_its_hour_settles(self):
+        import time
+        with tempfile.TemporaryDirectory() as d:
+            k = self.desk(d)
+            for name in k.shadow.own.active():
+                k.shadow.own.off.add(name)
+            for name in ("multi",):
+                k.shadow.own.off.add(name)
+            self.assertEqual(k._wanted(), {"KXBTCD"})
+            k.shadow.rows.append({"v": "multi", "ts": 1.0, "event": "KXETHD-E9", "close": time.time() + 60, "ticker": "KXETHD-E9-T1",
+                                  "side": "yes", "n": 1, "cost": 0.8, "fee": 0.01, "slot": 25})
+            self.assertEqual(k._wanted(), {"KXBTCD", "KXETHD"})                # it is off, its entry is open
+            k.live.pos["KXSOLD-E9-T1"] = {"q": 1, "avg": 0.8}
+            self.assertIn("KXSOLD", k._wanted())                               # live's loss limit needs its price
+            k.live.pos.clear(); k.shadow.rows[:] = [r for r in k.shadow.rows if r["v"] != "multi"]
+            k.events["KXETHD"] = {"event": "KXETHD-E9", "close": time.time() - 1, "markets": [], "fetched": 0.0, "title": ""}
+            k._refresh_event = k._commands = k._auto = lambda *a: None
+            k._shadow = k._settle = k._live_ready = lambda *a: None
+            k.step()
+            self.assertNotIn("KXETHD", k.events); self.assertIn("KXETHD-E9", k.closed)   # nobody fetches it, its results are owed
+
+    def test_live_is_off_when_what_is_off_is_lost(self):
+        with tempfile.TemporaryDirectory() as d:
+            k = self.desk(d)
+            self.new(k, name="mine")
+            k._command({"op": "live", "on": True, "variant": "base"})
+            k._command({"op": "variant_on", "variant": "base", "on": False})
+            path = os.path.join(d, "variants.json")
+            with open(path) as fh:
+                text = fh.read()
+            with open(path, "w") as fh:
+                fh.write(text[:len(text) // 2])                                # cut short by a crash
+            k = self.desk(d)
+            self.assertFalse(k.cfg.live.enabled)
+            self.assertTrue(any("live switched off" in m for _, _, m in k.logs))
+            self.assertFalse(self.desk(d).cfg.live.enabled)                    # and stays so
+
+    def test_a_hand_edit_of_the_paper_start_is_a_settings_period(self):
+        with tempfile.TemporaryDirectory() as d:
+            k = self.desk(d)
+            sv = k.slog.sv
+            from tern import config
+            c = config.load(d); c.paper_capital = 100.0; config.save(c, d)
+            k._reload_cfg(force=True)
+            self.assertEqual(k.slog.sv, sv + 1)
+            self.assertEqual(k.slog.lines()[-1]["key"], "paper_capital")
+            self.assertTrue(any("paper_capital 1000.0 → 100.0" in m for _, _, m in k.logs))
+
+    def test_the_book_keeps_both_kinds_of_trade(self):
+        from tern.book import latest
+        tr = [{"kind": "settle", "ts": i} for i in range(5)] + [{"kind": "fill", "ts": 10 + i} for i in range(60)]
+        out = latest(tr)
+        self.assertEqual([sum(t["kind"] == x for t in out) for x in ("settle", "fill")], [5, 20])
+        self.assertEqual(out, sorted(out, key=lambda t: t["ts"]))
+        self.assertEqual(latest([]), [])
+
+    def test_the_wheel_leaves_a_value_being_typed(self):
+        with tempfile.TemporaryDirectory() as d:
+            k, scr = self.setup(d)
+            self.press("9", self.curses.KEY_DOWN, 10, "5")
+            at = scr.set_sel
+            scr.wheel(10, 5, 1); scr.wheel(10, 5, -1); scr.wheel(10, 5, -1)
+            self.assertEqual((scr.set_sel, scr.set_buf), (at, "5"))
+
+    def test_the_settings_page_and_jump_to_their_ends(self):
+        with tempfile.TemporaryDirectory() as d:
+            k, scr = self.setup(d)
+            c, n = self.curses, len(scr.set_rows())
+            self.press("9", c.KEY_HOME); self.assertEqual(scr.set_sel, 0)
+            self.press(c.KEY_NPAGE); self.assertEqual(scr.set_sel, min(10, n - 1))
+            self.press(c.KEY_END); self.assertEqual(scr.set_sel, n - 1)
+            self.press(c.KEY_END); self.assertEqual(scr.set_sel, n - 1)
+            self.press(c.KEY_DOWN); self.assertEqual(scr.set_sel, 0)           # one at a time goes round
+
+    def test_the_web_draws_readable_rows_too(self):
+        from tern import themes, web
+        P = web.WebPal()
+        for name in themes.NAMES:
+            P.set_theme(name)
+            for fg in P.t["rows"] + [P.t["key"]]:
+                got = (P.on(fg, P.t["fill"]) & 0x1FF) - 1
+                if got > 15:
+                    self.assertGreaterEqual(themes.contrast(got, P.t["fill"]), 4, (name, fg))
+
+
 class Themes(unittest.TestCase):
     """Every theme has every role, a color for every box, and text that can be read where it is drawn."""
 
@@ -3613,7 +3755,7 @@ class Themes(unittest.TestCase):
             self.assertGreaterEqual(themes.contrast(t["tab_text"], t["tab"]), 4, name)
             self.assertGreaterEqual(themes.distance(t["fill"], themes.BACK), 8, name)
             for a, b in zip(colors, colors[1:]):
-                self.assertNotEqual(a, b, name)                                                 # nor the one next to it
+                self.assertTrue(a != b or len(set(colors)) == 1, name)      # nor the one next to it, unless all are one
 
     def test_color_pairs_never_pass_255(self):
         # curses.color_pair(256) is pair 0: past 255 a pair is drawn as another one, or as no color at all

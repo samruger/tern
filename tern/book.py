@@ -24,6 +24,18 @@ def afford(n: float, unit: float, price: float, cash: float, rate: float = 0.07)
     return float(k)
 
 
+def latest(trades: list[dict], n: int = 20) -> list[dict]:
+    """The last n fills and the last n settlements, in the order they came: a busy hour of one leaves the other in."""
+    left, out = {"fill": n, "settle": n}, []
+    for t in reversed(trades):
+        if left.get(t.get("kind"), 0) > 0:
+            left[t["kind"]] -= 1
+            out.append(t)
+        elif not any(left.values()):
+            break
+    return out[::-1]
+
+
 class Book:
     def __init__(self, name: str, cash: float):
         self.name = name

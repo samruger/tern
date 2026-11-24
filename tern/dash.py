@@ -390,7 +390,7 @@ OVERLAY_TOKENS = re.compile(
     r"|(?P<keyhint>^(?:y|any key|any other key)\b|\besc\b|·\s(?:any (?:other )?key)\b)"
     r"|(?P<path>~/\S+|\bKALSHI_KEY_(?:ID|FILE)\b|\blive\.\w+)")
 SHADOW_LINE = re.compile(r"^shadow: ([A-Z0-9]+)-(\S+) settled · (.+)$")       # the engine's line after a coin's hour settles
-SLOT_LINE = re.compile(r"^(paper: \d+m slot on \S+ bought) · (.+)$")        # and after a slot
+SLOT_LINE = re.compile(r"^paper: (\d+m) slot on ([A-Z0-9]+)-(\S+) bought · (.+)$")   # and after a slot
 SHADOW_CELL = re.compile(r"^(\S+) ([+-]\d[\d,]*\.\d\d|\d+)$")
 
 # the help's key legend: two columns of (section, [(keys, what they do)])
@@ -1505,28 +1505,19 @@ class Screen:
     def log_panel(self, y, x, h, w) -> None:
         P = self.P
         self.box(y, x, h, w, "log", self.P.border("log"), PANEL_KEYS["log"](self))
-        logs = self.log_rows(self.logs_shown(), w)
+        logs = self.log_rows(self.logs_shown())
         rows = h - 2
         end = self.log_end(logs, rows)
         saved, self.clip = self.clip, x + w - 2
         shown = logs[max(0, end - rows):end]
-        for j, (ts, lvl, msg, sub, cells, indent) in enumerate(shown):
+        for j, (ts, lvl, msg, sub, cells) in enumerate(shown):
             yy = y + 1 + j
             age = (len(shown) - 1 - j) / max(1, rows - 1)          # 0 for the bottom (newest) line
-            color = lambda v: P({"+": GREEN, "-": RED}.get(v.lstrip()[:1], WHITE), bold=True)
-            if cells and len(cells) == 3 and cells[1][1] == "d":   # a variant an hour changed: by how much, and its record now
-                (name, _), (d, _), (v, _) = cells
-                cx = x + 11 + indent
-                for text, attr in ((name, P(P.c("variant"), bold=True)), ("   ", 0), (d, color(d)),
-                                   ("   now " if d.strip() else "now ", P(P.grey)), (v, color(v))):
-                    self.put(yy, cx, text, attr); cx += len(text)
-            elif cells:                                            # a slot's: the variants and what they bought
-                cx = x + 11 + indent
-                for n, (name, v) in enumerate(cells):
-                    if n:
-                        self.put(yy, cx, " · ", P(P.c("sep"))); cx += 3
-                    self.put(yy, cx, name, P(P.c("variant"), bold=True)); cx += len(name) + 1
-                    self.put(yy, cx, v, color(v)); cx += len(v)
+            cx = x + 19                                            # under what follows "shadow: "
+            for text, role in cells or []:
+                c = {"variant": P.c("variant"), "count": WHITE, "note": P.grey, "sep": P.c("sep")}.get(role) or \
+                    {"+": GREEN, "-": RED}.get(text.lstrip()[:1], WHITE)
+                self.put(yy, cx, text, P(c, bold=role in ("variant", "count", "signed"))); cx += len(text)
             if sub:                                                # a continuation row: no time, no text
                 continue
             self.put(yy, x + 2, time.strftime("%H:%M:%S", time.localtime(ts)), P(P.pick("fade_ts", age)))
@@ -1593,56 +1584,65 @@ class Screen:
             out.append((msg[i:], plain))
         return out
 
-    def log_rows(self, logs: list, w: int) -> list[tuple]:
-        """The log box's screen rows, (ts, level, text, sub, cells, indent). An hour's shadow settlement lines, one a coin
-        with every variant's record, become one entry: the coins, then a row for each variant the hour changed, with the
-        change and its record now. A slot's line ("paper: 25m slot on EV bought · base 5 ...") wraps between its
-        (name, entries) cells. The rows after an entry's first (sub 1, 2...) have no time and start under what follows
-        "shadow: " or "paper: ". Every other line is one row: sub 0, no cells."""
+    def log_rows(self, logs: list) -> list[tuple]:
+        """The log box's screen rows, (ts, level, text, sub, cells). The engine writes a line a coin when an hour settles
+        ("shadow: EV settled · base +1.20 ...", every variant's record) and after a slot ("paper: 25m slot on EV bought ·
+        base 5 ..."): an hour's, and a slot's, are one entry, where its last line is. Under it is a row for each variant the
+        hour changed (by how much, and its record now) or that bought (how many strikes, and of what): sub 1, 2..., no text,
+        cells of (text, role). Every other line is one row: sub 0, no cells."""
         split = lambda text: [m for m in map(SHADOW_CELL.match, text.split(" · ")) if m]
-        whole = lambda m, g: m and len(split(m.group(g))) == m.group(g).count(" · ") + 1
-        hours: dict[str, dict] = {}                              # an hour's lines: the last one's place, coins, records
+        coin = lambda series: cfgmod.SERIES.get(series, series).split("-")[0]
+        groups: dict[tuple, dict] = {}                           # (slot or "", hour) -> its lines' last place, coins, cells
+        of: dict[int, dict] = {}                                 # line -> its group
         for n, (ts, lvl, msg) in enumerate(logs):
-            m = SHADOW_LINE.match(msg)
-            if whole(m, 3):
-                h = hours.setdefault(m.group(2), {"coins": [], "now": {}})
-                coin = cfgmod.SERIES.get(m.group(1), m.group(1)).split("-")[0]
-                h["at"], h["coins"] = n, h["coins"] + ([coin] if coin not in h["coins"] else [])
-                h["now"].update((c.group(1), c.group(2)) for c in split(m.group(3)))
-        last = {h["at"]: h for h in hours.values()}
-        out, before = [], None                                   # before: the records as the hour before left them
+            m = SHADOW_LINE.match(msg) or SLOT_LINE.match(msg)
+            if not m:
+                continue
+            slot, series, hour, text = ("", *m.groups()) if m.re is SHADOW_LINE else m.groups()
+            cells = split(text)
+            if len(cells) == text.count(" · ") + 1:
+                g = of[n] = groups.setdefault((slot, hour), {"slot": slot, "cells": {}, "coins": {}})
+                g["at"] = n
+                g["coins"][coin(series)] = None
+                for c in cells:                                  # a variant's record as its last line has it; a buy by coin
+                    g["cells"].setdefault(c.group(1), {})[coin(series) if slot else ""] = c.group(2)
+        order = {v["name"]: k for k, v in enumerate(self.st.get("variants") or [])}   # as the variants box lists them
+        out: list[tuple] = []
+        before: dict | None = None                               # the records as the hour before left them
         for n, (ts, lvl, msg) in enumerate(logs):
-            if whole(SHADOW_LINE.match(msg), 3):
-                if n not in last:
-                    continue
-                h = last[n]
+            g = of.get(n)
+            if not g:
+                out.append((ts, lvl, msg, 0, None)); continue
+            if g["at"] != n:                                     # shown where the group's last line is
+                continue
+            rows: list[list[tuple[str, str]]] = []
+            if g["slot"]:
+                head = f"paper: {g['slot']} slot bought " + " ".join(g["coins"])
+                for name, by in sorted(g["cells"].items(), key=lambda x: order.get(x[0], len(order))):
+                    row = [(self.vn(name), "variant"), (f"{sum(map(int, by.values()))}", "count")]
+                    for k, (c, q) in enumerate(by.items()):
+                        row += ([(" · ", "sep")] if k else []) + [(f"{c} {q}" if len(by) > 1 else c, "note")]
+                    rows.append(row)
+            else:
+                now = {name: by[""] for name, by in g["cells"].items()}
                 num = lambda v: float(v.replace(",", ""))
-                rows = []
-                for name, v in h["now"].items():
+                for name, v in now.items():
                     d = None if before is None else round(num(v) - num(before.get(name, "0")), 2)
                     if d != 0:
-                        rows.append((self.vn(name), "" if d is None else f"{d:+,.2f}", v))
-                head = "shadow: settled " + " ".join(h["coins"]) + ("" if rows else " · no variant changed")
-                out.append((ts, lvl, head, 0, None, 0))
-                nw, dw, vw = (max([len(r[c]) for r in rows] + [0]) for c in range(3))
-                for k, (name, d, v) in enumerate(rows, 1):
-                    out.append((ts, lvl, "", k, [(f"{name:<{nw}}", ""), (f"{d:>{dw}}", "d"), (f"{v:>{vw}}", "now")], len("shadow: ")))
-                before = {**(before or {}), **h["now"]}
-                continue
-            m = SLOT_LINE.match(msg)
-            if not whole(m, 2):
-                out.append((ts, lvl, msg, 0, None, 0)); continue
-            head = m.group(1)
-            under = head.index(": ") + 2
-            row, indent, at, k = [], len(head) + 2, len(head) + 2, 0
-            for c in split(m.group(2)):
-                name, v = self.vn(c.group(1)), c.group(2)
-                n_ = len(name) + 1 + len(v)
-                if row and at + n_ > w - 13:                       # full: on to the next row
-                    out.append((ts, lvl, head if k == 0 else "", k, row, indent))
-                    row, indent, at, k = [], under, under, k + 1
-                row.append((name, v)); at += n_ + 3                # " · " between
-            out.append((ts, lvl, head if k == 0 else "", k, row, indent))
+                        rows.append([(self.vn(name), "variant"), ("" if d is None else f"{d:+,.2f}", "signed"),
+                                     ("now", "note"), (v, "signed")])
+                head = "shadow: settled " + " ".join(g["coins"]) + ("" if rows else " · no variant changed")
+                before = {**(before or {}), **now}
+            out.append((ts, lvl, head, 0, None))
+            wide = [max(len(r[c][0]) for r in rows) if rows else 0 for c in range(2 if g["slot"] else 4)]   # these line up
+            for k, row in enumerate(rows, 1):
+                cells = []
+                for c, (text, role) in enumerate(row):
+                    if c < len(wide):
+                        text = f"{text:<{wide[c]}}" if role in ("variant", "note") else f"{text:>{wide[c]}}"
+                        text = text + ("   " if c < 2 else " ") if wide[c] else ""
+                    cells.append((text, role))
+                out.append((ts, lvl, "", k, cells))
         return out
 
     def log_end(self, logs: list, rows: int) -> int:
@@ -1677,8 +1677,10 @@ class Screen:
             self.pos_off = max(0, self.pos_off + d)    # book_panel clamps the far end
         elif name == "gate":
             self.offs[name] = max(0, self.offs.get(name, 0) + d)   # pane clamps the far end
-        elif name == "settings":
-            self.set_sel, self.set_sub = (self.set_sel + (1 if d > 0 else -1)) % len(self.set_rows()), 0
+        elif name == "settings" and self.set_buf is None:        # (a value being typed stays with its row)
+            n = len(self.set_rows())
+            self.set_sel = (self.set_sel + d) % n if abs(d) == 1 else max(0, min(n - 1, self.set_sel + d))
+            self.set_sub = 0
         elif name == "themes":
             i = themes.NAMES.index(self.P.name) if self.P.name in themes.NAMES else 0
             self.P.set_theme(themes.NAMES[max(0, min(len(themes.NAMES) - 1, i + d))])
@@ -1690,7 +1692,7 @@ class Screen:
             self.rep_off = max(0, min(self.rep_len - self.rep_room, self.rep_off + d))
         elif name == "log":
             r = self.rects.get("log")
-            logs = self.log_rows(self.logs_shown(), r[3] if r else 100)
+            logs = self.log_rows(self.logs_shown())
             rows = r[2] - 2 if r else 1
             end = max(min(rows, len(logs)), min(len(logs), self.log_end(logs, rows) + 3 * d))
             self.log_anchor = None if end >= len(logs) else (logs[end - 1][0], logs[end - 1][3])
@@ -2410,7 +2412,7 @@ class Screen:
                 return True
             d = -1 if bs & curses.BUTTON4_PRESSED else 1 if bs & curses.BUTTON5_PRESSED else 0
             if d and self.overlay == "edit" and not self.modal:
-                self.set_sel = (self.set_sel + d) % len(self.set_rows())
+                self.scroll("settings", d)
             elif d and not self.modal:
                 self.wheel(my, mx, d)
             return True

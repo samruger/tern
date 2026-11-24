@@ -181,6 +181,7 @@ class VariantSet:
         self.used = lambda: set()                # keys that have records (Shadow sets it): never given to another
         self.unsized: dict[str, list] = {}       # variant -> the fields it got from sizes: keep_filled() saves them
         self.guessed = guessed
+        self.off_lost = False                    # which ones are off could not be read: all of them are on
         self.damaged = False                     # something in the file would not load: save() keeps a copy of it
         try:
             with open(self.path) as fh:
@@ -191,12 +192,14 @@ class VariantSet:
             self.all = {k: v for k, v in got.items() if v is not None}
             self.unsized = {k: fs for k in self.all if (fs := [f for f in SIZES if f not in items[k]["rule"]])}
             self.damaged = len(self.all) != len(items)
-            off = whole.get("off")
+            off = whole.get("off", [])
+            self.off_lost = not isinstance(off, list)
+            self.damaged |= self.off_lost
             self.off = {n for n in off if isinstance(n, str)} if isinstance(off, list) else set()
         except FileNotFoundError:
             pass
         except (OSError, ValueError, KeyError, AttributeError, TypeError):
-            self.damaged = True
+            self.damaged = self.off_lost = True
 
     def keep_filled(self, sizes: dict | None = None) -> None:
         """The engine's, once: sizes filled in from config.json are the variants' own from now on. sizes: config.json's,
@@ -225,6 +228,7 @@ class VariantSet:
             self.unsized = {}
         with open(self.path + ".tmp", "w") as fh:
             json.dump({"variants": out, "off": sorted(self.off)}, fh, indent=1)
+            fh.flush(); os.fsync(fh.fileno())
         os.replace(self.path + ".tmp", self.path)
         self.changes += 1
 

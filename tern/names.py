@@ -24,7 +24,8 @@ VARIANT_NAME_MAX = varmod.NAME_MAX
 
 # fields that change how the built-in variants' records are made: a change bumps the settings version
 RECORD_KEYS = ("strategy.band_lo", "strategy.band_hi", "strategy.minutes", "strategy.max_spread",
-               "strategy.series", "strategy.contracts", "strategy.max_hour_cost")
+               "strategy.series", "strategy.contracts", "strategy.max_hour_cost",
+               "paper_capital")                  # (the cash a built-in variant can spend starts there)
 
 # The rule, size and paper start of the built-in variants, in config.json. The screen never changes these (a change
 # is a new variant); a hand edit still does, and is logged.
@@ -50,12 +51,11 @@ def _get(cfg: Config, key: str):
     return getattr(getattr(cfg, sec) if sec else cfg, name)
 
 
-def diff_record(old: Strategy, new: Strategy) -> list[tuple[str, object, object]]:
-    """(key, was, now) for each record field that differs between two strategies."""
+def diff_record(old: Config, new: Config) -> list[tuple[str, object, object]]:
+    """(key, was, now) for each record field that differs between two configs."""
     out = []
     for key in RECORD_KEYS:
-        name = key.split(".", 1)[1]
-        a, b = getattr(old, name), getattr(new, name)
+        a, b = _get(old, key), _get(new, key)
         if a != b:
             out.append((key, copy.copy(a), copy.copy(b)))
     return out

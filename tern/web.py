@@ -127,7 +127,7 @@ class WebPal(dash.Pal):
 
     def on(self, fg: int, bg: int, bold: bool = False) -> int:
         """fg on bg: the background's index + 1 is in bits 9-17 (under curses' own bits, the ones the page reads)."""
-        return self(fg, bold=bold) | (bg + 1) << 9
+        return self(dash.themes.readable(self.t["base"].get(fg, fg), bg), bold=bold) | (bg + 1) << 9
 
 
 def clean_prefs(d) -> dict:
