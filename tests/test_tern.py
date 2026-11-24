@@ -1689,6 +1689,12 @@ class Pages(Rig, unittest.TestCase):
             for _ in range(4):                                                 # more than the box holds
                 k.log(line)
             k.log("paper: after it"); scr.flash = ""; self.sync()
+            from tern import dash
+            slot = "paper: 25m slot on KXBTCD-E1 bought · base 5 · band90 12 · cap1 1 · late 3"
+            rows = scr.log_rows([[1.0, "info", slot]], 104)
+            self.assertEqual([r[2] for r in rows], ["paper: 25m slot on KXBTCD-E1 bought", ""])
+            self.assertEqual([c for r in rows for c in r[4]], [("base      ", " 5"), ("high favs ", "12"), ("cap1      ", " 1"), ("late      ", " 3")])
+            self.assertTrue(dash.TRADE_LINE.match(slot))                        # one of the log filter's trades
             rows = scr.log_rows([[1.0, "info", line], [2.0, "info", "shadow: odd line · no cells"]], 104)
             self.assertEqual(rows[0][:4], (1.0, "info", "shadow: KXETHD-E1 settled", 0))
             self.assertEqual([r[3] for r in rows], [0, 1, 2, 3, 0])             # 3 a row: 10 variants in 4 rows
@@ -1767,7 +1773,7 @@ class OwnVariants(Rig, unittest.TestCase):
             got = {r["v"]: r["n"] for r in k.shadow.rows}
             self.assertEqual([got[v] for v in ("base", "base-2", "base-3", "base-4")], [5, 2, 9, 12])   # $10 buys 12 at 81c
             self.assertTrue(any("25m slot" in m or "10m slot" in m for _, _, m in k.logs if m.startswith("paper:")))
-            self.assertTrue(any("base 1, " in m and "base-4 1" in m and m.endswith(" bought") for _, _, m in k.logs))
+            self.assertTrue(any(" bought · base 1 · " in m and m.endswith("base-4 1") for _, _, m in k.logs))
 
     def test_paper_start_is_the_variants(self):
         with tempfile.TemporaryDirectory() as d:

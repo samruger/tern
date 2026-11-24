@@ -356,9 +356,10 @@ OVERLAY_TOKENS = re.compile(
     r"|(?P<warn>\b(?:real money|turns live off|turns itself off|Nothing trades|No key found yet|Wipe)\b)"
     r"|(?P<keyhint>^(?:y|any key|any other key)\b|\besc\b|·\s(?:any (?:other )?key)\b)"
     r"|(?P<path>~/\S+|\bKALSHI_KEY_(?:ID|FILE)\b|\blive\.\w+)")
-SHADOW_LINE = re.compile(r"^(shadow: \S+ settled) · (.+)$")   # the engine's line after an hour settles
+SHADOW_LINE = re.compile(r"^(shadow: \S+ settled|paper: \d+m slot on \S+ bought) · (.+)$")   # the engine's lines after an
+                                                                                             # hour settles, and a slot
 LOG_GRID_COLS = 3                                # variants a row at most, however wide the screen
-SHADOW_CELL = re.compile(r"^(\S+) ([+-]\d[\d,]*\.\d\d)$")
+SHADOW_CELL = re.compile(r"^(\S+) ([+-]\d[\d,]*\.\d\d|\d+)$")
 RULE_LINE = "\0rule"                              # placeholder text: draw_overlay turns it into a divider
 
 # the help's key legend: two columns of (section, [(keys, what they do)])
@@ -418,7 +419,7 @@ HELP_CLI = [
 # what the log box may show (settings, e): key -> how the settings box names it
 LOG_FILTERS = {"all": "everything", "no_shadow": "no shadow lines", "quiet": "live, warnings, commands",
                "trades": "trades only"}
-TRADE_LINE = re.compile(r"^(?:live: \d+m slot on .*, [1-9]\d* bought$|paper: \d+m slot on .* bought$|live: \S+ (?:settled|finalized) )")
+TRADE_LINE = re.compile(r"^(?:live: \d+m slot on .*, [1-9]\d* bought$|paper: \d+m slot on \S+ bought · |live: \S+ (?:settled|finalized) )")
 SCREEN_SETTINGS = [cfgmod.Setting("screen", "log", "log shows", kind="choice", group="SCREEN",
                                   what="shadow: the variants' hourly results · quiet hides paper too · trades: buys and settlements only")]
 
@@ -1593,7 +1594,7 @@ class Screen:
                 cx = x + 11 + indent
                 for name, pnl in cells:
                     self.put(yy, cx, name, P(P.c("variant"), bold=True))
-                    self.put(yy, cx + len(name), pnl, P(GREEN if pnl.lstrip()[0] == "+" else RED, bold=True))
+                    self.put(yy, cx + len(name), pnl, P({"+": GREEN, "-": RED}.get(pnl.lstrip()[0], WHITE), bold=True))
                     cx += len(name) + len(pnl) + 3
             if sub:                                                # a continuation row: no time, no text
                 continue
@@ -1663,7 +1664,8 @@ class Screen:
 
     def log_rows(self, logs: list, w: int) -> list[tuple]:
         """The log box's screen rows, (ts, level, text, sub, cells, indent). A shadow settlement line ("shadow: EV
-        settled · base +1.20 · band90 -0.40 ...") becomes columns of (name, P&L) cells, 3 a row at most (fewer
+        settled · base +1.20 · band90 -0.40 ..."), or a slot's ("paper: 25m slot on EV bought · base 5 ..."), becomes
+        columns of (name, P&L or entries) cells, 3 a row at most (fewer
         if the box is narrow): the first row after "settled", the rest under it, each variant under the one
         above (sub 1, 2... and no text). Every other line is one row: sub 0, no cells."""
         out = []

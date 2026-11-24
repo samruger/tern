@@ -332,8 +332,7 @@ class Shadow:
                                   "side": s["side"], "n": n, "cost": unit, "fee": fee, "slot": slot, "pnl": None,
                                   **({} if sv is None else {"sv": sv})})
                 bought[name] = bought.get(name, 0) + 1
-        return [f"paper: {slot}m slot on {event}: " + ", ".join(f"{self.own.title(n)} {k}" for n, k in bought.items()) + " bought"] \
-            if bought else []
+        return [f"paper: {slot}m slot on {event} bought · " + " · ".join(f"{n} {k}" for n, k in bought.items())] if bought else []
 
     # ------------------------------------------------------------ settlement
     def pending(self, now: float) -> dict[str, float]:
