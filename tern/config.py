@@ -115,7 +115,7 @@ class Config:
 
 @dataclass(frozen=True)
 class Setting:
-    """One row of the screen's settings box (e). kind: "usd", "n" (a count) or "bool". risk: the direction
+    """One row of the screen's settings box (s). kind: "usd", "n" (a count) or "bool". risk: the direction
     that loosens a safety limit (+1 raising, -1 lowering, 0 neither); while live is armed that direction
     asks you to type "live" first."""
     sec: str
@@ -134,7 +134,7 @@ class Setting:
         return f"{self.sec}.{self.name}" if self.sec else self.name
 
 
-# The settings the screen's settings box (e) may change. The engine checks every change against this list
+# The settings the screen's settings box (s) may change. The engine checks every change against this list
 # and its bounds; anything else stays a config.json edit.
 SETTINGS = [
     Setting("live", "capital_usd", "most at risk at once", 1, 10_000, 5, risk=+1, group="LIVE",

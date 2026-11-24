@@ -4,7 +4,7 @@ The browser does not draw its own copy of the dash. Each browser tab gets a real
 drawing into a virtual terminal here; the cells go to the page, which paints them like foot does.
 So the web view always looks and behaves like the screen, minus the keys that change anything:
 no quit, engine stop or start, or live, and no making, renaming, turning on/off or deleting a
-variant. Selecting one (enter) only views it, for that viewer. The settings box (e) opens and its cursor moves,
+variant. Selecting one (enter) only views it, for that viewer. The settings box (s) opens and its cursor moves,
 but only its log filter row changes (for that viewer). Reports (o) can be read but not saved. It sends
 no command files and never writes the screen's own view.json or dash.json. Its viewers' coins
 and strikes go to view-web.json, so the engine also sends those strikes' contract history.
@@ -44,13 +44,13 @@ NAMED = {"ArrowUp": curses.KEY_UP, "ArrowDown": curses.KEY_DOWN, "ArrowLeft": cu
          "Home": curses.KEY_HOME, "End": curses.KEY_END, "Tab": 9, "BackTab": curses.KEY_BTAB,
          "Enter": 10, "Escape": 27, "Backspace": 127}
 # keys that only change what this viewer sees: they reach the screen; everything else stops here
-VIEW_KEYS = set("123456jktTcvVgeoh?") | {"Enter", "Escape", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "PageUp", "PageDown",
+VIEW_KEYS = set("123456jktTcvVgseoh?") | {"Enter", "Escape", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "PageUp", "PageDown",
                                        "Tab", "BackTab"}
-CONTROL_KEYS = {"q": "quit", "Q": "quit", "S": "engine start/stop", "s": "saving a report", "L": "live",
+CONTROL_KEYS = {"q": "quit", "Q": "quit", "P": "engine pause/start", "L": "live",
                 "r": "renaming", " ": "turning a variant on or off",
                 "D": "deleting"}
 # border hints whose key changes something: not drawn on the web (⏎ selects a variant: it only views)
-CONTROL_HINTS = {"r", "L", "s", "S", "q", "space", "D"}
+CONTROL_HINTS = {"r", "L", "P", "q", "space", "D"}
 # what a hint on a border sends when clicked
 HINT_KEY = {"tab": "Tab", "any key": "Escape", "esc": "Escape", "↑↓": None, "←→": None, "⏎": "Enter"}
 
@@ -223,7 +223,7 @@ class WebScreen(dash.Screen):
 
     def box(self, y, x, h, w, title, color, key="", right=()) -> None:
         segs = [right] if isinstance(right, str) else list(right)
-        segs = [s for s in segs if isinstance(s, str) or not set(s[0::2]) & CONTROL_HINTS and s[:2] != ("e", "dit")]   # any key piece
+        segs = [s for s in segs if isinstance(s, str) or not set(s[0::2]) & CONTROL_HINTS and s[:2] not in (("e", "dit"), ("s", "ave"))]   # any key piece
         key = key or self.panel_key
         if key in dash.SUPER:                    # the box number: a click zooms / restores it, as 1-8 do
             self.hits.append((y, x + 3, x + 3 + len(key), str(dash.SUPER.index(key) + 1)))

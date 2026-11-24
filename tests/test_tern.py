@@ -1326,13 +1326,13 @@ class Renames(Rig, unittest.TestCase):
 
 
 class SettingsBox(Rig, unittest.TestCase):
-    """e: the desk's settings and the screen's, and nothing of a variant's."""
+    """s: the desk's settings and the screen's, and nothing of a variant's."""
 
     def test_it_holds_the_desks_settings_only(self):
         from tern import config as cfgmod
         with tempfile.TemporaryDirectory() as d:
             k, scr = self.setup(d)
-            self.press("e")
+            self.press("s")
             rows = [r.key for r in scr.set_rows()]
             self.assertEqual(rows, [r.key for r in cfgmod.SETTINGS] + ["screen.log"])
             self.assertFalse([x for x in rows if x.startswith(("rule.", "strategy.")) or x == "paper_capital"])
@@ -1347,7 +1347,7 @@ class SettingsBox(Rig, unittest.TestCase):
             k, scr = self.setup(d)
             k.cfg.live.enabled = True; k.cfg.live.variant = "base"; self.sync()
             scr.variant = "band90"; self.sync(); self.cmds()                   # whichever variant is selected
-            self.press("e")
+            self.press("s")
             rows = [r.key for r in scr.set_rows()]
             for key, ch in (("live.capital_usd", self.curses.KEY_RIGHT), ("gate.min_entries", self.curses.KEY_LEFT)):
                 scr.set_sel = rows.index(key)
@@ -1369,7 +1369,7 @@ class SettingsBox(Rig, unittest.TestCase):
             k = self.desk(d); k.seeded.add(self.T)
             with mock.patch.object(dash, "Pal", web.WebPal):
                 scr = dash.Screen(web.VTerm(31, 104), d)
-            k._read_view(); k._status(); scr.read(); scr.key(ord("e"))
+            k._read_view(); k._status(); scr.read(); scr.key(ord("s"))
             text = lambda: "\n".join("".join(r) for r in scr.s.ch)
             scr.set_sel = [r.key for r in scr.set_rows()].index("web.port"); scr.draw()
             self.assertIn("▸ port", text())
@@ -1386,10 +1386,10 @@ class SettingsBox(Rig, unittest.TestCase):
             with mock.patch.object(dash, "Pal", web.WebPal):
                 scr = dash.Screen(web.VTerm(40, 120), d)
             scr.draw()
-            for key in "rDL ":
+            for key in "reDL ":
                 scr.key(ord(key)); scr.draw()
                 self.assertIsNone(scr.overlay, key); self.assertIsNone(scr.modal, key)
-            scr.key(ord("e"))
+            scr.key(ord("s"))
             rows = [r.key for r in scr.set_rows()]
             for key, ch in (("alerts", ord(" ")), ("live.contracts", 261)):
                 scr.set_sel = rows.index(key); scr.key(ch)
@@ -1995,13 +1995,17 @@ class ScreenVariants(Rig, unittest.TestCase):
             self.press(10)                                                     # enter selects it
             self.assertEqual((self.cmds(), scr.variant), ([], "mine"))
 
-    def test_e_edits_on_the_variants_and_is_the_settings_on_the_dash(self):
+    def test_e_edits_and_s_is_the_settings(self):
         with tempfile.TemporaryDirectory() as d:
             k, scr = self.setup(d)
             scr.variant, scr.var_sel = "late", "band90"; self.sync()
             self.press("e")
+            self.assertIsNone(scr.overlay); self.assertIn("v opens the list", scr.flash)
+            self.press("s")
             self.assertEqual((scr.overlay, scr.edit_var), ("settings", None))
-            self.press(27); self.press("v"); self.press("e")
+            self.press(27); self.press("v"); self.press("s")                   # from the variants too
+            self.assertEqual((scr.overlay, scr.edit_var), ("settings", None))
+            self.press(27); self.press("e")
             self.assertEqual((scr.overlay, scr.edit_var), ("settings", "band90"))
             self.assertIn("edit band90", self.text())
             self.press(self.curses.KEY_RIGHT, "s", *"mine", 10); self.run_cmds()
@@ -2010,10 +2014,10 @@ class ScreenVariants(Rig, unittest.TestCase):
             self.assertEqual((scr.edit_var, scr.set_value("rule.band_lo")), ("mine", 0.91))
             self.press(27); self.press("n", "E")                               # there is only e
             self.assertEqual((scr.overlay, self.cmds()), (None, []))
-            scr.s.resize(50, 150); self.sync()                                 # every box at once: the focused one decides
-            for focus, want in (("variants", "mine"), ("ladder", None)):
+            scr.s.resize(50, 150); self.sync()                                 # every box at once: whichever is focused
+            for focus in ("variants", "ladder"):
                 scr.focus = focus; self.press("e")
-                self.assertEqual((scr.overlay, scr.edit_var), ("settings", want))
+                self.assertEqual((scr.overlay, scr.edit_var), ("settings", "mine"))
                 self.press(27)
 
     def test_esc_throws_the_draft_away_and_other_keys_do_not(self):
@@ -2261,7 +2265,7 @@ class VariantSettingsReview(Rig, unittest.TestCase):
                 self.row(key); self.press("2", "0", 10)                        # (enter turns the choice on or off)
                 self.assertIsNone(scr.set_buf)
                 self.assertTrue(all(isinstance(v, list) for v in scr.draft.values()), scr.draft)
-            self.press(27); self.press(27); self.press("e")
+            self.press(27); self.press("s")
             scr.set_sel = [r.key for r in scr.set_rows()].index("alerts")
             self.press("1")
             self.assertEqual((scr.set_buf, scr.overlay, self.cmds()), (None, "settings", []))
@@ -2988,7 +2992,7 @@ class Web(unittest.TestCase):
             f = hub.handle({"w": 120, "h": 40, "prefs": {"page": 2, "theme": "classic"}})
             sid = f["sid"]
             hub.handle({"sid": sid, "w": 120, "h": 40, "key": "v"})
-            for k in ("q", "s", "L", "r", "D", " ", "e", "ArrowDown", "Enter", "L"):
+            for k in ("q", "P", "L", "r", "D", " ", "e", "ArrowDown", "Enter", "L"):
                 f = hub.handle({"sid": sid, "w": 120, "h": 40, "key": k})
             self.assertEqual(os.listdir(os.path.join(d, "cmd")), [])          # no command reached the engine
             self.assertFalse(os.path.exists(os.path.join(d, "dash.json")))     # the screen's prefs are its own
@@ -3062,7 +3066,7 @@ class Web(unittest.TestCase):
             self.status(d)
             hub = Hub(d)
             sid = hub.handle({"w": 120, "h": 40})["sid"]
-            for k in ("e", "ArrowDown", "ArrowRight", "ArrowLeft", "Enter", "5", "Enter", " "):
+            for k in ("s", "ArrowDown", "ArrowRight", "ArrowLeft", "Enter", "5", "Enter", " "):
                 f = hub.handle({"sid": sid, "w": 120, "h": 40, "key": k})
             text = "\n".join("".join(t for t, _ in r) for r in f["rows"])
             self.assertIn("settings", text)                                    # the box is up
@@ -3077,7 +3081,7 @@ class Web(unittest.TestCase):
             self.status(d)
             hub = Hub(d)
             sid = hub.handle({"w": 120, "h": 40})["sid"]
-            for k in ("e", "ArrowUp", "ArrowRight"):                           # the last row: log shows
+            for k in ("s", "ArrowUp", "ArrowRight"):                           # the last row: log shows
                 f = hub.handle({"sid": sid, "w": 120, "h": 40, "key": k})
             self.assertEqual(f["prefs"]["log_filter"], "no_shadow")
             self.assertIn("saved at once", "\n".join("".join(t for t, _ in r) for r in f["rows"]))
@@ -3330,23 +3334,27 @@ class Reports(Rig, unittest.TestCase):
             self.assertEqual(saved(), [name])
             self.assertEqual(self.cmds(), [])
 
-    def test_S_stops_the_engine_and_s_only_saves(self):
+    def test_P_pauses_the_engine(self):
         from unittest import mock
         from tern import dash
         with tempfile.TemporaryDirectory() as d, mock.patch.object(dash, "engine_alive", lambda r: True), \
                 mock.patch.object(dash, "stop_engine", lambda *a: "asked to stop"):
             k, scr = self.setup(d)
-            self.cmds(); self.press("s")
-            self.assertIsNone(scr.modal)                                       # s used to stop it: now it says where it went
-            self.assertIn("S stops / starts the engine", self.text())
-            self.press("S")
+            self.assertIn("─Pause─", self.text()); self.assertIn("─settings─", self.text())
+            self.cmds(); self.press("S")
+            self.assertIsNone(scr.modal)                                       # S is gone
+            self.press("P")
             self.assertEqual(scr.modal["type"], "stop")
+            self.assertIn("Pause the engine?", self.text())
             self.press("n")
-            self.press("o", "S")                                               # from the reports too, asking over them
-            self.assertIn("Stop the engine?", self.text())
+            self.press("o", "P")                                               # from the reports too, asking over them
+            self.assertIn("Pause the engine?", self.text())
             self.press("y")
             self.assertIn("asked to stop", self.text())
             self.assertEqual((scr.overlay, self.cmds()), ("reports", []))
+            with mock.patch.object(dash, "engine_alive", lambda r: False):
+                scr.alive_at = 0; self.press(27)
+                self.assertIn("─P start─", self.text())
 
     def test_a_save_that_fails_says_so(self):
         from unittest import mock
@@ -3369,10 +3377,10 @@ class Reports(Rig, unittest.TestCase):
             go = lambda **req: "\n".join("".join(t for t, _ in r) for r in hub.handle({"sid": sid, "w": 120, "h": 40, **req})["rows"])
             self.assertNotIn("─save─", go(key="o"))
             self.assertIn("view only", go(key="s"))
-            self.assertIn("view only", go(key="S"))                            # nor stops the engine from in here
+            self.assertIn("view only", go(key="P"))                            # nor pauses the engine from in here
             self.assertIsNone(hub.sessions[sid][0].modal)
             go(key="Escape")
-            for k in "sS":
+            for k in "P":
                 self.assertIn("view only", go(key=k))
                 self.assertIsNone(hub.sessions[sid][0].modal)
                 hub.sessions[sid][0].flash = ""

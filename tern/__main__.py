@@ -152,7 +152,7 @@ def _web_service(runtime: str, network: bool | None = None) -> int:
     print(f"Wrote {path}\n\nStart it now and at every login:\n"
           "  systemctl --user daemon-reload\n  systemctl --user enable --now tern-web\n\n"
           f"Then open http://localhost:{cfg.web.port}/ (https:// once tern web-cert has made a certificate).\n"
-          "Its port, on/off and network access are in the screen's settings box (e), WEB.")
+          "Its port, on/off and network access are in the screen's settings box (s), WEB.")
     return 0
 
 
@@ -285,7 +285,7 @@ def main(argv: list[str]) -> int:
         if "--config" in argv:                   # the unit's way: the settings box's WEB rows
             W = cfgmod.load(runtime).web
             if not W.enabled:
-                print("tern web is off in the settings box (e, WEB): not starting"); return 0
+                print("tern web is off in the settings box (s, WEB): not starting"); return 0
             serve(runtime, host(W), W.port); return 0
         opt = dict(zip(argv[1::2], argv[2::2]))
         serve(runtime, opt.get("--host", "127.0.0.1"), int(opt.get("--port", 8787))); return 0

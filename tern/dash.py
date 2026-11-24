@@ -389,9 +389,8 @@ HELP_KEYS = [
      ("trade", [("L", "live: on with the selected variant, off, or"),
                 ("", "moved to it (type \"live\")"),
                 ("g", "gate, variants and go-live checklist"),
-                ("e", "on the dash: settings (live limits, gate,"),
-                ("", "alerts, web, log)")]),
-     ("engine", [("S", "stop (asks y) / start the engine"),
+                ("s", "settings (live limits, gate, alerts, web, log)")]),
+     ("engine", [("P", "pause (asks y) / start the engine"),
                  ("h ?", "this help"),
                  ("q", "close the screen; the engine keeps going")]),
      ("settings", [("↑↓", "pick a setting"),
@@ -415,7 +414,7 @@ HELP_CLI = [
     ("systemctl --user status tern", "the engine's service"),
 ]
 
-# what the log box may show (settings, e): key -> how the settings box names it
+# what the log box may show (settings, s): key -> how the settings box names it
 LOG_FILTERS = {"all": "everything", "no_shadow": "no shadow lines", "quiet": "live, warnings, commands",
                "trades": "trades only"}
 TRADE_LINE = re.compile(r"^(?:live: \d+m slot on .*, [1-9]\d* bought$|paper: \d+m slot on \S+ bought · |live: \S+ (?:settled|finalized) )")
@@ -441,7 +440,7 @@ WANT_W = {"ladder": 56, "variants": 81}   # the width a box needs to show all it
 SUPER = "¹²³⁴⁵⁶⁷⁸⁹"
 LEFT_MIN = {"ladder": 56, "variants": 57}   # the ladder's columns need this much before its bar has any room
 SCROLLS = ["ladder", "variants", "book", "log"]   # the boxes ←→ focus and ↑↓ scroll
-ORPHAN_DROP = ["t", "c", "L", "V", "", "h", "S", "g", "q", "v", "tab"]   # off-screen boxes' hints, first dropped first
+ORPHAN_DROP = ["t", "c", "L", "V", "", "s", "h", "P", "g", "q", "v", "tab"]   # off-screen boxes' hints, first dropped first
 COMFY_H = {"spot": 10, "contract": 10, "ladder": 12, "book": 12, "log": 8}   # sizes the merged view needs
 
 
@@ -474,7 +473,7 @@ PANEL_KEYS = {
     "spot": lambda s: [("tab", " next coin"), ("c", "hart " + s.chart)],
     "book": lambda s: [("V", "iew"), ("L", "ive")],
     "contract": lambda s: [("t", "heme ", s.P.name)],
-    "log": lambda s: ([("v", "ariants")] if s.page == 1 else []) + [("g", "ate"), ("", "s", "e", "ttings"), ("", "rep", "o", "rts"), ("S", "top" if s.alive else "tart"), ("h", "elp"), ("q", "uit")],
+    "log": lambda s: ([("v", "ariants")] if s.page == 1 else []) + [("g", "ate"), ("s", "ettings"), ("", "rep", "o", "rts"), ("P", "ause" if s.alive else " start"), ("h", "elp"), ("q", "uit")],
 }
 
 
@@ -506,7 +505,7 @@ class Screen:
         self.overlay: str | None = None        # "help", "gate" or "settings" while one is open
         self.set_sel = 0                       # the settings row the cursor is on
         self.set_buf: str | None = None        # the value being typed in the settings box, or None
-        self.edit_var: str | None = None       # e on the variants: the one the box's draft starts from (None: the settings box)
+        self.edit_var: str | None = None       # e: the variant the box's draft starts from (None: the settings box)
         self.draft: dict = {}                  # E: field -> value changed there and not saved
         self.set_back: int | None = None       # the settings row to go back to after E
         self.var_new: dict | None = None       # a draft was sent to be saved: cid, and its variant and draft
@@ -578,7 +577,7 @@ class Screen:
                 if self.var_new and self.var_new["cid"] == cid:
                     self.var_new = None                  # refused: the draft stays open
             elif time.time() - self.pending[cid] > 15:
-                self.say("no answer from the engine (is it running? press S)"); self.pending.pop(cid)
+                self.say("no answer from the engine (is it running? press P)"); self.pending.pop(cid)
                 if self.var_new and self.var_new["cid"] == cid:
                     self.var_new = None
 
@@ -967,9 +966,9 @@ class Screen:
             stale.append(f"ladder {ago(ev['age'])}" + (" old" if lvl < 2 else ""))
         if stale:
             left.append(("stale", [(" · ".join(stale) + ("" if lvl < 2 else " old"), P(YELLOW, bold=True))]))
-        state = "ok" if ok else ("down — S starts it" if down else "starting" if st.get("stopped") or not hb else "stale")
+        state = "ok" if ok else ("down — P starts it" if down else "starting" if st.get("stopped") or not hb else "stale")
         if lvl >= 2 and down:
-            state = "down (S)"
+            state = "down (P)"
         word = "engine " if lvl < 3 else ""
         clk = time.strftime("%H:%M:%S") if lvl < 1 else time.strftime("%H:%M") if lvl < 3 else ""
         right = [(f" {'●' if ok else '○'} {word}{state}" + (f"  {clk} " if clk else " "), P(GREEN if ok else RED))]
@@ -1338,7 +1337,7 @@ class Screen:
                           "lines": [f"Delete {name}? It stops running. {kept}", "", "y deletes · any other key keeps it"]}
 
     def edit_variant(self) -> None:
-        """e on the variants: a draft of the highlighted one's settings. s saves it as a new variant; that one stays."""
+        """e: a draft of the highlighted one's settings. s saves it as a new variant; that one stays."""
         if self.vrow(self.var_sel) is None:
             self.say("no variants from the engine yet"); return
         if not self.older_engine():
@@ -1412,7 +1411,7 @@ class Screen:
         rows = self.raw.get("variants") or []
         if not rows or all("on" in v for v in rows):
             return False
-        self.say("the engine running is older than this screen: restart it (S, S)")
+        self.say("the engine running is older than this screen: restart it (P, P)")
         return True
 
     def armed(self) -> bool:
@@ -2053,7 +2052,7 @@ class Screen:
             self.rep_focus = "reports" if ch == curses.KEY_LEFT else "report"
         elif ch == ord("s"):
             self.save_report()
-        elif ch == ord("S"):
+        elif ch == ord("P"):
             self.engine_key()
         elif ch in (9, curses.KEY_BTAB):
             self.rep_focus = "report" if self.rep_focus == "reports" else "reports"
@@ -2061,12 +2060,12 @@ class Screen:
             self.next_theme(-1 if ch == ord("T") else 1)
 
     def engine_key(self) -> None:
-        """S: stop the engine (asks first), or start it."""
+        """P: pause the engine (asks first): it saves and stops until it is started again. Or start it."""
         if engine_alive(self.runtime):
-            self.modal = {"type": "stop", "title": "stop engine", "lines": [
-                "Stop the engine? Nothing trades, paper or live, until it starts again",
-                "(S here, or reopening the dash). It saves its state before it exits.", "",
-                "y stops · any other key keeps it running"]}
+            self.modal = {"type": "stop", "title": "pause engine", "lines": [
+                "Pause the engine? Nothing trades, paper or live, until it starts again",
+                "(P here, or reopening the dash). It saves its state before it stops.", "",
+                "y pauses · any other key keeps it running"]}
         else:
             self.say(start_engine(self.runtime)); self.alive_at = 0
 
@@ -2094,7 +2093,7 @@ class Screen:
         self.save_prefs()
         self.say(f"theme {self.P.name}" + ("" if self.P.many else " (needs a 256-color terminal)"))
 
-    # ------------------------------------------------------------ settings (e)
+    # ------------------------------------------------------------ settings (s)
     def set_rows(self) -> list:
         """The box's rows: a variant's, or the desk's and the screen's."""
         if self.edit_var:
@@ -2193,7 +2192,7 @@ class Screen:
             out += [[("", 0)]]
         if any(r.key not in (self.raw.get("settings") or {}) for r in rows if r.sec not in ("screen", "rule")) or \
                 self.edit_var and any("on" not in v for v in self.raw.get("variants") or []):
-            out += [[("The engine running is older than this screen: restart it (S, S) to change these.", P(YELLOW, bold=True))]]
+            out += [[("The engine running is older than this screen: restart it (P, P) to change these.", P(YELLOW, bold=True))]]
         elif self.edit_var:
             out += [[(f"Nothing is saved until s: that makes a new variant; {self.vn(self.edit_var)} stays as it is.", P(P.grey))]]
         elif armed:
@@ -2316,7 +2315,7 @@ class Screen:
         elif ord("0") <= ch <= ord("9"):
             if row.kind in ("usd", "n", "p", "cap"):      # the rest have nothing to type
                 self.set_buf = chr(ch)
-        elif not self.edit_var:                           # esc, e or anything else closes it
+        elif not self.edit_var:                           # esc, s or anything else closes it
             self.close_settings()
         elif ch == ord("s"):
             self.save_draft()
@@ -2329,7 +2328,7 @@ class Screen:
             self.close_settings()
 
     def logs_shown(self) -> list:
-        """The engine's log lines the log box shows, after the log filter (settings, e)."""
+        """The engine's log lines the log box shows, after the log filter (settings, s)."""
         logs = self.st.get("logs") or []
         if self.log_filter == "all":
             return logs
@@ -2355,7 +2354,7 @@ class Screen:
         if self.overlay == "reports":
             self.reports_screen(H, W)
             self.footer(H, W)
-            if self.modal:                           # S: stop the engine?
+            if self.modal:                           # P: pause the engine?
                 self.draw_overlay(self.modal["lines"], self.modal["title"], self.modal.get("color", YELLOW))
             self.s.refresh(); return
         boxes = self.layout(H, W)
@@ -2521,19 +2520,19 @@ class Screen:
             self.book_view = "live" if cur == "paper" else "paper"
         elif ch == ord("g"):
             self.overlay, self.ov_off = "gate", 0
-        elif ch == ord("e"):                             # on the variants: edit the highlighted one
-            if self.focus == "variants" and self.shown("variants"):
+        elif ch == ord("e"):
+            if self.shown("variants"):
                 self.edit_variant()
             else:
-                self.open_settings()
+                self.say("e edits a variant: " + self.back_to("highlight one, then e"))
         elif ch == ord("o"):
             self.overlay, self.rep_focus, self.rep_at = "reports", "reports", 0.0
         elif ch == ord("?") or ch == ord("h"):
             self.overlay, self.ov_off = "help", 0
-        elif ch == ord("S"):
+        elif ch == ord("P"):
             self.engine_key()
         elif ch == ord("s"):
-            self.say("S stops / starts the engine · s saves a report (o)")
+            self.open_settings()
         elif ch == ord("L"):
             self.live_key()
         return True

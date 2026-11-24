@@ -154,7 +154,7 @@ hour's P&L divided by its standard error. These are paper results.
 
 ## Settings
 
-`e` on the dash opens the desk's settings: LIVE (its limits and contracts a strike), GATE, ALERTS, WEB, and what the log box shows.
+`s` opens the desk's settings: LIVE (its limits and contracts a strike), GATE, ALERTS, WEB, and what the log box shows.
 How anything trades is in its variant. Every change is written down with its time in `runtime/settings-log.jsonl`. A
 hand edit of the strategy in `config.json` changes the built-in variants and starts a new settings period; rows are
 stamped with theirs, and `python3 -m tern report --periods` splits the results by it.
@@ -187,7 +187,7 @@ turn it off), and `L` with live's own selected turns it off. Once live:
   gate** (`g`): 14 days, 300 settled entries, and P&L ≥ $0 after fees. Days are
   counted as hours it actually traded ÷ 24, so time with the engine or the variant off does
   not count. Moving live to another variant never skips this: that one needs its own record.
-  14, 300 and $0 are the defaults; the settings box (`e`) changes them.
+  14, 300 and $0 are the defaults; the settings box (`s`) changes them.
   Set `live.auto_needs_gate` to `false` to skip the gate.
 - **Size:** live buys `live.contracts` a strike, within the variant's most an hour. Live never falls back to another
   variant: one that is off or gone enters nothing until you pick one.
@@ -240,15 +240,14 @@ Requests are signed (Ed25519 or RSA-PSS) in pure Python, checked against openssl
 | `t` / `T` | next / previous color theme |
 | `V` | paper / live book |
 | `enter` | select the highlighted variant (`v`) |
-| `e` | on the variants: edit the highlighted one; `s` saves a new variant, `esc` discards |
+| `e` | edit the highlighted variant (`v`); `s` saves a new variant, `esc` discards |
 | `space` | turn the highlighted variant on / off |
 | `D` `r` | delete / rename it |
 | `g` | the gate |
-| `e` | on the dash: settings |
+| `s` | settings; in the reports, save the one shown |
 | `o` | reports (below) |
 | `L` | live: on with the selected variant, off, or moved to it |
-| `S` | stop (asks `y`) / start the engine |
-| `s` | in the reports: save the one shown |
+| `P` | pause (asks `y`) / start the engine |
 | `h` or `?` | help |
 | `q` | close the screen; the engine keeps running |
 
@@ -291,8 +290,8 @@ chart span, `tab`/shift+tab coins, `t`/`T` themes, `V` paper/live, `enter` selec
 help, `↑↓ ←→` and the wheel. Clicking a key on a box border, a box's number, or a ladder or variant row
 does what the key would; on a phone, drag to scroll.
 
-It is view only. `q`, `S`, `s`, `L`, `r`, `D`, `space` and `e` on a variant do nothing there, and their
-hints are not drawn. The settings box (`e`) shows the settings but changes only what that browser's log box shows.
+It is view only. `q`, `P`, `L`, `r`, `D`, `space` and `e` do nothing there, and their
+hints are not drawn. The settings box (`s`) shows the settings but changes only what that browser's log box shows.
 The web screen writes no command files and never touches the terminal's `dash.json` or `view.json`: each browser keeps its own settings. It writes `view-web.json` (in the same tmpfs folder)
 with the coins and strikes its viewers have up, so the engine sends those strikes' contract history
 too; the engine ignores the file 30 seconds after the last viewer leaves.
@@ -322,7 +321,7 @@ Secure, SameSite=Strict cookie. After a new password, restart `tern-web`: every 
 everyone make every sign-in wait. To reach it from another network, allow the port (8787 by default) through
 the host's firewall, and forward it to the host if there is NAT in between.
 
-**Settings box (`e`), WEB.** `web screen` turns it on and off, `port` moves it and `open to the
+**Settings box (`s`), WEB.** `web screen` turns it on and off, `port` moves it and `open to the
 network` switches between every address and localhost only. tern-web.service runs
 `tern web --config`, which reads those from `config.json`'s `web` section and exits (and stays down)
 when it is off. The engine restarts or stops the service as soon as one changes, from the box or by
@@ -377,7 +376,7 @@ The major ones, newest first.
 
 | Date | Change |
 |---|---|
-| 2026-11-23 | **One list of variants.** Profiles, the separate paper book and `w` are gone: `enter` selects the variant the screen shows, `L` goes live with it, `e` there edits one as a new one, `space` turns one on or off and `r` renames one. `v` opens the variants and `esc` goes back (the pages and `p` are gone, and so is the equity box); `V` is the book's paper/live view. Profiles' own variants move into the list with their records (see Settings). `tern report --profile` and `--profiles` are now `--periods`. |
+| 2026-11-23 | **One list of variants.** Profiles, the separate paper book and `w` are gone: `enter` selects the variant the screen shows, `L` goes live with it, `e` there edits one as a new one, `space` turns one on or off and `r` renames one. `s` is the settings (was `e`) and `P` pauses the engine (was `S`). `v` opens the variants and `esc` goes back (the pages and `p` are gone, and so is the equity box); `V` is the book's paper/live view. Profiles' own variants move into the list with their records (see Settings). `tern report --profile` and `--profiles` are now `--periods`. |
 | 2026-11-23 | **Cash limit on paper:** no variant, and not the paper book, buys more than the cash it has left. Entries from before could. A variant that is out of cash says so in the variants box. |
 | 2026-11-23 | **Variants hold every trading setting**, contracts a strike, most an hour and paper start too. `E` opens them as a draft and `s` saves it as a new variant; a saved one never changes, and only `enter` changes what trades. Settings (`e`) has the profile and the desk only, the same under every profile. `n` in the variants box, and the rule, paper and "book trades" rows in settings, are gone. Variants saved before keep their profile's size. |
 | 2026-11-23 | **AGPL license** (version 3 or later). It was MIT, then briefly the GPL; copies from then stay under those. |
