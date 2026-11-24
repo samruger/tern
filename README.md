@@ -64,7 +64,7 @@ The write-up is [research/RESEARCH.md](research/RESEARCH.md).
 
 One box fills the screen: spot, contract, ladder, book, variants, log, gate, reports, settings, themes or help. The
 others are tabs on its top border: the key on a tab (`1` to `9`, `0`, `h`) shows it, and `tab` and shift+tab step
-through them. A box's own keys are on its bottom border, and the log's has every key that isn't one box's. The status
+through them. A box's own keys are on its bottom border and work only there; the log's are the ones that work everywhere. The status
 line is always at the bottom.
 
 <img width="1364" height="668" alt="The variants, and the highlighted one's P&L by hour" src="docs/screenshots/02-page2-compare.png" />
@@ -233,23 +233,24 @@ Requests are signed (Ed25519 or RSA-PSS) in pure Python, checked against openssl
 
 ## Keys
 
-| Key | What it does |
-|---|---|
-| `1`–`9` `0` `h` `tab` shift+tab | show a box |
-| `↑↓` `j` `k` `PgUp` `PgDn` | move in the box; so does the mouse wheel |
-| `C` | next coin |
-| `c` | chart span: 5m, 15m, 1h, 24h |
-| `t` / `T` | next / previous color theme, on any screen |
-| `↑↓` `←→` | themes: pick one; settings: pick and step |
-| `V` | paper / live book |
-| `enter` | select the highlighted variant |
-| `e` | edit the highlighted variant; `s` saves a new variant, `esc` discards |
-| `space` | turn the highlighted variant on / off |
-| `D` `r` | delete / rename it |
-| `s` | reports: save the one shown |
-| `L` | live: on with the selected variant, off, or moved to it |
-| `P` | pause (asks `y`) / start the engine |
-| `q` | close the screen; the engine keeps running |
+| Where | Key | What it does |
+|---|---|---|
+| everywhere | `1`–`9` `0` `h` `tab` shift+tab | show a box |
+| everywhere | `↑↓` `j` `k` `PgUp` `PgDn` `Home` `End` | move in the box; so does the mouse wheel |
+| everywhere | `t` / `T` | next / previous color theme |
+| everywhere | `P` | pause (asks `y`) / start the engine |
+| everywhere | `q` | close the screen; the engine keeps running |
+| spot, contract, ladder | `C` | next coin |
+| spot | `c` | chart span: 5m, 15m, 1h, 24h |
+| book | `V` | paper / live book |
+| book, variants, gate | `L` | live: on with the selected variant, off, or moved to it |
+| variants | `enter` | select the highlighted one |
+| variants | `e` | edit the highlighted one; `s` saves a new variant, `esc` discards |
+| variants | `space` | turn the highlighted one on / off |
+| variants | `D` `r` | delete / rename it |
+| reports | `s` | save the one shown |
+| settings | `←→` `enter` | step / type a value |
+| themes | `↑↓` `←→` | pick one |
 
 ### Reports
 

@@ -261,7 +261,7 @@ class WebScreen(dash.Screen):
             return
         if name in VIEW_KEYS or self.tab == "settings" and name in (" ", "+", "-", "="):   # (a setting: send_setting)
             self.key(code)
-        elif name in CONTROL_KEYS:
+        elif name in CONTROL_KEYS and self.tab in dash.KEYS_ON.get(name, dash.BOXES):
             self.say(f"view only: {CONTROL_KEYS[name]} is done from the screen in the terminal")
 
     def wheel_at(self, cy: int, cx: int, d: int) -> None:

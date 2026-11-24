@@ -376,7 +376,7 @@ HELP_BOXES = [
     ("⁰", "themes", f"{len(themes.NAMES)} color themes: the one highlighted is in use"),
     ("", "help", "(h) this"),
     ("", "tabs", "one box fills the screen; the others are tabs on its top border: their keys show one, (tab) steps through. "
-                 "Its own keys are on its bottom border, and the log's has every key that isn't one box's"),
+                 "Its own keys are on its bottom border and work only there; the log's are the ones that work everywhere"),
     ("", "status", "bottom row: PAPER or LIVE, the coin's price and 1h change, the hourly event and time to its close, rule "
                    "ON/off with the next slot (+live when live trades), stale data warnings (usually Wi-Fi), engine ok / stale / down"),
 ]
@@ -489,6 +489,12 @@ PANEL_KEYS = {
     "themes": lambda s: [("↑↓ ←→", " pick")],
     "help": lambda s: [("↑↓", " pick"), ("PgUp PgDn", " scroll")],
 }
+
+
+# the keys that are some boxes' alone, and work only there (settings' own, and a variant's editor's, come first in key());
+# the rest, the log's t P q among them, work on every box
+KEYS_ON = {**dict.fromkeys("\n\r reD", ("variants",)), "C": ("spot", "contract", "ladder"), "c": ("spot",), "V": ("book",),
+           "L": ("book", "variants", "gate"), "s": ("reports",)}
 
 
 def selected_overlay(st: dict, name: str | None) -> dict:
@@ -640,10 +646,6 @@ class Screen:
         """A box's key, tab: that box fills the screen."""
         self.tab, self.flash, self.set_buf = name, "", None
         self.save_prefs()
-
-    def back_to(self, what: str) -> str:
-        """How to get to the variants when they aren't on screen."""
-        return f"{BOX_KEYS[BOXES.index('variants')]} shows them, {what}"
 
     def shown(self, name: str) -> bool:
         return name == self.tab
@@ -1157,7 +1159,7 @@ class Screen:
         self.put(y + 1, x + 5, "variant", head); self.put(y + 1, at["gate"], "gate", head)
         # The graph's size is the box's alone, whatever the list holds. The list scrolls over it, under its fixed header:
         # the rows that fit, moved so the highlighted one shows.
-        gh = h // 3
+        gh = h * 3 // 10
         gy = y + h - 3 - gh
         self.var_rows = rows = gy - y - 4
         si = names.index(self.var_sel)
@@ -1251,8 +1253,6 @@ class Screen:
 
     def select_variant(self) -> None:
         """enter: the highlighted variant is the one the book, band and gate show. Nothing that trades changes."""
-        if not self.shown("variants"):
-            self.say("enter selects a variant: " + self.back_to("highlight one, then enter")); return
         cur = self.vrow(self.var_sel)
         if cur is None:
             return
@@ -1375,8 +1375,8 @@ class Screen:
     def rename_ask(self) -> None:
         """r: rename the highlighted variant."""
         v = self.var_sel
-        if not self.shown("variants") or self.vrow(v) is None:
-            self.say("r renames a variant: " + self.back_to("highlight one, then r")); return
+        if self.vrow(v) is None:
+            self.say("no variants from the engine yet"); return
         name, mx = self.vn(v), namesmod.VARIANT_NAME_MAX
         self.modal = {"type": "rename", "title": f"rename {name}", "color": CYAN, "buf": name, "max": mx,
                       "target": {"variant": v},
@@ -2489,6 +2489,10 @@ class Screen:
             return True
         if ch in (ord("q"), ord("Q")):
             return False
+        if ch == curses.KEY_ENTER:
+            ch = 10
+        if self.tab not in KEYS_ON.get(chr(ch) if 0 <= ch < 128 else "", BOXES):   # another box's key: nothing here
+            return True
         if ch in (curses.KEY_UP, curses.KEY_DOWN, curses.KEY_PPAGE, curses.KEY_NPAGE, ord("k"), ord("j")):
             page = ch in (curses.KEY_PPAGE, curses.KEY_NPAGE)
             self.scroll({"reports": "report", "help": "helptext"}.get(self.tab, self.tab) if page else self.tab, {curses.KEY_UP: -1, ord("k"): -1, curses.KEY_DOWN: 1, ord("j"): 1,
@@ -2497,14 +2501,10 @@ class Screen:
             self.scroll({"reports": "report", "help": "helptext"}.get(self.tab, self.tab), -10 ** 6 if ch == curses.KEY_HOME else 10 ** 6)
         elif ch in (curses.KEY_LEFT, curses.KEY_RIGHT) and self.tab == "themes":
             self.scroll("themes", -self.theme_rows if ch == curses.KEY_LEFT else self.theme_rows)
-        elif ch in (10, 13, curses.KEY_ENTER):
+        elif ch in (10, 13):
             self.select_variant()
         elif ch in (ord("D"), ord(" ")):
-            if self.shown("variants"):
-                self.variant_key(ch)
-            else:
-                self.say(("D deletes a variant: " if ch == ord("D") else "space turns a variant on or off: ") +
-                         self.back_to("highlight one first"))
+            self.variant_key(ch)
         elif ch == ord("r"):
             self.rename_ask()
         elif 0 < ch < 128 and chr(ch) in BOX_KEYS:
@@ -2515,21 +2515,18 @@ class Screen:
             order = list(cfgmod.SERIES)
             self.series = order[(order.index(self.series) + 1) % len(order)] if self.series in order else order[0]
             self.sel = None; self.write_view(); self.save_prefs(); self.say(f"viewing {cfgmod.SERIES[self.series]}")
-        elif ch == ord("c") and self.shown("spot"):
+        elif ch == ord("c"):
             order = list(CHARTS)
             self.chart = order[(order.index(self.chart) + 1) % len(order)] if self.chart in order else "15m"
             self.save_prefs()
-        elif ch == ord("V") and self.shown("book"):
+        elif ch == ord("V"):
             cur = self.book_view or ("live" if self.st.get("mode") == "live" else "paper")
             self.book_view = "live" if cur == "paper" else "paper"
         elif ch == ord("e"):
-            if self.shown("variants"):
-                self.edit_variant()
-            else:
-                self.say("e edits a variant: " + self.back_to("highlight one, then e"))
+            self.edit_variant()
         elif ch == ord("P"):
             self.engine_key()
-        elif ch == ord("s") and self.shown("reports"):
+        elif ch == ord("s"):
             self.save_report()
         elif ch == ord("L"):
             self.live_key()

@@ -1565,8 +1565,44 @@ class Tabs(Rig, unittest.TestCase):
             self.press("5", "e")
             self.assertIn("CHANGES", self.text())
 
+    def test_a_boxs_keys_work_only_on_it(self):
+        from tern import dash
+        with tempfile.TemporaryDirectory() as d:
+            k, scr = self.setup(d)
+            for key, name in zip(dash.BOX_KEYS, dash.BOXES):
+                self.press(key); self.cmds()
+                state = lambda: (scr.tab, scr.flash, scr.modal, scr.overlay, scr.series, scr.chart, scr.book_view, scr.variant, scr.var_sel, self.cmds())
+                for ch, boxes in [*dash.KEYS_ON.items(), (self.curses.KEY_ENTER, ("variants",))]:
+                    if name in boxes or name == "settings" and ch in ("\n", "\r", " ", self.curses.KEY_ENTER):   # (settings' own too)
+                        continue
+                    before = state()
+                    self.press(ch)
+                    self.assertEqual(state(), before, (name, ch))
+            self.press("5", self.curses.KEY_ENTER); self.assertEqual(scr.variant, scr.var_sel)
+            self.press("1", "c"); self.assertEqual(scr.chart, "1h")
+            self.press("3", "C"); self.assertEqual(scr.series, "KXETHD")
+            self.press("7", "L"); self.assertIsNotNone(scr.modal); self.press(27)
+            self.press("4", "V"); self.assertEqual(scr.book_view, "live")
+            self.press("h", "t"); self.assertIn("theme", scr.flash)             # the log's work everywhere
+
+    def test_the_web_says_view_only_only_there(self):
+        from tern import dash
+        from tern.web import Hub
+        with tempfile.TemporaryDirectory() as d:
+            k, scr = self.setup(d)
+            hub = Hub(d); sid = hub.handle({"w": 120, "h": 40})["sid"]
+            w = hub.sessions[sid][0]
+            for key in dash.BOX_KEYS:
+                hub.handle({"sid": sid, "w": 120, "h": 40, "key": key})
+                for ch in ("r", "D", "L", "s", " ", "P"):
+                    w.flash = ""
+                    hub.handle({"sid": sid, "w": 120, "h": 40, "key": ch})
+                    there = w.tab in dash.KEYS_ON.get(ch, dash.BOXES)
+                    if not (w.tab == "settings" and ch == " "):
+                        self.assertEqual("view only" in w.flash, there, (w.tab, ch))
+
     def test_the_variants_graph_keeps_its_size(self):
-        for H, W, room in ((30, 100, 12), (32, 148, 13), (44, 160, 21)):
+        for H, W, room in ((30, 100, 13), (32, 148, 14), (44, 160, 23)):
             with tempfile.TemporaryDirectory() as d:
                 k, scr = self.setup(d, H, W)
                 self.press("5")
@@ -1708,9 +1744,6 @@ class Tabs(Rig, unittest.TestCase):
     def test_enter_selects_and_changes_nothing_else(self):
         with tempfile.TemporaryDirectory() as d:
             k, scr = self.setup(d)
-            for key in (10, "D", " ", "r", "e"):                                # the variants' keys say where they are
-                self.press(key)
-                self.assertIn("5 shows them", scr.flash, key)
             self.press("5"); self.cmds()
             for name in ("band90", "late"):
                 scr.var_sel = name
@@ -2086,7 +2119,7 @@ class ScreenVariants(Rig, unittest.TestCase):
             k, scr = self.setup(d)
             scr.variant, scr.var_sel = "late", "band90"; self.sync()
             self.press("e")
-            self.assertIsNone(scr.overlay); self.assertIn("5 shows them", scr.flash)
+            self.assertEqual((scr.overlay, scr.flash), (None, ""))             # only on the variants
             self.press("5", "e")
             self.assertEqual((scr.overlay, scr.edit_var), ("edit", "band90"))
             self.assertIn("RULE  band90", self.text()); self.assertIn("─save as new─", self.text())
@@ -2622,7 +2655,7 @@ class OneList(Rig, unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             k, scr = self.setup(d)
             scr.variant = "band90"; self.sync()
-            self.press("L")
+            self.press("7", "L")
             for want in ("ARM LIVE", "It would trade band90", "has not passed its gate", "type live"):
                 self.assertIn(want, self.text())
             self.press(*"yes", 10)
@@ -2657,7 +2690,7 @@ class OneList(Rig, unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             k, scr = self.setup(d)
             k.cfg.live.enabled, k.cfg.live.variant = True, "late"; scr.variant = "late"; self.sync()
-            self.press("L")
+            self.press("4", "L")
             self.assertIsNone(scr.modal)
             self.assertEqual([(c["op"], c["on"]) for c in self.run_cmds()], [("live", False)])
             self.assertFalse(k.cfg.live.enabled)
@@ -2722,7 +2755,7 @@ class OneList(Rig, unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             k, scr = self.setup(d)
             self.press("r")
-            self.assertIn("5 shows them", scr.flash); self.assertIsNone(scr.modal)   # the variants' key
+            self.assertEqual((scr.modal, scr.flash), (None, ""))               # only on the variants
             self.assertNotIn("rule on/off", self.text()); self.assertNotIn("Restart", self.text())
             self.press("5"); self.assertIn("─rename─", self.text())
             scr.var_sel = "late"; self.press("r", 21, *"slow", 10)
