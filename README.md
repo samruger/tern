@@ -206,7 +206,7 @@ turn it off), and `L` with live's own selected turns it off. Once live:
   seconds. Each order carries a unique `client_order_id`. If the reply is lost,
   the engine looks the order up by that id instead of sending it again.
 
-<img width="1364" height="668" alt="The log: paper settlements and each variant's running record" src="docs/screenshots/06-log-shadow.png" />
+<img width="1364" height="668" alt="The log: an hour settling, then the next slots" src="docs/screenshots/06-log-shadow.png" />
 
 The gate box (`7`) shows how far each check has come, the live caps and the variants. Here it has been set stricter than
 the defaults, to 1000 entries and $100:
