@@ -391,7 +391,6 @@ OVERLAY_TOKENS = re.compile(
     r"|(?P<path>~/\S+|\bKALSHI_KEY_(?:ID|FILE)\b|\blive\.\w+)")
 SHADOW_LINE = re.compile(r"^(shadow: \S+ settled|paper: \d+m slot on \S+ bought) · (.+)$")   # the engine's lines after an
                                                                                              # hour settles, and a slot
-LOG_GRID_COLS = 8                                # variants a row at most
 SHADOW_CELL = re.compile(r"^(\S+) ([+-]\d[\d,]*\.\d\d|\d+)$")
 
 # the help's key legend: two columns of (section, [(keys, what they do)])
@@ -1514,12 +1513,13 @@ class Screen:
         for j, (ts, lvl, msg, sub, cells, indent) in enumerate(shown):
             yy = y + 1 + j
             age = (len(shown) - 1 - j) / max(1, rows - 1)          # 0 for the bottom (newest) line
-            if cells:                                              # a shadow line's columns: name and P&L
+            if cells:                                              # a shadow line's: name and P&L
                 cx = x + 11 + indent
-                for name, pnl in cells:
-                    self.put(yy, cx, name, P(P.c("variant"), bold=True))
-                    self.put(yy, cx + len(name), pnl, P({"+": GREEN, "-": RED}.get(pnl.lstrip()[0], WHITE), bold=True))
-                    cx += len(name) + len(pnl) + 3
+                for n, (name, v) in enumerate(cells):
+                    if n:
+                        self.put(yy, cx, " · ", P(P.c("sep"))); cx += 3
+                    self.put(yy, cx, name, P(P.c("variant"), bold=True)); cx += len(name) + 1
+                    self.put(yy, cx, v, P({"+": GREEN, "-": RED}.get(v[0], WHITE), bold=True)); cx += len(v)
             if sub:                                                # a continuation row: no time, no text
                 continue
             self.put(yy, x + 2, time.strftime("%H:%M:%S", time.localtime(ts)), P(P.pick("fade_ts", age)))
@@ -1588,10 +1588,9 @@ class Screen:
 
     def log_rows(self, logs: list, w: int) -> list[tuple]:
         """The log box's screen rows, (ts, level, text, sub, cells, indent). A shadow settlement line ("shadow: EV
-        settled · base +1.20 · band90 -0.40 ..."), or a slot's ("paper: 25m slot on EV bought · base 5 ..."), becomes
-        columns of (name, P&L or entries) cells, 3 a row at most (fewer
-        if the box is narrow): the first row after "settled", the rest under it, each variant under the one
-        above (sub 1, 2... and no text). Every other line is one row: sub 0, no cells."""
+        settled · base +1.20 · band90 -0.40 ..."), or a slot's ("paper: 25m slot on EV bought · base 5 ..."), wraps
+        between its (name, P&L or entries) cells, the rows after the first (sub 1, 2... and no text) starting under
+        what follows "shadow: ". Every other line is one row: sub 0, no cells."""
         out = []
         for ts, lvl, msg in logs:
             m = SHADOW_LINE.match(msg)
@@ -1599,14 +1598,16 @@ class Screen:
             if not m or not all(cells):
                 out.append((ts, lvl, msg, 0, None, 0)); continue
             head = m.group(1)
-            indent = len(head) + 2                                 # the cells start two spaces after "settled"
-            names = [self.vn(c.group(1)) for c in cells]
-            pnls = [c.group(2) for c in cells]
-            nw, pw = max(map(len, names)) + 1, max(map(len, pnls))
-            per = max(1, min(LOG_GRID_COLS, (w - 13 - indent + 3) // (nw + pw + 3)))   # 3 spaces between
-            grid = [(f"{n:<{nw}}", f"{v:>{pw}}") for n, v in zip(names, pnls)]
-            for k in range(0, len(grid), per):
-                out.append((ts, lvl, head if k == 0 else "", k // per, grid[k:k + per], indent))
+            under = head.index(": ") + 2
+            row, indent, at, k = [], len(head) + 2, len(head) + 2, 0
+            for c in cells:
+                name, v = self.vn(c.group(1)), c.group(2)
+                n = len(name) + 1 + len(v)
+                if row and at + n > w - 13:                        # full: on to the next row
+                    out.append((ts, lvl, head if k == 0 else "", k, row, indent))
+                    row, indent, at, k = [], under, under, k + 1
+                row.append((name, v)); at += n + 3                 # " · " between
+            out.append((ts, lvl, head if k == 0 else "", k, row, indent))
         return out
 
     def log_end(self, logs: list, rows: int) -> int:

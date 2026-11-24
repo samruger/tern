@@ -1729,7 +1729,7 @@ class Tabs(Rig, unittest.TestCase):
                     self.assertIn("in ", row)                                   # when the next slot is
                     self.assertIn("closes", row)
 
-    def test_shadow_log_lines_print_as_columns(self):
+    def test_shadow_log_lines_wrap_aligned(self):
         with tempfile.TemporaryDirectory() as d:
             k, scr = self.setup(d)
             k._command({"op": "rename", "variant": "band90", "name": "high favs"})
@@ -1742,25 +1742,26 @@ class Tabs(Rig, unittest.TestCase):
             from tern import dash
             slot = "paper: 25m slot on KXBTCD-E1 bought · base 5 · band90 12 · cap1 1 · late 3"
             rows = scr.log_rows([[1.0, "info", slot]], 104)
-            self.assertEqual([r[2] for r in rows], ["paper: 25m slot on KXBTCD-E1 bought", ""])
-            self.assertEqual([c for r in rows for c in r[4]], [("base      ", " 5"), ("high favs ", "12"), ("cap1      ", " 1"), ("late      ", " 3")])
+            self.assertEqual([r[2] for r in rows], ["paper: 25m slot on KXBTCD-E1 bought"])
+            self.assertEqual([c for r in rows for c in r[4]], [("base", "5"), ("high favs", "12"), ("cap1", "1"), ("late", "3")])
             self.assertTrue(dash.TRADE_LINE.match(slot))                        # one of the log filter's trades
             rows = scr.log_rows([[1.0, "info", line], [2.0, "info", "shadow: odd line · no cells"]], 104)
             self.assertEqual(rows[0][:4], (1.0, "info", "shadow: KXETHD-E1 settled", 0))
-            self.assertEqual([r[3] for r in rows], [0, 1, 2, 3, 0])             # 3 a row: 10 variants in 4 rows
-            self.assertEqual([len(r[4]) for r in rows[:4]], [3, 3, 3, 1])
-            self.assertEqual({len(r[4]) for r in scr.log_rows([[1.0, "info", line]], 400)}, {8, 2})   # a wider screen holds more
-            self.assertEqual(rows[0][4][1], ("high favs ", "   +98.04"))       # display names, P&L right-aligned
+            self.assertEqual([r[3] for r in rows], [0, 1, 2, 0])
+            self.assertEqual([r[5] for r in rows[:3]], [len("shadow: KXETHD-E1 settled") + 2, len("shadow: "), len("shadow: ")])
+            self.assertEqual([c[0] for r in rows[:3] for c in r[4]], ["base", "high favs", "cap1", "band80", "late", "tight1",
+                                                                       "band75", "early", "multi", "calm"])   # all, in order
+            self.assertEqual(len(scr.log_rows([[1.0, "info", line]], 400)), 1)     # a wide screen: one row
+            self.assertEqual(rows[0][4][1], ("high favs", "+98.04"))           # display names
             self.assertEqual(rows[-1][2:5], ("shadow: odd line · no cells", 0, None))   # not the shape: as it is
             text = self.text()
             self.assertNotIn("+234.14 · band90", text)
             lines = text.splitlines()
             first = next(l for l in lines if "shadow: KXETHD-E1 settled" in l)
-            self.assertRegex(first, r"settled  base +\+234\.14   high favs +\+98\.04   cap1 +\+71\.67 +│$")
+            self.assertIn("settled  base +234.14 · high favs +98.04 · cap1 +71.67", first)
             under = lines[lines.index(first) + 1]
             self.assertNotRegex(under, r"\d\d:\d\d")                           # no time on the rows under it
-            for a, b in (("base", "band80"), ("high favs", "late"), ("cap1", "tight1")):   # each under the one above
-                self.assertEqual(first.index(a), under.index(b), (a, b))
+            self.assertEqual(len(under) - len(under[1:].lstrip()), first.index("KXETHD"))   # aligned under what follows shadow:
             for r in scr.s.ch:                                                  # nothing runs past the box
                 self.assertIn("".join(r)[-1], "│╯╮ ")
             for _ in range(10):
