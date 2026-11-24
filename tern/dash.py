@@ -406,6 +406,9 @@ HELP_KEYS = [
                ("", "strike, variants highlights one"),
                ("PgUp PgDn", "ten steps at a time; Home End: the ends"),
                ("mouse wheel", "scrolls what it is over"),
+               ("click", "a tab, a border's key, a row, a theme; again"),
+               ("", "on a highlighted variant or setting: enter;"),
+               ("", "what changes something asks y"),
                ("C", "next coin")]),
      ("look", [("c", "spot: chart span: 5m 15m 1h 24h"),
                ("V", "book: paper / live view"),
@@ -417,7 +420,7 @@ HELP_KEYS = [
                 ("e", "edit the highlighted one's settings: s saves"),
                 ("", "them as a new variant, esc discards; that one"),
                 ("", "and its record stay as they are"),
-                ("space", "turn it on / off"),
+                ("space", "turn it on / off (asks y)"),
                 ("D", "delete it, if it is one you made"),
                 ("r", "rename it: its record keeps its own name")]),
      ("trade", [("L", "live: on with the selected variant, off, or"),
@@ -426,7 +429,7 @@ HELP_KEYS = [
                    ("←→  - +", "step it down / up, or flip it"),
                    ("enter", "type a value, enter saves, esc leaves it"),
                    ("s esc", "in a variant (e): save as a new one / discard")]),
-     ("engine", [("P", "pause (asks y) / start the engine"),
+     ("engine", [("P", "pause / start the engine (asks y)"),
                  ("q", "close the screen; the engine keeps going")])],
 ]
 
@@ -457,6 +460,21 @@ BOX_KEYS = "1234567890h"
 SUPER = "¹²³⁴⁵⁶⁷⁸⁹⁰"                             # (help's h is in its name)
 
 DROP_FIRST = ("↑↓", "space")                     # border hints that go before the others when they don't all fit
+
+# keys by name (a browser's KeyboardEvent.key, plus BackTab for shift+tab) -> what curses gives
+NAMED = {"ArrowUp": curses.KEY_UP, "ArrowDown": curses.KEY_DOWN, "ArrowLeft": curses.KEY_LEFT,
+         "ArrowRight": curses.KEY_RIGHT, "PageUp": curses.KEY_PPAGE, "PageDown": curses.KEY_NPAGE,
+         "Home": curses.KEY_HOME, "End": curses.KEY_END, "Tab": 9, "BackTab": curses.KEY_BTAB,
+         "Enter": 10, "Escape": 27, "Backspace": 127}
+# the keys a border shows that are not one letter: their names. Those of MOVES are clicked each on its own
+HINT_KEY = {"⏎": "Enter", "enter": "Enter", "space": " ", "esc": "Escape", "↑": "ArrowUp", "↓": "ArrowDown",
+            "←": "ArrowLeft", "→": "ArrowRight", "PgUp": "PageUp", "PgDn": "PageDown"}
+# Every button's press and release, not just the ones key() uses: the terminal sends them all, and on one that is not in
+# the mask getch() blocks until the next input (the screen stands still), nodelay or not. Not curses' own clicks: it
+# would put a press and its release together as one.
+MOUSE_EVENTS = sum(getattr(curses, f"BUTTON{n}_{what}") for n in range(1, 6) for what in ("PRESSED", "RELEASED"))
+MOUSE_QUEUE = 8                                  # the mouse events curses keeps
+MOVES = re.compile(r"[↑↓←→]|PgUp|PgDn")
 
 
 # the reports box: the list's width, and the lines of a report that are a table's header, a table's row
@@ -538,7 +556,7 @@ class Screen:
         self.log_filter = "all"                # what the log box shows: LOG_FILTERS
         self.offs: dict[str, int] = {}         # box -> the first line shown (gate, help, settings)
         self.about_of = None                   # the setting the right side of the settings box was scrolled on
-        self.help_sel, self.help_rows = 0, {}   # the help section picked; row -> section, for clicks
+        self.help_sel = 0                      # the help section picked
         self.theme_rows = 1                    # the themes box: rows in a column, as last drawn
         self.modal: dict | None = None
         self.flash, self.flash_at = "", 0.0
@@ -547,6 +565,8 @@ class Screen:
         self.P = Pal()
         self.clip: int | None = None
         self.rects: dict[str, tuple[int, int, int, int]] = {}   # panel -> (y, x, h, w) as last drawn
+        self.clicked = False                   # a key is being pressed by a click
+        self.hits: list[tuple] = []            # what a click is on, as last drawn: (y, x from, x to, what, its argument)
         self.log_anchor: tuple | None = None   # (ts, sub) of the bottom log row while scrolled back; None follows new lines
         self.pos_off = 0                       # first line shown under the book's totals
         self.prefs_path = os.path.join(runtime, "dash.json")
@@ -562,7 +582,6 @@ class Screen:
         self.rep_sel = "desk"                  # the report shown
         self.rep_top = 0                       # first row of the list shown
         self.rep_off, self.rep_room, self.rep_len = 0, 1, 0   # the report's scroll: first line shown, lines that fit, lines in all
-        self.rep_rows: dict[int, str] = {}     # screen row -> the report listed there, as last drawn
         self.rep_saving = False                # s: a report is being saved, on a thread
         self.rep_drawn: tuple = ()             # (what it was made from, its colored lines)
         try:
@@ -748,23 +767,35 @@ class Screen:
         else:
             key, text = P(P.c("key"), bold=True), P(P.grey)
         parts = [(SUPER[i], key), (name, text)] if i < len(SUPER) else [(name[0], key), (name[1:], text)]   # h is help's key
+        x0 = x
         for t, a in [(" " if lead or i >= len(SUPER) else "", text), *parts, (" ", text)]:
             self.put(y, x, t, a); x += len(t)
+        self.hit(y, x0, x, "tab", name)
         return x
 
     def flashing(self) -> bool:
         return bool(self.flash) and time.time() - self.flash_at < 8
 
     def hint(self, y: int, x: int, seg, border: int) -> None:
-        """One ┤segment├ on a border line."""
+        """One ┤segment├ on a border line. A click on it presses its key."""
         P = self.P
         self.put(y, x, "─", border); x += 1
+        key = seg if isinstance(seg, str) else seg[0]
+        moves = list(MOVES.finditer(key))
+        for m in moves:
+            self.hit(y, x + m.start(), x + m.end(), "key", HINT_KEY[m.group()])
+        if not moves and not isinstance(seg, str):
+            self.hit(y, x, x + sum(map(len, seg)), "key", HINT_KEY.get(key, key))
         if isinstance(seg, str):
             self.put(y, x, seg, P(P.grey)); x += len(seg)
         else:                                    # pieces alternate pink (a key, or the rule's state) and white
             for i, piece in enumerate(seg):
                 self.put(y, x, piece, P(P.c("key"), bold=True) if i % 2 == 0 else P(WHITE)); x += len(piece)
         self.put(y, x, "─", border)
+
+    def hit(self, y: int, x0: int, x1: int, what: str, arg) -> None:
+        """What is drawn at x0 up to x1 takes clicks: see click()."""
+        self.hits.append((y, x0, x1, what, arg))
 
     def vn(self, name: str | None) -> str:
         """A variant's display name (r renames it); its record stays under its own name."""
@@ -905,17 +936,30 @@ class Screen:
         right = [(f" {'●' if ok else '○'} {word}{state}" + (f"  {clk} " if clk else " "), P(GREEN if ok else RED))]
         return left, right
 
+    def spot_points(self, prod: str) -> list:
+        """A coin's prices, [ts, price], oldest first: minute closes, then live seconds."""
+        sp = (self.st.get("spot") or {}).get(prod) or {}
+        sec, mins = sp.get("sec") or [], sp.get("min") or []
+        first_sec = sec[0][0] if sec else time.time()
+        return [[t + 60, p] for t, p in mins if t + 60 < first_sec] + sec
+
+    def contract_points(self, ticker: str | None) -> list:
+        """A strike's YES price this hour, [ts, price], oldest first."""
+        out = []
+        for t, b, a in (self.st.get("hist") or {}).get(ticker) or []:
+            if b is not None and a is not None:
+                out.append([t, (a + b) / 2])
+            elif b is not None or a is not None:
+                out.append([t, b if b is not None else a])
+        return out
+
     def spot_panel(self, y, x, h, w) -> None:
         P, st = self.P, self.st
         prod = cfgmod.SERIES[self.series]
-        sp = (st.get("spot") or {}).get(prod) or {}
         now = time.time()
-        sec, mins = sp.get("sec") or [], sp.get("min") or []
         span = CHARTS[self.chart]
-        first_sec = sec[0][0] if sec else now
-        pts = [[t + 60, p] for t, p in mins if t + 60 < first_sec] + sec   # minute closes, then live seconds
         gw = w - 2 - 11
-        vals = by_time(pts, now - span, now, gw * 2)
+        vals = by_time(self.spot_points(prod), now - span, now, gw * 2)
         strike = None
         row = self.row(self.sel)
         if row:
@@ -993,13 +1037,7 @@ class Screen:
         self.box(y, x, h, w, "contract", self.P.border("contract"), PANEL_KEYS["contract"](self))
         if not r:
             self.put(y + 2, x + 3, "waiting for the hourly event…", P(self.P.grey)); return
-        hist = (st.get("hist") or {}).get(self.sel) or []
-        pts = []
-        for t, b, a in hist:
-            if b is not None and a is not None:
-                pts.append([t, (a + b) / 2])
-            elif b is not None or a is not None:
-                pts.append([t, b if b is not None else a])
+        pts = self.contract_points(self.sel)
         ev = (st.get("events") or {}).get(self.series) or {}
         t1 = time.time(); t0 = (ev.get("close") or t1) - 3600
         bid, ask = r["b"], r["a"]
@@ -1110,6 +1148,7 @@ class Screen:
             mid = (bid + ask) / 2 if bid is not None and ask is not None else (bid if bid is not None else ask)
             fav = max(mid, 1 - mid) if mid is not None else 0
             spread = (ask - bid) if bid is not None and ask is not None else None
+            self.hit(yy, x + 1, x + w - 1, "ladder", r["t"])
             inb = S and S["band_lo"] <= fav < S["band_hi"] and spread is not None and spread <= S["max_spread"] + 1e-9
             above = spot is not None and spot > r["k"]
             sel = r["t"] == self.sel
@@ -1177,6 +1216,7 @@ class Screen:
         top = self.var_top
         for j, v in enumerate(vs[top:top + rows], start=top):
             yy = y + 2 + j - top
+            self.hit(yy, x + 1, x + w - 1, "variant", v["name"])
             sel = v["name"] == self.var_sel
             R = P.row(sel)
             self.put(yy, x + 1, " " * (w - 2), R(WHITE))
@@ -1285,12 +1325,22 @@ class Screen:
         if ch == ord(" "):
             on = not cur.get("on", True)
             cmd = {"op": "variant_on", "variant": cur["name"], "on": on}
+
+            def go() -> None:
+                if self.vrow(cur["name"]) is None:
+                    self.say(f"{name} is gone"); return
+                self.send(**cmd)
             if on and livs:
                 self.modal = {"type": "livecmd", "title": "LIVE IS ARMED", "color": RED, "buf": "", "cmd": cmd, "kept": f"{name} kept off",
                               "lines": [f"Live is armed with {name}: turned on, real money trades it from its next slot,",
                                         "past its gate.", "", "type live and press enter (esc cancels):", "> "]}
+            elif on:
+                self.confirm(f"turn {name} on", [f"Turn {name} on? It buys on paper from its next slot."], go,
+                             "turns it on", f"{name} kept off")
             else:
-                self.send(**cmd)
+                self.confirm(f"turn {name} off", [f"Turn {name} off? No new entries; its open ones settle.",
+                                                  *(["live trades it: live would enter nothing until it is on again."] if livs else [])],
+                             go, "turns it off", f"{name} kept on", RED if livs else YELLOW)
         elif not cur["own"]:
             self.say(f"{name} is built in: it can't be deleted (space turns it off)")
         elif livs:
@@ -1316,7 +1366,14 @@ class Screen:
             return
         st, name, live = self.st, self.vn(self.variant), self.live_variant()
         if st.get("live_enabled") and live == self.variant:
-            self.send(op="live", on=False); self.say("disarming live"); return
+            def off() -> None:
+                self.send(op="live", on=False); self.say("disarming live")
+            if self.clicked:                             # (the key is at once: it is the way out of live)
+                self.confirm("live off", [f"Turn live off? {name} stops trading real money; its open positions ride to settlement."],
+                             off, "turns it off", "live kept on")
+            else:
+                off()
+            return
         L, rule = st.get("live_cfg") or {}, row.get("rule") or {}
         size = [f"It buys {rule.get('contracts', 0):g} contracts a strike, at most {money(rule.get('max_hour_cost', 0))} an hour a coin,",
                 f"{money(rule.get('max_order', 0))} an order and {money(rule.get('max_risk', 0))} at risk at once.",
@@ -1405,15 +1462,13 @@ class Screen:
         v = self.book_view or ("live" if st.get("mode") == "live" else "paper")
         b = st.get(v) or {}
         self.box(y, x, h, w, "book", self.P.border("book"), PANEL_KEYS["book"](self))
-        tabs: list[tuple[str, int]] = []
+        yy, cx = y + 1, x + 2
         for name in ("paper", "live"):
             label = f"{self.vn(self.variant)} on paper" if name == "paper" else \
                 f"live · {self.vn(self.live_variant())}" if st.get("live_enabled") and self.live_variant() else "live"
-            tabs += [(f" {label} ", P(P.border("book"), bold=True) | curses.A_REVERSE if name == v else P(self.P.grey)), (" ", 0)]
-        yy = y + 1
-        cx = x + 2
-        for text, attr in tabs:
-            self.put(yy, cx, text, attr); cx += len(text)
+            self.put(yy, cx, f" {label} ", P(P.border("book"), bold=True) | curses.A_REVERSE if name == v else P(self.P.grey))
+            self.hit(yy, cx, cx + len(label) + 2, "book", name)
+            cx += len(label) + 3
         if not b:
             return
         g = st.get("gate") or {}
@@ -1851,11 +1906,10 @@ class Screen:
         self.split(y, x, h, "help", lw)
         self.rects = {"help": (y, x, h, lw + 1), "helptext": (y, x + lw + 1, h, w - lw - 1)}
         secs = self.help_sections(w - lw - 5)
-        self.help_rows = {}
         for j, (title, _) in enumerate(secs):
             R = P.row(j == self.help_sel)
             self.put(y + 1 + j, x + 1, f"  {title.lower()}".ljust(lw - 1), R(P.pick("rows", j / (len(secs) - 1)), bold=j == self.help_sel))
-            self.help_rows[y + 1 + j] = j
+            self.hit(y + 1 + j, x + 1, x + lw, "help", j)
         title, lines = secs[self.help_sel]
         self.put(y + 1, x + lw + 3, title, P(P.c("key"), bold=True))
         room = h - 4
@@ -1874,7 +1928,12 @@ class Screen:
         off = max(0, min(self.offs.get("settings", 0), len(lines) - room))
         self.offs["settings"] = off = min(max(off, n - room + 1), max(0, n - 1))   # the one picked, and what's above it
         lines[n] = [*lines[n], (" " * max(0, lw - 2 - size(lines[n])), P.row(True)(WHITE))]
-        self.pane(y + 1, x + 1, room, lw - 2, [[(" ", P.row(i == n)(WHITE))] + l for i, l in enumerate(lines)], off)
+        off = self.pane(y + 1, x + 1, room, lw - 2, [[(" ", P.row(i == n)(WHITE))] + l for i, l in enumerate(lines)], off)
+        for at, i, spans in self.set_at:                 # a setting's choices, and the rest of its line
+            if off <= at < off + room:
+                for x0, x1, j in spans:
+                    self.hit(y + 1 + at - off, min(x + 2 + x0, x + lw), min(x + 2 + x1, x + lw), "set", (i, j))
+                self.hit(y + 1 + at - off, x + 1, x + lw, "set", (i, None))
         self.rects = {"settings": (y, x, h, lw + 1), "about": (y, x + lw + 1, h, w - lw - 1)}
         about = self.settings_about(w - lw - 5)
         if self.about_of != (self.edit_var, self.set_sel):   # another setting: from its top
@@ -1902,6 +1961,7 @@ class Screen:
                 continue
             yy, cx, t = y + 1 + r * 2 - off, x + 2 + c * cw, themes.THEMES[name]
             R = P.row(i == at)
+            self.hit(yy, cx, cx + cw, "theme", name)
             self.put(yy, cx, f"{'▸' if i == at else ' '} ", R(P.c("key"), bold=True))
             self.put(yy, cx + 2, f"{name:<{nw}} ", R(t["border"]["spot"] if P.many else WHITE, bold=i == at))
             ramp = themes.smooth(tuple(t["grads"]["yes"]))
@@ -2118,7 +2178,6 @@ class Screen:
         at = next(i for i, r in enumerate(rows) if not isinstance(r, str) and r.id == self.rep_sel)
         self.rep_top = max(0, min(self.rep_top, len(rows) - room))
         self.rep_top = min(max(self.rep_top, at - room + 1), max(0, at - 1))   # the first entry: its heading too
-        self.rep_rows = {}
         for j, r in enumerate(rows[self.rep_top:self.rep_top + room]):
             yy = y + 1 + j
             if isinstance(r, str):
@@ -2127,7 +2186,7 @@ class Screen:
             sel = r.id == self.rep_sel
             name = r.label if len(r.label) <= lw - 5 else r.label[:lw - 6] + "…"
             self.put(yy, x + 1, f"   {name}".ljust(lw - 1), P.row(sel)(P.pick("rows", entries.index(r) / max(1, len(entries) - 1)), bold=sel))
-            self.rep_rows[yy] = r.id
+            self.hit(yy, x + 1, x + lw, "report", r.id)
         if self.rep_top > 0:
             self.put(y + 1, x + lw - 1, "▲", P(YELLOW))
         if self.rep_top + room < len(rows):
@@ -2201,7 +2260,12 @@ class Screen:
                 "(P here, or reopening the dash). It saves its state before it stops.", "",
                 "y pauses · any other key keeps it running"]}
         else:
-            self.say(start_engine(self.runtime)); self.alive_at = 0
+            def start() -> None:
+                self.say(start_engine(self.runtime)); self.alive_at = 0
+            live = self.live_variant() if self.st.get("live_enabled") else None
+            self.confirm("start engine", ["Start the engine? The variants that are on trade on paper from the next slot.",
+                                          *([f"Live is on: {self.vn(live)} would trade real money."] if live else [])],
+                         start, "starts it", "engine not started", RED if live else YELLOW)
 
     def save_report(self) -> None:
         """Keep the live report shown as a file. On a thread: it is worked out again, whole."""
@@ -2272,10 +2336,12 @@ class Screen:
         self.set_sel %= len(rows)
         lw = max(len(r.label) for r in rows)
         out: list = []
+        self.set_at: list = []                           # for clicks: (line, row, its choices: from, to, which)
         for i, row in enumerate(rows):
             if row.group:
                 out += ([[]] if out else []) + [[(" " + row.group, P(P.c("head"), bold=True))] + self.rule_head(row)]
             sel = i == self.set_sel
+            spans: list = []
             if sel and self.set_buf is not None:
                 val = [(f" {self.set_buf}▏", P(YELLOW, bold=True) | curses.A_REVERSE)]
             elif row.kind in ("slots", "coins"):         # each choice, on bright and off grey; the cursor's reversed
@@ -2285,6 +2351,8 @@ class Screen:
                 for j, c in enumerate(ch):
                     label = str(c) if row.kind == "slots" else cfgmod.SERIES[c].split("-")[0]
                     on = c in v
+                    cx = 2 + lw + 2 + sum(len(t) for t, _ in val)
+                    spans.append((cx, cx + len(label) + 2, j))
                     val += [(f" {label} ", P.row(sel)(GREEN if on else P.grey, bold=on) |
                              (curses.A_REVERSE if sel and j == min(self.set_sub, len(ch) - 1) else 0))]
                 if row.sec == "rule" and row.name in self.draft:
@@ -2299,6 +2367,7 @@ class Screen:
                         [("*", P.row(sel)(YELLOW, bold=True))]
             if sel:                                      # the line the settings box keeps in view
                 self.set_line = len(out)
+            self.set_at.append((len(out), i, spans))
             R = P.row(sel)
             out.append([("▸ " if sel else "  ", R(P.c("key"), bold=True)),
                         (f"{row.label:<{lw}}  ", R(P.pick("rows", i / max(1, len(rows) - 1)), bold=sel))] + val)
@@ -2471,8 +2540,14 @@ class Screen:
                                     "Live is armed: this is real money on Kalshi.", "",
                                     "type live and press enter (esc cancels):", "> "]}
             return
-        self.send(op="set", key=key, value=value)
-        self.set_sent[key] = (value, time.time())
+        def change() -> None:
+            self.send(op="set", key=key, value=value)
+            self.set_sent[key] = (value, time.time())
+        if self.clicked:
+            self.confirm(f"change {row.label}", [f"Change {row.label} from {self.set_fmt(row, cur)} to {self.set_fmt(row, value)}?"],
+                         change, "changes it", f"{row.label} kept")
+        else:
+            change()
 
     def settings_key(self, ch: int) -> None:
         rows = self.set_rows()
@@ -2541,6 +2616,12 @@ class Screen:
             if vn and (self.edit_var, self.draft) == (vn["variant"], vn["draft"]):
                 self.say("closed: it is being saved")
             elif self.draft:
+                if self.clicked:
+                    def drop() -> None:
+                        self.say("changes thrown away"); self.close_edit()
+                    self.confirm("discard changes", [f"Throw away the changes to {self.vn(self.edit_var)}?", *("  " + t for t in self.draft_lines())],
+                                 drop, "throws them away", "changes kept")
+                    return
                 self.say("changes thrown away" + ("" if vn else ": nothing was saved"))
             self.close_edit()
 
@@ -2563,6 +2644,7 @@ class Screen:
 
     def draw(self) -> None:
         self.s.erase()
+        self.hits = []
         self.P.new_frame(self.tab)
         H, W = self.s.getmaxyx()
         if W < 100 or H < 30:
@@ -2580,17 +2662,74 @@ class Screen:
         self.s.refresh()
 
     # ------------------------------------------------------------ input
+    def press(self, name: str) -> bool:
+        """A key by its name: what a click on it does."""
+        return self.key(NAMED[name] if name in NAMED else ord(name))
+
+    def click(self, my: int, mx: int) -> bool:
+        """A left click: what is drawn there is shown, highlighted or pressed, as its key would. False closes the screen."""
+        at = next((h for h in self.hits if h[0] == my and h[1] <= mx < h[2]), None)
+        if at is None or self.modal:                     # a question takes keys only
+            return True
+        what, arg = at[3:]
+        if what in ("key", "set"):
+            self.clicked = True                          # what can't be taken back asks first
+            try:
+                return self.press(arg) is not False if what == "key" else self.click_setting(*arg)
+            finally:
+                self.clicked = False
+        if what == "tab":
+            if self.overlay == "edit":                   # a draft goes only with its own keys
+                self.say("s saves the draft as a new variant, esc discards it")
+            else:
+                self.show_tab(arg)
+        elif what == "variant":
+            if arg == self.var_sel:
+                return self.press("Enter") is not False
+            self.var_sel = arg
+        elif what == "ladder":
+            self.sel = arg; self.write_view()
+        elif what == "report":
+            self.pick_report(arg)
+        elif what == "help":
+            self.scroll("help", arg - self.help_sel)
+        elif what == "theme":
+            self.P.set_theme(arg); self.save_prefs()
+        elif what == "book":
+            self.book_view = arg
+        return True
+
+    def confirm(self, title: str, lines: list, yes, does: str, kept: str, color: int = YELLOW) -> None:
+        """Ask: y runs `yes` (False from it closes the screen), any other key says `kept`."""
+        self.modal = {"type": "confirm", "title": title, "color": color, "yes": yes, "kept": kept,
+                      "lines": [*lines, "", f"y {does} · any other key doesn't"]}
+
+    def click_setting(self, i: int, j: int | None) -> bool:
+        """A click on settings row i (its choice j): highlighted, or enter when it already was."""
+        if self.set_buf is not None and i != self.set_sel:
+            self.say("enter saves the value being typed, esc leaves it")
+            return True
+        choices = self.set_rows()[i].kind in ("slots", "coins")
+        if i == self.set_sel and (j == self.set_sub if choices else True):
+            return self.press("Enter") is not False
+        if i != self.set_sel or j is not None:
+            self.set_sel, self.set_sub = i, j or 0
+        return True
+
     def key(self, ch: int) -> bool:
         if ch == curses.KEY_MOUSE:
-            try:
-                _, mx, my, _, bs = curses.getmouse()
-            except curses.error:
-                return True
-            d = -1 if bs & curses.BUTTON4_PRESSED else 1 if bs & curses.BUTTON5_PRESSED else 0
-            if d and self.overlay == "edit" and not self.modal:
-                self.wheel(my, mx, d)
-            elif d and not self.modal:
-                self.wheel(my, mx, d)
+            events = []                                  # one KEY_MOUSE can stand for several, handed out newest first
+            for _ in range(MOUSE_QUEUE):
+                try:
+                    events.append(curses.getmouse())
+                except curses.error:
+                    break
+            for _, mx, my, _, bs in reversed(events):
+                d = -1 if bs & curses.BUTTON4_PRESSED else 1 if bs & curses.BUTTON5_PRESSED else 0
+                if d and not self.modal:
+                    self.wheel(my, mx, d)
+                elif bs & curses.BUTTON1_PRESSED and not self.click(my, mx):
+                    return False
             return True
         if self.modal:
             m = self.modal; self.modal = None
@@ -2646,6 +2785,11 @@ class Screen:
                 m["lines"][-1] = "> " + m["buf"]
                 self.modal = m
                 return True
+            if m.get("type") == "confirm":
+                if ch in (ord("y"), ord("Y")):
+                    return m["yes"]() is not False
+                self.say(m["kept"])
+                return True
             if m.get("type") == "stop":
                 if ch in (ord("y"), ord("Y")):
                     self.say(stop_engine(self.runtime, self.st.get("pid"))); self.alive_at = 0
@@ -2669,7 +2813,10 @@ class Screen:
             self.settings_key(ch)                        # (a value being typed takes every key but tab)
             return True
         if ch in (ord("q"), ord("Q")):
-            return False
+            if not self.clicked:
+                return False
+            self.confirm("close", ["Close this screen? The engine keeps going."], lambda: False, "closes it", "screen kept open")
+            return True
         if ch == curses.KEY_ENTER:
             ch = 10
         if self.tab not in KEYS_ON.get(chr(ch) if 0 <= ch < 128 else "", BOXES):   # another box's key: nothing here
@@ -2718,9 +2865,8 @@ class Screen:
         self.s.nodelay(True)
         self.s.keypad(True)
         curses.set_escdelay(25)
-        # Wheel only, so the wheel scrolls the panel under the pointer. Clicks stay with
-        # the terminal; shift+drag still selects text in foot.
-        curses.mousemask(curses.BUTTON4_PRESSED | curses.BUTTON5_PRESSED)
+        # The wheel scrolls the panel under the pointer, and a left press clicks; shift+drag still selects text in foot.
+        curses.mousemask(MOUSE_EVENTS)
         curses.mouseinterval(0)
         if not engine_alive(self.runtime):
             self.say(start_engine(self.runtime))

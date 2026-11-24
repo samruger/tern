@@ -1,5 +1,6 @@
 import json
 import os
+import pathlib
 import shutil
 import subprocess
 import sys
@@ -1293,6 +1294,343 @@ class Rig:
 
     def row(self, key):
         self.scr.set_sel = [r.name for r in self.scr.set_rows()].index(key)
+
+
+class MouseRig(Rig):
+    """Clicks, as curses reports them."""
+
+    def at(self, text, row=None, nth=0):
+        """Where the text is on screen: (y, x)."""
+        rows = ["".join(r) for r in self.scr.s.ch]
+        found = [(y, r.index(text)) for y, r in enumerate(rows) if text in r and (row is None or y == row)]
+        self.assertTrue(found, f"{text!r} is not on screen")
+        return found[nth]
+
+    def mouse(self, y, x, button=None):
+        """A press there, as curses reports it. Returns what key() does: False closes the screen."""
+        return self.events((y, x, button or self.curses.BUTTON1_PRESSED))
+
+    def events(self, *evs):
+        """One KEY_MOUSE that stands for these, oldest first: curses hands them out newest first."""
+        from unittest import mock
+        c = self.curses
+        queue = [(0, x, y, 0, b) for y, x, b in reversed(evs)] + [c.error("none left")]
+        with mock.patch.object(c, "getmouse", side_effect=queue):
+            out = self.scr.key(c.KEY_MOUSE)
+        self.sync()
+        return out
+
+    def click(self, text, **kw):
+        return self.mouse(*self.at(text, **kw))
+
+    def set_row(self, key):
+        """Where a settings row is: its line, in the list."""
+        i = [r.key for r in self.scr.set_rows()].index(key)
+        return next((y, x0) for y, x0, x1, what, arg in self.scr.hits if what == "set" and arg == (i, None))
+
+
+class Mouse(MouseRig, unittest.TestCase):
+    """A click does what the key would."""
+
+    def test_tabs(self):
+        from tern import dash
+        with tempfile.TemporaryDirectory() as d:
+            k, scr = self.setup(d)
+            for name in reversed(dash.BOXES):
+                self.assertTrue(self.click(name, row=0))
+                self.assertEqual(scr.tab, name)
+
+    def test_keys_on_the_borders(self):
+        with tempfile.TemporaryDirectory() as d:
+            k, scr = self.setup(d)
+            self.click("hart 15m"); self.assertEqual(scr.chart, "1h")            # the whole hint, not just its letter
+            self.press("5")
+            names = [v["name"] for v in scr.st["variants"]]
+            scr.var_sel = names[0]; self.sync()
+            y, x = self.at("↑↓", row=38)
+            self.mouse(y, x + 1); self.assertEqual(scr.var_sel, names[1])        # each arrow is its own
+            self.mouse(y, x); self.assertEqual(scr.var_sel, names[0])
+            self.click("on/off", row=38); self.press("y")
+            self.assertEqual([c["op"] for c in self.cmds()], ["variant_on"])
+            self.press("h", "0"); theme = scr.P.name
+            self.press("6"); self.click("heme", row=38); self.assertNotEqual(scr.P.name, theme)
+            self.assertTrue(self.click("uit", row=38))                           # quit asks
+            self.assertFalse(self.scr.key(ord("y")))                             # and closes the screen
+
+    def test_page_keys_on_the_border(self):
+        with tempfile.TemporaryDirectory() as d:
+            k, scr = self.setup(d, h=30, w=100)
+            self.press("h")
+            secs = scr.help_sections(78)
+            scr.help_sel = max(range(len(secs)), key=lambda i: len(secs[i][1])); self.sync()
+            self.click("PgDn", row=28); down = scr.offs["help"]
+            self.assertGreater(down, 0)
+            self.click("PgUp", row=28); self.assertLess(scr.offs["help"], down)
+
+    def test_rows(self):
+        with tempfile.TemporaryDirectory() as d:
+            k, scr = self.setup(d)
+            self.press("5")
+            self.assertEqual(scr.variant or "base", "base")
+            self.click("band90", nth=0); self.assertEqual(scr.var_sel, "band90")
+            self.assertNotEqual(scr.variant, "band90")                           # highlighted, and not selected yet
+            self.click("band90", nth=0); self.assertEqual(scr.variant, "band90")
+            self.assertEqual(self.cmds(), [])                                    # selecting sends nothing
+            m = k.events["KXBTCD"]["markets"][0]
+            k.events["KXBTCD"]["markets"].append({**m, "ticker": "KXBTCD-E1-T200", "floor_strike": 200.0})
+            self.press("3")
+            for y, t in [(h[0], h[4]) for h in scr.hits if h[3] == "ladder"] * 2:
+                self.mouse(y, 10); self.assertEqual(scr.sel, t)
+            self.press("0"); self.click("tokyo night"); self.assertEqual(scr.P.name, "tokyo night")
+            self.press("4"); self.click(" live ", row=2); self.assertEqual(scr.book_view, "live")
+            self.click("on paper", row=2); self.assertEqual(scr.book_view, "paper")
+
+    def test_reports_and_help(self):
+        with tempfile.TemporaryDirectory() as d:
+            k, scr = self.setup(d)
+            self.press("h")
+            y = next(y for y, x0, x1, what, arg in scr.hits if what == "help" and arg == 2)
+            self.mouse(y, 5); self.assertEqual(scr.help_sel, 2)
+            self.press("8")
+            y, rid = next((y, arg) for y, x0, x1, what, arg in scr.hits if what == "report" and arg != scr.rep_sel)
+            self.mouse(y, 5); self.assertEqual(scr.rep_sel, rid)
+            self.mouse(y, 60); self.assertEqual(scr.rep_sel, rid)                # the report's text is not a row
+
+    def test_settings(self):
+        with tempfile.TemporaryDirectory() as d:
+            k, scr = self.setup(d)
+            self.press("9")
+            rows = [r.key for r in scr.set_rows()]
+            y, x = self.set_row("web.port")
+            self.mouse(y, x + 3); self.assertEqual(rows[scr.set_sel], "web.port")
+            self.assertIsNone(scr.set_buf)
+            y, x = self.set_row("web.port"); self.mouse(y, x + 3); self.assertEqual(scr.set_buf, "")   # again: enter
+            self.press("9", "0", "0", "0")
+            y, x = self.set_row("gate.min_days"); self.mouse(y, x + 3)           # typing: another row does nothing
+            self.assertEqual((rows[scr.set_sel], scr.set_buf), ("web.port", "9000"))
+            self.assertEqual(self.cmds(), [])
+            self.click("log", row=0); self.assertEqual((scr.tab, scr.set_buf), ("log", None))   # a tab leaves, as tab does
+            self.assertEqual(self.cmds(), [])
+            self.press("9"); self.click("→", row=38)
+            self.assertEqual((self.cmds(), scr.modal["type"]), ([], "confirm"))  # ← → step it, once it is sure
+            self.press("y"); self.assertEqual([c["key"] for c in self.cmds()], ["web.port"])
+
+    def test_settings_scrolled(self):
+        with tempfile.TemporaryDirectory() as d:
+            k, scr = self.setup(d, h=30, w=100)
+            self.press("5"); scr.var_sel = "band80"; self.press("e")
+            rows = scr.set_rows()
+            scr.set_sel = len(rows) - 1; self.sync()
+            for y, x0, x1, what, (i, j) in [h for h in scr.hits if h[3] == "set" and h[4][1] is None]:
+                self.assertIn(rows[i].label, self.text().split("\n")[y])         # the row drawn there is the one picked
+                self.assertTrue(1 < y < 28)
+
+    def test_variant_editor(self):
+        with tempfile.TemporaryDirectory() as d:
+            k, scr = self.setup(d)
+            self.open()
+            rows = scr.set_rows()
+            i = next(i for i, r in enumerate(rows) if r.kind == "slots")
+            spots = [(y, x0, arg[1]) for y, x0, x1, what, arg in scr.hits if what == "set" and arg[0] == i and arg[1] is not None]
+            self.assertEqual(len(spots), len(scr.set_choices(rows[i])))          # each choice is its own
+            for y, x, j in spots:
+                self.assertEqual(self.text().split("\n")[y][x:].split()[0], str(scr.set_choices(rows[i])[j]))
+            y, x, j = spots[1]
+            before = list(scr.set_value(rows[i].key))
+            self.mouse(y, x); self.assertEqual((scr.set_sel, scr.set_sub), (i, j))
+            self.assertEqual(list(scr.set_value(rows[i].key)), before)
+            self.mouse(y, x); self.assertNotEqual(list(scr.set_value(rows[i].key)), before)   # again: on / off
+            draft = dict(scr.draft); self.assertTrue(draft)
+            self.click("spot", row=0)                                            # the tabs don't drop a draft
+            self.assertEqual((scr.tab, scr.overlay, scr.draft), ("variants", "edit", draft))
+            self.assertIn("esc", scr.flash)
+            scr.flash = ""; self.sync()
+            self.click("discard", row=38)                                        # changes: it asks
+            self.press("n"); self.assertEqual((scr.overlay, scr.draft), ("edit", draft))
+            scr.flash = ""; self.sync()
+            self.click("discard", row=38); self.press("y"); self.assertIsNone(scr.overlay)
+            self.open(); self.click("discard", row=38); self.assertIsNone(scr.overlay)   # none: it doesn't
+            self.assertEqual(self.cmds(), [])
+
+    def test_questions_take_no_clicks(self):
+        with tempfile.TemporaryDirectory() as d:
+            k, scr = self.setup(d)
+            self.press("5"); self.click("ive", row=38)
+            self.assertEqual(scr.modal["type"], "arm")                           # L, as the key: live is to be typed
+            modal = dict(scr.modal)
+            self.click("spot", row=0)
+            y, x = self.at("╯"); self.mouse(y, x)
+            self.assertEqual((scr.modal, scr.tab), (modal, "variants"))
+            self.assertEqual(self.cmds(), [])
+
+    def test_other_buttons_and_empty_places(self):
+        with tempfile.TemporaryDirectory() as d:
+            k, scr = self.setup(d)
+            y, x = self.at("ladder", row=0)
+            self.mouse(y, x, self.curses.BUTTON3_PRESSED); self.assertEqual(scr.tab, "spot")
+            self.mouse(y, x, self.curses.BUTTON1_RELEASED); self.assertEqual(scr.tab, "spot")
+            self.mouse(39, 119); self.mouse(20, 60); self.assertEqual(scr.tab, "spot")
+            scr.s.resize(20, 80); scr.draw()                                     # too small: nothing is drawn, so nothing is there
+            self.mouse(y, x); self.assertEqual(scr.tab, "spot")
+
+    def test_events_that_came_together_all_count_in_order(self):
+        with tempfile.TemporaryDirectory() as d:
+            k, scr = self.setup(d)
+            c, (y, x), (_, x2) = self.curses, self.at("ladder", row=0), self.at("book", row=0)
+            self.events((y, x2, c.BUTTON1_PRESSED), (y, x2, c.BUTTON1_RELEASED), (y, x, c.BUTTON1_PRESSED), (y, x, c.BUTTON1_RELEASED))
+            self.assertEqual(scr.tab, "ladder")
+            self.press("5"); names = [v["name"] for v in scr.st["variants"]]; scr.var_sel = names[0]; self.sync()
+            self.events(*[(10, 10, c.BUTTON5_PRESSED)] * 3); self.assertEqual(scr.var_sel, names[3])
+            self.assertTrue(self.events())                                       # a KEY_MOUSE with nothing behind it
+
+    def test_no_press_or_release_is_left_out_of_the_mask(self):
+        """getch() blocks on an event outside it: a click's release froze the screen until the next key."""
+        import curses
+        from tern import dash
+        for n in range(1, 6):
+            for what in ("PRESSED", "RELEASED"):
+                self.assertTrue(dash.MOUSE_EVENTS & getattr(curses, f"BUTTON{n}_{what}"))
+            self.assertFalse(dash.MOUSE_EVENTS & getattr(curses, f"BUTTON{n}_CLICKED"))   # a press and release made one
+
+    def test_before_the_engines_first_status(self):
+        with tempfile.TemporaryDirectory() as d:
+            k, scr = self.setup(d)
+            scr.raw = {}; scr.st = {}
+            from tern import dash
+            for name in dash.BOXES:
+                scr.tab = name; scr.draw()
+                for y, x0, x1, what, arg in list(scr.hits):
+                    if what not in ("tab", "key"):
+                        scr.click(y, x0); scr.draw()
+
+    def test_the_web_clicks_settings_and_changes_nothing(self):
+        from tern.web import Hub
+        with tempfile.TemporaryDirectory() as d:
+            k, _ = self.setup(d)
+            hub = Hub(d)
+            f = hub.handle({"w": 120, "h": 40, "prefs": {"tab": "settings"}})
+            scr = hub.sessions[f["sid"]][0]
+            go = lambda y, x: hub.handle({"sid": f["sid"], "w": 120, "h": 40, "click": {"y": y, "x": x}})
+            for i, r in enumerate(scr.set_rows()):
+                if r.kind in ("bool", "choice") and r.key != "screen.log":
+                    y, x = next((y, x0) for y, x0, x1, what, arg in scr.hits if what == "set" and arg == (i, None))
+                    go(y, x + 3); go(y, x + 3)
+                    self.assertEqual(scr.set_sel, i)
+            self.assertIn("view only", scr.flash)
+            self.assertEqual(os.listdir(os.path.join(d, "cmd")), [])
+
+
+class StrayClicks(MouseRig, unittest.TestCase):
+    """What would change something asks first."""
+
+    def asks(self, *want):
+        """A question is open that only y answers with yes; any other key, and clicks, change nothing."""
+        scr = self.scr
+        self.assertEqual((scr.modal or {}).get("type"), "confirm")
+        self.assertEqual(self.cmds(), [])
+        text = " ".join(str(l) for l in scr.modal["lines"])
+        for w in want:
+            self.assertIn(w, text)
+        self.assertIn("any other key", text)
+
+    def test_variant_on_off(self):
+        with tempfile.TemporaryDirectory() as d:
+            k, scr = self.setup(d)
+            self.press("5"); scr.var_sel = "band90"; self.sync()
+            self.press(" "); self.asks("band90", "off")                          # the key asks too
+            for other in ("n", 27, " ", 10):
+                self.press(other); self.assertIsNone(scr.modal); self.assertEqual(self.cmds(), [])
+                self.assertIn("kept on", scr.flash)
+                scr.flash = ""; self.sync()
+                self.click("on/off", row=38); self.asks("off")
+            y, x = self.at("ladder", row=0); self.mouse(y, x); self.asks("off")  # a second stray click
+            self.press("y"); [c] = self.run_cmds()
+            self.assertEqual((c["op"], c["variant"], c["on"]), ("variant_on", "band90", False))
+            self.press(" "); self.asks("band90", "on"); self.press("Y")
+            self.assertEqual([c["on"] for c in self.cmds()], [True])
+
+    def test_turning_off_the_one_live_trades_says_so(self):
+        with tempfile.TemporaryDirectory() as d:
+            k, scr = self.setup(d)
+            k.cfg.live.enabled = True; k.cfg.live.variant = "base"; self.sync()
+            self.press("5"); scr.var_sel = "base"; self.sync()
+            self.press(" "); self.asks("base", "live trades it")
+            self.press("y"); self.run_cmds()
+            self.press(" "); self.assertEqual(scr.modal["type"], "livecmd")      # on again: live is to be typed, as before
+
+    def test_live_off(self):
+        with tempfile.TemporaryDirectory() as d:
+            k, scr = self.setup(d)
+            k.cfg.live.enabled = True; k.cfg.live.variant = "base"; scr.variant = "base"; self.sync()
+            self.press("4"); self.click("ive", row=38); self.asks("live off")
+            self.press("x"); self.assertIn("live kept on", scr.flash); self.assertEqual(self.cmds(), [])
+            scr.flash = ""; self.sync()
+            self.click("ive", row=38); self.press("y")
+            self.assertEqual([(c["op"], c["on"]) for c in self.cmds()], [("live", False)])
+            self.press("L")                                                      # the key is at once: the way out of live
+            self.assertIsNone(scr.modal)
+            self.assertEqual([(c["op"], c["on"]) for c in self.cmds()], [("live", False)])
+
+    def test_engine_start(self):
+        from unittest import mock
+        from tern import dash
+        with tempfile.TemporaryDirectory() as d:
+            k, scr = self.setup(d)
+            with mock.patch.object(dash, "engine_alive", return_value=False), mock.patch.object(dash, "start_engine", return_value="started") as start:
+                scr.alive = False
+                self.press("6", "P"); self.asks("Start the engine?")
+                self.press("n"); self.assertIn("not started", scr.flash); start.assert_not_called()
+                self.press("P", "y"); start.assert_called_once(); self.assertEqual(scr.flash, "started")
+
+    def test_start_says_when_live_is_on(self):
+        from unittest import mock
+        from tern import dash
+        with tempfile.TemporaryDirectory() as d:
+            k, scr = self.setup(d)
+            k.cfg.live.enabled = True; k.cfg.live.variant = "base"; self.sync()
+            with mock.patch.object(dash, "engine_alive", return_value=False):
+                self.press("P"); self.asks("Live is on")
+
+    def test_clicked_settings(self):
+        with tempfile.TemporaryDirectory() as d:
+            k, scr = self.setup(d)
+            self.press("9")
+            for key in ("alerts", "web.network"):
+                y, x = self.set_row(key); self.mouse(y, x + 3); self.assertIsNone(scr.modal)
+                y, x = self.set_row(key); self.mouse(y, x + 3); self.asks("from")
+                self.press("n"); self.assertEqual(self.cmds(), [])
+            y, x = self.set_row("alerts"); self.mouse(y, x + 3)
+            y, x = self.set_row("alerts"); self.mouse(y, x + 3); self.press("y")
+            self.assertEqual([c["key"] for c in self.cmds()], ["alerts"])
+            self.press(10); self.assertIsNone(scr.modal)                         # keys change it as before
+            self.assertEqual(len(self.cmds()), 1)
+            y, x = self.set_row("screen.log"); self.mouse(y, x + 3)
+            y, x = self.set_row("screen.log"); self.mouse(y, x + 3)              # this screen's own: nothing to ask
+            self.assertIsNone(scr.modal); self.assertNotEqual(scr.log_filter, "all")
+
+    def test_clicked_settings_while_armed_still_have_live_typed(self):
+        with tempfile.TemporaryDirectory() as d:
+            k, scr = self.setup(d)
+            k.cfg.live.enabled = True; k.cfg.live.variant = "base"; self.sync()
+            self.press("9"); scr.set_sel = [r.key for r in scr.set_rows()].index("gate.min_days"); self.sync()
+            self.click("←", row=38); self.assertEqual(scr.modal["type"], "setlive")
+
+    def test_quit(self):
+        with tempfile.TemporaryDirectory() as d:
+            k, scr = self.setup(d)
+            self.press("6"); self.click("uit", row=38); self.asks("Close")
+            self.assertTrue(scr.key(ord("n"))); self.assertIsNone(scr.modal)
+            self.assertFalse(scr.key(ord("q")))                                  # the key closes it, as before
+
+    def test_a_question_gone_stale_changes_nothing(self):
+        with tempfile.TemporaryDirectory() as d:
+            k, scr = self.setup(d)
+            self.press("5"); self.new(k, "base", "mine"); self.sync()
+            mine = next(v["name"] for v in scr.st["variants"] if v["own"])
+            scr.var_sel = mine; self.sync(); self.press(" "); self.asks("mine")
+            k._command({"op": "variant_delete", "variant": mine}); self.sync()
+            self.press("y"); self.assertEqual(self.cmds(), [])
+            self.assertIn("gone", scr.flash)
 
 
 class Renames(Rig, unittest.TestCase):
@@ -2802,7 +3140,7 @@ class OneList(Rig, unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             k, scr = self.setup(d)
             self.press("5"); scr.var_sel = "late"
-            self.press(" "); [c] = self.run_cmds()
+            self.press(" ", "y"); [c] = self.run_cmds()
             self.assertEqual((c["op"], c["variant"], c["on"]), ("variant_on", "late", False))
             self.assertIn("late is off: no new entries", self.text())
             k.cfg.live.enabled, k.cfg.live.variant = True, "late"; self.sync()
@@ -2810,7 +3148,8 @@ class OneList(Rig, unittest.TestCase):
             self.assertEqual((self.cmds(), scr.modal["type"]), ([], "livecmd"))
             self.press(*"live", 10); self.run_cmds()
             self.assertNotIn("late", k.shadow.own.off)
-            self.press(" "); self.run_cmds()                                   # off never asks
+            self.press(" "); self.assertEqual(self.cmds(), [])                 # off asks for y
+            self.press("y"); self.run_cmds()
             self.assertIn("late", k.shadow.own.off)
 
     def test_off_by_hand_is_checked(self):
@@ -3343,6 +3682,201 @@ class Web(unittest.TestCase):
             os.utime(os.path.join(k.fast, "view-web.json"), (old, old))
             k._read_view()
             self.assertEqual(k.web, {"series": [], "tickers": []})
+
+
+class Phone(Rig, unittest.TestCase):
+    """The web's phone pages."""
+
+    IPHONE = "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1"
+    ANDROID = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Mobile Safari/537.36"
+    LINUX = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36"
+
+    def hub(self, d):
+        from tern.web import Hub
+        k, scr = self.setup(d)
+        return k, Hub(d)
+
+    def test_which_browsers_are_phones(self):
+        from tern.phone import is_phone
+        ff = "Mozilla/5.0 (Android 14; {}; rv:140.0) Gecko/140.0 Firefox/140.0"
+        tablet = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36"
+        for ua, want in ((self.IPHONE, True), (self.ANDROID, True), (ff.format("Mobile"), True), (ff.format("Tablet"), False), (tablet, False),
+                         (self.IPHONE.replace("iPhone; CPU iPhone", "iPad; CPU"), False), (self.LINUX, False), ("", False), ("curl/8", False),
+                         ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15", False)):
+            self.assertEqual(is_phone({"User-Agent": ua}), want, ua)
+        self.assertFalse(is_phone({}))
+        self.assertTrue(is_phone({"User-Agent": self.LINUX, "Sec-CH-UA-Mobile": "?1"}))      # what Chromium says goes first
+        self.assertFalse(is_phone({"User-Agent": self.ANDROID, "Sec-CH-UA-Mobile": "?0"}))   # (the desktop site was asked for)
+        self.assertTrue(is_phone({"User-Agent": self.ANDROID, "Sec-CH-UA-Mobile": "junk"}))
+
+    def test_each_browser_gets_its_page_and_can_switch(self):
+        import http.client, threading
+        from unittest import mock
+        from tern import web, webauth
+        with tempfile.TemporaryDirectory() as d:
+            self.setup(d)
+            made = []
+            real = web.Server
+            class Srv(real):
+                def __init__(s, *a, **kw):
+                    super().__init__(*a, **kw); made.append(s)
+            gone = os.path.join(d, "none")
+            with mock.patch.object(web, "Server", Srv), mock.patch.multiple(webauth, AUTH_FILE=gone, CERT_FILE=gone, KEY_FILE=gone), mock.patch("builtins.print"):
+                th = threading.Thread(target=web.serve, args=(d, "127.0.0.1", 0), daemon=True); th.start()
+                for _ in range(100):
+                    if made:
+                        break
+                    import time; time.sleep(0.02)
+                port = made[0].server_address[1]
+
+                def ask(path, ua, cookie=None, body=None):
+                    c = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+                    c.request("POST" if body is not None else "GET", path, body, {"User-Agent": ua, **({"Cookie": cookie} if cookie else {})})
+                    r = c.getresponse(); out = r.status, r.read().decode(), r
+                    c.close()
+                    return out
+                is_phones = lambda text: 'id="menub"' in text
+                self.assertTrue(is_phones(ask("/", self.IPHONE)[1]))
+                self.assertTrue(is_phones(ask("/", self.ANDROID)[1]))
+                self.assertFalse(is_phones(ask("/", self.LINUX)[1]))
+                code, _, r = ask("/ui/full", self.IPHONE)
+                self.assertEqual((code, r.headers["Location"]), (303, "/"))
+                cookie = r.headers["Set-Cookie"].split(";")[0]
+                self.assertEqual(cookie, "tern_ui=full")
+                self.assertFalse(is_phones(ask("/", self.IPHONE, cookie)[1]))                # what was picked goes before what was detected
+                self.assertTrue(is_phones(ask("/", self.LINUX, "tern_ui=phone")[1]))
+                self.assertTrue(is_phones(ask("/", self.IPHONE, "tern_ui=zzz")[1]))
+                self.assertEqual(ask("/ui/zzz", self.IPHONE)[0], 404)
+                self.assertEqual(ask("/phone", self.IPHONE, body='{"page": "book"}')[0], 200)
+                for bad in ("[]", "nonsense", '{"sid": []}', '{"page": {}, "set": 5, "arg": [1], "view": {}, "look": 3}'):
+                    self.assertLess(ask("/phone", self.IPHONE, body=bad)[0], 500, bad)
+                made[0].shutdown(); th.join(5)
+
+    def test_signed_out_gets_nothing(self):
+        import http.client, threading, time
+        from unittest import mock
+        from tern import web, webauth
+        with tempfile.TemporaryDirectory() as d:
+            self.setup(d)
+            made = []
+            class Srv(web.Server):
+                def __init__(s, *a, **kw):
+                    super().__init__(*a, **kw); made.append(s)
+            auth, gone = os.path.join(d, "web.json"), os.path.join(d, "none")
+            open(auth, "w").close()
+            with mock.patch.object(web, "Server", Srv), mock.patch.multiple(webauth, AUTH_FILE=auth, CERT_FILE=gone, KEY_FILE=gone), \
+                    mock.patch.object(webauth, "Auth", return_value=mock.Mock(valid=lambda v: v == "good")), mock.patch("builtins.print"):
+                th = threading.Thread(target=web.serve, args=(d, "127.0.0.1", 0), daemon=True); th.start()
+                for _ in range(100):
+                    if made:
+                        break
+                    time.sleep(0.02)
+
+                def ask(method, path, cookie):
+                    c = http.client.HTTPConnection("127.0.0.1", made[0].server_address[1], timeout=5)
+                    c.request(method, path, "{}" if method == "POST" else None, {"User-Agent": self.IPHONE, "Cookie": cookie})
+                    r = c.getresponse(); r.read(); c.close()
+                    return r.status, r.headers.get("Location")
+                for cookie in ("", webauth.COOKIE + "=bad", "tern_ui=phone"):
+                    self.assertEqual(ask("POST", "/phone", cookie)[0], 401)
+                    self.assertEqual(ask("GET", "/", cookie), (303, "/login"))
+                    self.assertEqual(ask("GET", "/ui/full", cookie)[0], 401)
+                self.assertEqual(ask("POST", "/phone", webauth.COOKIE + "=good")[0], 200)
+                made[0].shutdown(); th.join(5)
+
+    def test_every_page_before_and_after_the_engines_first_status(self):
+        import json
+        from tern import phone
+        from tern.web import Hub
+        with tempfile.TemporaryDirectory() as d:
+            hub = Hub(d)
+            for p in phone.PAGES:
+                json.dumps(hub.phone({"page": p}))
+            k, scr = self.setup(d)
+            self.new(k, "base", "mine"); self.sync()
+            hub.checked = 0; sid = None
+            for p in phone.PAGES:
+                for arg in (None, "base", "nonsense", self.T, "../../etc/passwd", "saved:../x"):
+                    out = json.loads(json.dumps(hub.phone({"sid": sid, "page": p, "arg": arg}), allow_nan=False)); sid = out["sid"]
+                    self.assertEqual(out["page"], p)
+                    self.assertIn("data", out)
+            self.assertEqual(hub.phone({"sid": sid, "page": "zzz"})["page"], "home")
+
+    def test_the_numbers_are_the_screens(self):
+        with tempfile.TemporaryDirectory() as d:
+            k, hub = self.hub(d)
+            out = hub.phone({"page": "variants"}); sid = out["sid"]
+            self.assertEqual([r["name"] for r in out["data"]["rows"]], [v["name"] for v in self.scr.st["variants"]])
+            self.assertEqual([r["name"] for r in out["data"]["rows"] if r["selected"]], ["base"])
+            self.assertEqual((out["mode"], out["engine"]["ok"]), ("paper", True))
+            c = hub.phone({"sid": sid, "page": "contract", "arg": self.T})["data"]
+            self.assertEqual((c["t"], c["yes"], c["no"]), (self.T, ["58", "60"], ["40", "42"]))
+            self.assertEqual([r["t"] for r in hub.phone({"sid": sid, "page": "ladder"})["data"]["rows"]], [self.T])
+            g = hub.phone({"sid": sid, "page": "gate"})["data"]
+            self.assertEqual([c["name"] for c in g["checks"]], ["days traded", "settled entries", "paper P&L"])
+
+    def test_picking_is_each_viewers_own_and_sends_nothing(self):
+        with tempfile.TemporaryDirectory() as d:
+            k, hub = self.hub(d)
+            read = lambda: pathlib.Path(d, "dash.json").read_text()           # the rig's own screen wrote it
+            before = read()
+            a, b = hub.phone({"page": "home"}), hub.phone({"page": "home"})
+            out = hub.phone({"sid": a["sid"], "page": "book", "set": {"variant": "band90", "theme": "synthwave", "chart": "1h", "series": "KXETHD", "log_filter": "trades"}})
+            self.assertEqual((out["selected"]["name"], out["theme"], out["chart"], out["series"]), ("band90", "synthwave", "1h", "KXETHD"))
+            self.assertEqual(out["look"]["name"], "synthwave")
+            self.assertEqual(out["data"]["paper"], "band90")
+            other = hub.phone({"sid": b["sid"], "page": "book", "look": "classic"})
+            self.assertEqual((other["selected"]["name"], other["theme"]), ("base", "classic"))
+            self.assertNotIn("look", other)                                    # (it has those colors)
+            kept = hub.phone({"page": "book", "prefs": out["prefs"]})          # a new tab, with what the browser kept
+            self.assertEqual((kept["selected"]["name"], kept["theme"], kept["series"]), ("band90", "synthwave", "KXETHD"))
+            for bad in ({"variant": 5}, {"variant": "gone"}, {"theme": "zzz"}, {"series": "ZZZ", "chart": []}, {"live": True}, {"op": "live"}):
+                out = hub.phone({"sid": b["sid"], "page": "home", "set": bad})
+                self.assertEqual((out["selected"]["name"], out["theme"], out["series"]), ("base", "classic", "KXBTCD"), bad)
+            self.assertEqual(hub.phone({"sid": b["sid"], "page": "book", "view": "live"})["data"]["view"], "live")
+            self.assertEqual(hub.phone({"sid": b["sid"], "page": "book", "set": {"variant": "band90"}})["data"]["view"], "paper")
+            self.assertEqual(self.cmds(), [])
+            self.assertEqual(read(), before)
+
+    def test_what_the_browser_has_is_not_sent_again(self):
+        with tempfile.TemporaryDirectory() as d:
+            k, hub = self.hub(d)
+            out = hub.phone({"page": "themes"})
+            again = hub.phone({"sid": out["sid"], "page": "themes", "etag": out["etag"]})
+            self.assertNotIn("data", again); self.assertEqual(again["etag"], out["etag"])
+            self.assertIn("data", hub.phone({"sid": out["sid"], "page": "reports", "etag": out["etag"]}))
+
+    def test_the_log_has_its_tables(self):
+        with tempfile.TemporaryDirectory() as d:
+            k, hub = self.hub(d)
+            import time
+            now = time.time()
+            logs = [[now - 30, "info", "paper: 25m slot on KXBTCD-26NOV2408 bought · base 2 (10 for $8.85) · late 1 (5 for $4.40)"],
+                    [now - 20, "warn", "spot feed lost"]]
+            hub.phone({"page": "home"})
+            hub.st["logs"] = logs; hub.checked = now + 60
+            e = hub.phone({"page": "log"})["data"]["entries"]
+            self.assertEqual([(x["lvl"], len(x["rows"])) for x in e], [("warn", 0), ("info", 2)])   # newest first
+            self.assertEqual([[c[0] for c in r][:4] for r in e[1]["rows"]], [["base", "2", "10", "$8.85"], ["late", "1", "5", "$4.40"]])
+            self.assertEqual(len(e[1]["rows"][0]), len(e[1]["head"]))
+
+    def test_the_engine_gone_quiet_is_said(self):
+        with tempfile.TemporaryDirectory() as d:
+            k, hub = self.hub(d)
+            hub.phone({"page": "home"}); hub.st["heartbeat"] -= 60; hub.checked = hub.st["heartbeat"] + 200
+            hub.alive = lambda: True
+            e = hub.phone({"page": "home"})["engine"]
+            self.assertFalse(e["ok"]); self.assertIn("nothing for", e["text"])
+            hub.alive = lambda: False
+            self.assertIn("paused", hub.phone({"page": "home"})["engine"]["text"])
+
+    def test_the_page_keeps_to_its_policy(self):
+        """Nothing from elsewhere, and text is put in as text."""
+        from tern import phone
+        with open(phone.PAGE) as fh:
+            text = fh.read()
+        for no in ("http://", "https://", "innerHTML", "insertAdjacentHTML", "document.write", "eval("):
+            self.assertNotIn(no, text)
 
 
 class Reports(Rig, unittest.TestCase):

@@ -11,7 +11,7 @@ It paper trades from the start and sends no real order until you arm live.
 - **Variants.** Ten built-in versions of the rule run side by side on paper, each with its own record. Make your own from the screen: any of their settings, saved as a new variant.
 - **Reports.** Every variant's record on one screen, live or saved, with a weekly one if you want it.
 - **Runs unattended.** The engine is separate from the screen and can run as a systemd service.
-- **Web screen.** The same screen in a browser, view only.
+- **Web screen.** The same screen in a browser, view only, with pages of their own for phones.
 - **56 color themes.**
 
 ## Quick start
@@ -241,8 +241,9 @@ Requests are signed (Ed25519 or RSA-PSS) in pure Python, checked against openssl
 |---|---|---|
 | everywhere | `1`–`9` `0` `h` `tab` shift+tab | show a box |
 | everywhere | `↑↓` `j` `k` `PgUp` `PgDn` `Home` `End` | move in the box; so does the mouse wheel |
+| everywhere | click | show the tab, press the border's key, highlight the row, use the theme, paper / live in the book; again on a highlighted variant or setting: `enter`. A click that changes something asks `y`. Shift+drag selects text |
 | everywhere | `t` / `T` | next / previous color theme |
-| everywhere | `P` | pause (asks `y`) / start the engine |
+| everywhere | `P` | pause / start the engine (asks `y`) |
 | everywhere | `q` | close the screen; the engine keeps running |
 | spot, contract, ladder | `C` | next coin |
 | spot | `c` | chart span: 5m, 15m, 1h, 24h |
@@ -250,7 +251,7 @@ Requests are signed (Ed25519 or RSA-PSS) in pure Python, checked against openssl
 | book, variants, gate | `L` | live: on with the selected variant, off, or moved to it |
 | variants | `enter` | select the highlighted one |
 | variants | `e` | edit the highlighted one; `s` saves a new variant, `esc` discards |
-| variants | `space` | turn the highlighted one on / off |
+| variants | `space` | turn the highlighted one on / off (asks `y`) |
 | variants | `D` `r` | delete / rename it |
 | reports | `s` | save the one shown |
 | settings | `←→` `enter` | step / type a value |
@@ -331,6 +332,11 @@ Secure, SameSite=Strict cookie. After a new password, restart `tern-web`: every 
 everyone make every sign-in wait. To reach it from another network, allow the port (8787 by default) through
 the host's firewall, and forward it to the host if there is NAT in between.
 
+**Phones** get pages of their own: one at a time, with a menu button at the bottom that lists them (home, spot, ladder,
+book, variants, log, gate, reports, themes). Tap a strike or a variant to open it; hold a chart to read it. They are
+picked by the browser's headers, so tablets and computers get the screen; `full screen` in the menu, and `phone pages`
+on the screen there, switch, and the browser remembers it (`/ui/full`, `/ui/phone`). Behind the same login, view only.
+
 **Settings box (`9`), WEB.** `web screen` turns it on and off, `port` moves it and `open to the
 network` switches between every address and localhost only. tern-web.service runs
 `tern web --config`, which reads those from `config.json`'s `web` section and exits (and stays down)
@@ -369,6 +375,7 @@ because they are rewritten every second.
 | `dash.py` | the curses screen |
 | `themes.py` | the screen's 56 color themes |
 | `web.py`, `web.html` | the same screen in a browser, view only |
+| `phone.py`, `phone.html` | the web screen's phone pages |
 | `webctl.py` | starts, stops and asks about tern-web.service for the settings box's WEB rows |
 | `webauth.py` | tern web's password, sign-in cookie, wrong-guess limits and certificate |
 | `research/` | the study's scripts and write-up |
@@ -386,6 +393,8 @@ The major ones, newest first.
 
 | Date | Change |
 |---|---|
+| 2026-11-24 | **Phone pages:** the web screen gives phones a layout of their own, one page at a time with a menu button. View only. |
+| 2026-11-24 | **Mouse:** the terminal screen takes clicks: tabs, the keys on the borders, rows, settings, themes. Turning a variant on or off and starting the engine ask `y`, and so do clicks that turn live off, change a setting, discard an edit or close the screen. A click no longer holds the screen still until the next key. The web page takes them in the settings and themes boxes too, view only as before. |
 | 2026-11-24 | **Limits are part of a variant:** most at risk, largest order and daily loss limit, on paper and live. Live buys the variant's own contracts a strike (it had a size of its own). The settings box and the editor explain each setting. BNB and HYPE are not traded any more. |
 | 2026-11-23 | **One list of variants.** Profiles, the separate paper book and `w` are gone: `enter` selects the variant the screen shows, `L` goes live with it, `e` there edits one as a new one, `space` turns one on or off and `r` renames one. Every box fills the screen and the others are tabs (`1`–`9`, `0`, `h`, `tab`), the gate, reports, settings, themes and help too; the pages, zooming and the equity box are gone, `P` pauses the engine (was `S`), `C` cycles coins and `V` is the book's paper/live view. The book, gate, settings, help and the variant editor are laid out for the whole screen, and every theme has a color for each box and for the tabs; slate and ledger are new. The log has one entry a slot and an hour. Profiles' own variants move into the list with their records (see Settings). `tern report --profile` and `--profiles` are now `--periods`. |
 | 2026-11-23 | **Cash limit on paper:** no variant, and not the paper book, buys more than the cash it has left. Entries from before could. A variant that is out of cash says so in the variants box. |

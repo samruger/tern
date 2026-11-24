@@ -32,17 +32,13 @@ from urllib.parse import parse_qs
 
 from . import config as cfgmod
 from . import dash
+from . import phone
 from . import webauth
 from .engine import live_dir
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 PAGE = os.path.join(HERE, "web.html")
 
-# keys the page sends by name (KeyboardEvent.key, plus BackTab for shift+tab) -> what curses would give
-NAMED = {"ArrowUp": curses.KEY_UP, "ArrowDown": curses.KEY_DOWN, "ArrowLeft": curses.KEY_LEFT,
-         "ArrowRight": curses.KEY_RIGHT, "PageUp": curses.KEY_PPAGE, "PageDown": curses.KEY_NPAGE,
-         "Home": curses.KEY_HOME, "End": curses.KEY_END, "Tab": 9, "BackTab": curses.KEY_BTAB,
-         "Enter": 10, "Escape": 27, "Backspace": 127}
 # keys that only change what this viewer sees: they reach the screen; everything else stops here
 VIEW_KEYS = set("1234567890hjktTcCVe") | {"Enter", "Escape", "Home", "End", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "PageUp", "PageDown",
                                        "Tab", "BackTab"}
@@ -51,8 +47,6 @@ CONTROL_KEYS = {"q": "quit", "Q": "quit", "P": "engine pause/start", "s": "savin
                 "D": "deleting"}
 # border hints whose key changes something: not drawn on the web (⏎ selects a variant: it only views)
 CONTROL_HINTS = {"r", "L", "P", "q", "space", "D"}
-# what a hint on a border sends when clicked
-HINT_KEY = {"tab": "Tab", "any key": "Escape", "esc": "Escape", "↑↓": None, "←→": None, "⏎": "Enter"}
 
 SESSION_IDLE = 120.0     # seconds without a request before a browser tab's screen is dropped
 VIEW_REFRESH = 10.0      # view-web.json is rewritten at least this often while anyone watches
@@ -135,6 +129,7 @@ def clean_prefs(d) -> dict:
     out = {}
     if not isinstance(d, dict):
         return out
+    d = {k: v for k, v in d.items() if v is None or isinstance(v, str)}   # (a list can't be looked up)
     for k, ok in (("series", cfgmod.SERIES), ("chart", dash.CHARTS)):
         if d.get(k) in ok:
             out[k] = d[k]
@@ -160,8 +155,6 @@ class WebScreen(dash.Screen):
             finally:
                 dash.Pal = real
         self.hub = hub
-        self.hits: list[tuple[int, int, int, str]] = []    # (y, x0, x1, key) of clickable tabs and hints
-        self.rowmap: dict[str, dict[int, str]] = {}         # box -> screen row -> ladder ticker / variant name
         self.apply_prefs(prefs or {})
         self.prefs = self.current_prefs()
 
@@ -217,46 +210,15 @@ class WebScreen(dash.Screen):
         self.raw = self.hub.status()
         self.apply_selected()                    # the variant this viewer selected, as the terminal screen does
 
-    # ------------------------------------------------------------ drawing, with click targets
-    def draw(self) -> None:
-        self.hits, self.rowmap = [], {}
-        super().draw()
-
+    # ------------------------------------------------------------ drawing
     def box(self, y, x, h, w, title, color, right=()) -> None:
         segs = [right] if isinstance(right, str) else list(right)
         segs = [s for s in segs if isinstance(s, str) or not set(s[0::2]) & CONTROL_HINTS and s[:2] not in (("e", "dit"), ("s", "ave"))]   # any key piece
         super().box(y, x, h, w, title, color, segs)
 
-    def tab_seg(self, y, x, i, name, color, lead) -> int:
-        end = super().tab_seg(y, x, i, name, color, lead)
-        self.hits.append((y, x, end, dash.BOX_KEYS[i]))   # a click shows that box, as its key does
-        return end
-
-    def hint(self, y, x, seg, border) -> None:
-        if not isinstance(seg, str):
-            k = HINT_KEY.get(seg[0], seg[0]) or (seg[2] if len(seg) > 2 and not seg[0] else None)   # ("", "rep", "o", "rts")
-            if k:
-                self.hits.append((y, x + 1, x + 1 + sum(map(len, seg)), k))
-        super().hint(y, x, seg, border)
-
-    def ladder_panel(self, y, x, h, w) -> None:
-        super().ladder_panel(y, x, h, w)
-        lad = self.ladder()
-        tickers = [r["t"] for r in lad]
-        if self.sel in tickers:
-            rows = h - 3
-            top = max(0, min(len(lad) - rows, tickers.index(self.sel) - rows // 2))
-            self.rowmap["ladder"] = {y + 2 + j: t for j, t in enumerate(tickers[top:top + rows])}
-
-    def variants_panel(self, y, x, h, w) -> None:
-        super().variants_panel(y, x, h, w)
-        names = [v["name"] for v in self.st.get("variants") or []]
-        if names and self.overlay != "edit":
-            self.rowmap["variants"] = {y + 2 + j: n for j, n in enumerate(names[self.var_top:self.var_top + self.var_rows])}
-
     # ------------------------------------------------------------ input from the page
     def press(self, name: str) -> None:
-        code = NAMED.get(name, ord(name) if len(name) == 1 else None)
+        code = dash.NAMED.get(name, ord(name) if len(name) == 1 else None)
         if code is None:
             return
         if name in VIEW_KEYS or self.tab == "settings" and name in (" ", "+", "-", "="):   # (a setting: send_setting)
@@ -266,27 +228,6 @@ class WebScreen(dash.Screen):
 
     def wheel_at(self, cy: int, cx: int, d: int) -> None:
         self.wheel(cy, cx, d)
-
-    def click(self, cy: int, cx: int) -> None:
-        for y, x0, x1, k in self.hits:
-            if y == cy and x0 <= cx < x1:
-                self.press(k); return
-        if self.tab == "reports":                # a listed report is picked
-            if cx <= dash.REPORT_LIST_W and cy in self.rep_rows:
-                self.pick_report(self.rep_rows[cy])
-            return
-        if self.tab == "help":                   # and a help section
-            if cx <= self.rects["help"][3] and cy in self.help_rows:
-                self.scroll("help", self.help_rows[cy] - self.help_sel)
-            return
-        for name, rows in self.rowmap.items():
-            r = self.rects.get(name)
-            if r and cy in rows and r[1] < cx < r[1] + r[3] - 1:
-                if name == "ladder":
-                    self.sel = rows[cy]; self.write_view()
-                else:
-                    self.var_sel = rows[cy]
-                return
 
     def frame(self, h: int, w: int) -> dict:
         if (h, w) != self.s.getmaxyx():
@@ -389,6 +330,21 @@ class Hub:
             out = scr.frame(h, w)
         self.publish()
         return {"sid": sid, **out}
+
+    def phone(self, req: dict) -> dict:
+        """A phone page's data. `set`: what the viewer just picked (coin, chart, variant, theme, log filter)."""
+        sid, (scr, lock, _) = self.session(req.get("sid"), MIN_H, MIN_W, req.get("prefs"))
+        with lock:
+            if isinstance(req.get("set"), dict):
+                scr.apply_prefs(req["set"])
+                if "variant" in req["set"]:
+                    scr.book_view = None         # its own book, on paper
+                scr.save_prefs()
+            scr.read()
+            out = phone.page(scr, req)
+            scr.prefs = scr.current_prefs()
+        self.publish()
+        return {"sid": sid, "prefs": scr.prefs, **out}
 
 
 # ---------------------------------------------------------------- the page's look: foot's colors and font
@@ -563,6 +519,7 @@ def serve(runtime: str = cfgmod.RUNTIME, host: str = "127.0.0.1", port: int = 87
     look = {**_foot_colors(), "attr": {"bold": curses.A_BOLD, "dim": curses.A_DIM, "reverse": curses.A_REVERSE}}
     fonts = _font_files()
     look["fonts"] = sorted(fonts)
+    look["login"] = auth is not None
 
     class H(BaseHTTPRequestHandler):
         server_version = "tern-web"
@@ -597,16 +554,24 @@ def serve(runtime: str = cfgmod.RUNTIME, host: str = "127.0.0.1", port: int = 87
             return (f"{cookie_name}={value}; Max-Age={age}; Path=/; HttpOnly; SameSite=Strict"
                     + ("; Secure" if tls else ""))
 
-        def signed_in(self) -> bool:
-            if auth is None:
-                return True
+        def cookie_value(self, name: str) -> str | None:
             jar = SimpleCookie()
             try:
                 jar.load(self.headers.get("Cookie") or "")
             except CookieError:
-                return False
-            m = jar.get(cookie_name)
-            return bool(m) and auth.valid(m.value)
+                return None
+            return jar[name].value if name in jar else None
+
+        def signed_in(self) -> bool:
+            if auth is None:
+                return True
+            value = self.cookie_value(cookie_name)
+            return value is not None and auth.valid(value)
+
+        def ui(self) -> str:
+            """Which page this browser gets: the one it chose, else a phone's to phones."""
+            chose = self.cookie_value(phone.UI_COOKIE)
+            return chose if chose in phone.UI else "phone" if phone.is_phone(self.headers) else "full"
 
         def login_page(self, msg: str = "", code: int = 200) -> None:
             self.reply(code, LOGIN_PAGE.replace("{source}", html.escape(SOURCE)).replace("{msg}", html.escape(msg)).encode(), "text/html; charset=utf-8")
@@ -620,8 +585,10 @@ def serve(runtime: str = cfgmod.RUNTIME, host: str = "127.0.0.1", port: int = 87
             if not self.signed_in():
                 return self.redirect("/login") if path == "/" else self.reply(401, b"sign in", "text/plain")
             if path == "/":
-                with open(PAGE, "rb") as fh:
-                    self.reply(200, fh.read(), "text/html; charset=utf-8")
+                with open(phone.PAGE if self.ui() == "phone" else PAGE, "rb") as fh:
+                    self.reply(200, fh.read(), "text/html; charset=utf-8", extra={"Vary": "User-Agent, Sec-CH-UA-Mobile, Cookie"})
+            elif path.startswith("/ui/") and path[4:] in phone.UI:   # the other one, from now on
+                self.redirect("/", f"{phone.UI_COOKIE}={path[4:]}; Max-Age=31536000; Path=/; HttpOnly; SameSite=Strict" + ("; Secure" if tls else ""))
             elif path == "/look":
                 self.reply(200, json.dumps(look).encode(), "application/json")
             elif path.startswith("/font/") and path[6:] in fonts:
@@ -661,7 +628,7 @@ def serve(runtime: str = cfgmod.RUNTIME, host: str = "127.0.0.1", port: int = 87
                 return self.reply(413, b"too big", "text/plain")
             if self.path == "/login" and auth is not None:
                 return self.do_login(data)
-            if self.path != "/frame":
+            if self.path not in ("/frame", "/phone"):
                 return self.reply(404, b"not found", "text/plain")
             if not self.signed_in():
                 return self.reply(401, b"sign in", "text/plain")
@@ -669,7 +636,7 @@ def serve(runtime: str = cfgmod.RUNTIME, host: str = "127.0.0.1", port: int = 87
                 req = json.loads(data or b"{}")
                 if not isinstance(req, dict):
                     raise ValueError("not an object")
-                body = json.dumps(hub.handle(req), separators=(",", ":"), ensure_ascii=False).encode()
+                body = json.dumps((hub.phone if self.path == "/phone" else hub.handle)(req), separators=(",", ":"), ensure_ascii=False).encode()
             except (ValueError, TypeError) as ex:
                 return self.reply(400, str(ex).encode(), "text/plain")
             except Exception:
