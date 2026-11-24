@@ -72,12 +72,17 @@ line is always at the bottom.
 | Box | What it shows |
 |---|---|
 | status line | paper/live, the variant selected, spot and 1-hour change, the event and its countdown, the rule's next slot, engine health |
-| ¹ spot | Coinbase spot (a BRTI constituent), over 5 minutes, 15 minutes, 1 hour or 24 hours (`c`), with the selected strike as a dotted line |
+| ¹ spot | Coinbase spot (a BRTI constituent), over 5 minutes, 15 minutes, 1 hour or 24 hours (`c`), with its change, high and low, and the selected strike as a dotted line |
 | ² contract | the selected strike's YES price this hour, seeded from Kalshi's minute candles, with the rule's band edges marked |
 | ³ ladder | every strike, high to low: bid, ask, probability bar, spread, volume, your position. ★ marks strikes in the rule's band |
-| ⁴ book | the selected variant's equity, P&L, cash, at risk, fees, record and open positions. `V` switches between paper and live |
-| ⁶ log | what the engine did |
+| ⁴ book | the selected variant's money and record, its open positions, and beside them what settled and was filled. `V` switches between paper and live |
 | ⁵ variants | each variant's record and gate progress, ● on the one selected, L on the one live trades, + on the ones you made, and the highlighted one's P&L by hour |
+| ⁶ log | what the engine did |
+| ⁷ gate | what the selected variant still needs to go live, the live caps, and every variant side by side |
+| ⁸ reports | every record: worked out now, or saved |
+| ⁹ settings | the settings, and what the one picked does |
+| ⁰ themes | the color themes |
+| help | how it works, the boxes and the keys, by section |
 
 ## Variants
 
@@ -107,7 +112,7 @@ A variant holds everything about how it trades: band, slots, max spread, coins, 
 volatility, contracts a strike, most an hour and paper start. Once saved it never changes, so a record always
 belongs to one set of settings. The ones you make are marked `+` in the variants box.
 
-- **`e` edits the highlighted one**, built in or your own: its settings open as a draft. Change as many as you like; nothing is sent yet, and a changed one shows as `19 → 10 *`.
+- **`e` edits the highlighted one**, built in or your own: its settings open as a draft in the variants box, with the changes so far beside them. Change as many as you like; nothing is sent yet, and a changed one shows as `19 → 10 *`.
 - **`s` there saves the draft as a new variant**, under a name you type, with an empty record. The one it came from
   stays as it is, with its record. `esc` throws the draft away.
 - **`space` turns one off or on**, built in or your own. Off, it takes no new entries, open ones settle, and the hours
@@ -203,7 +208,7 @@ turn it off), and `L` with live's own selected turns it off. Once live:
 
 <img width="1364" height="668" alt="The log: paper settlements and each variant's running record" src="docs/screenshots/06-log-shadow.png" />
 
-The gate box (`7`) shows the checks, the variants and the live caps. Here it has been set stricter than
+The gate box (`7`) shows how far each check has come, the live caps and the variants. Here it has been set stricter than
 the defaults, to 1000 entries and $100:
 
 <img width="1364" height="668" alt="The gate box" src="docs/screenshots/07-gate.png" />
@@ -234,6 +239,7 @@ Requests are signed (Ed25519 or RSA-PSS) in pure Python, checked against openssl
 | `↑↓` `j` `k` `PgUp` `PgDn` | move in the box; so does the mouse wheel |
 | `C` | next coin |
 | `c` | chart span: 5m, 15m, 1h, 24h |
+| `t` / `T` | next / previous color theme, on any screen |
 | `↑↓` `←→` | themes: pick one; settings: pick and step |
 | `V` | paper / live book |
 | `enter` | select the highlighted variant |
@@ -268,7 +274,8 @@ systemctl --user enable --now tern-save-report.timer
 
 ## Themes
 
-The themes box (`0`) lists 54 color themes; `↑↓` and `←→` pick one. Full color needs a 256-color terminal. Sunset and mint chip:
+The themes box (`0`) lists 54 color themes; `↑↓` and `←→` pick one. `t` and `T` step through them
+on any screen. Full color needs a 256-color terminal. Sunset and mint chip:
 
 <img width="1364" height="668" alt="The themes box" src="docs/screenshots/14-themes.png" />
 
@@ -281,7 +288,7 @@ The themes box (`0`) lists 54 color themes; `↑↓` and `←→` pick one. Full
 `tern web` serves the screen at http://localhost:8787/ (`--port` to move it). It is not a copy of the
 screen: each browser tab runs the real screen code on a virtual terminal, and the page paints its cells
 with the colors and font from foot's config if there is one, or a built-in set. So it looks and behaves the same: the tabs, `c`
-chart span, `C` coins, `V` paper/live, `enter` selects a variant (for that browser),
+chart span, `C` coins, `t`/`T` themes, `V` paper/live, `enter` selects a variant (for that browser),
 themes, `↑↓ ←→` and the wheel. Clicking a tab, a key on a box's border, or a ladder or variant row
 does what the key would; on a phone, drag to scroll.
 
@@ -371,7 +378,7 @@ The major ones, newest first.
 
 | Date | Change |
 |---|---|
-| 2026-11-23 | **One list of variants.** Profiles, the separate paper book and `w` are gone: `enter` selects the variant the screen shows, `L` goes live with it, `e` there edits one as a new one, `space` turns one on or off and `r` renames one. Every box fills the screen and the others are tabs (`1`–`9`, `0`, `h`, `tab`), the gate, reports, settings, themes and help too; the pages, zooming and the equity box are gone, `P` pauses the engine (was `S`), `C` cycles coins and `V` is the book's paper/live view. Profiles' own variants move into the list with their records (see Settings). `tern report --profile` and `--profiles` are now `--periods`. |
+| 2026-11-23 | **One list of variants.** Profiles, the separate paper book and `w` are gone: `enter` selects the variant the screen shows, `L` goes live with it, `e` there edits one as a new one, `space` turns one on or off and `r` renames one. Every box fills the screen and the others are tabs (`1`–`9`, `0`, `h`, `tab`), the gate, reports, settings, themes and help too; the pages, zooming and the equity box are gone, `P` pauses the engine (was `S`), `C` cycles coins and `V` is the book's paper/live view. The book, gate, settings, help and the variant editor are laid out for the whole screen, and every theme has a color for each box and for the tabs. Profiles' own variants move into the list with their records (see Settings). `tern report --profile` and `--profiles` are now `--periods`. |
 | 2026-11-23 | **Cash limit on paper:** no variant, and not the paper book, buys more than the cash it has left. Entries from before could. A variant that is out of cash says so in the variants box. |
 | 2026-11-23 | **Variants hold every trading setting**, contracts a strike, most an hour and paper start too. `E` opens them as a draft and `s` saves it as a new variant; a saved one never changes, and only `enter` changes what trades. Settings (`e`) has the profile and the desk only, the same under every profile. `n` in the variants box, and the rule, paper and "book trades" rows in settings, are gone. Variants saved before keep their profile's size. |
 | 2026-11-23 | **AGPL license** (version 3 or later). It was MIT, then briefly the GPL; copies from then stay under those. |

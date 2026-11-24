@@ -29,7 +29,7 @@ SLOT_CHOICES = (30, 25, 20, 15, 10, 5)           # minutes before the close a ru
 RULE_SETTINGS = [
     Setting("rule", "band_lo", "band low", 0.50, 0.98, 0.01, kind="p", group="RULE",
             what="the favorite's mid must be at least this"),
-    Setting("rule", "band_hi", "band high", 0.51, 0.99, 0.01, kind="p", what="... and below this"),
+    Setting("rule", "band_hi", "band high", 0.51, 0.99, 0.01, kind="p", what="the favorite's mid must be below this"),
     Setting("rule", "minutes", "slots", kind="slots",
             what="minutes before the close the rule enters at; at least one stays on"),
     Setting("rule", "max_spread", "max spread", 0.01, 0.10, 0.01, kind="p",

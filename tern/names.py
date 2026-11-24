@@ -32,7 +32,7 @@ BASE_RULE = [
     Setting("strategy", "band_lo", "band low", 0.50, 0.98, 0.01, kind="p", group="RULE",
             what="the favorite's mid must be at least this (a variant with its own band keeps it)"),
     Setting("strategy", "band_hi", "band high", 0.51, 0.99, 0.01, kind="p",
-            what="... and below this"),
+            what="the favorite's mid must be below this"),
     Setting("strategy", "minutes", "slots", kind="slots",
             what="minutes before the close the rule enters at; at least one stays on"),
     Setting("strategy", "max_spread", "max spread", 0.01, 0.10, 0.01, kind="p",

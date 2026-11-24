@@ -1129,9 +1129,9 @@ class Shadows(unittest.TestCase):
         self.assertIn("{variants}", prose); self.assertIn("{retired}", prose)
         for name in list(shadow.VARIANTS) + list(shadow.RETIRED):
             self.assertNotIn(f"  {name} ", prose)
-        s = dash.Screen.__new__(dash.Screen)                               # help_lines needs only these
-        s.st, s.raw, s.variant, s.P = {}, {}, None, type("P", (), {"__call__": lambda *a, **k: 0, "c": lambda *a: 0, "grey": 0})()
-        text = "\n".join(l if isinstance(l, str) else "".join(t for t, _ in l) for l in s.help_lines(120))
+        s = dash.Screen.__new__(dash.Screen)                               # help_sections needs only these
+        s.st, s.raw, s.variant, s.P = {}, {}, None, type("P", (), {"__call__": lambda *a, **k: 0, "c": lambda *a: 0, "border": lambda *a: 0, "grey": 0, "many": False})()
+        text = "\n".join(l if isinstance(l, str) else "".join(t for t, _ in l) for _, ls in s.help_sections(120) for l in ls)
         for name, desc in list(shadow.DESC.items()) + list(shadow.RETIRED.items()):
             self.assertIn(f"{name:<8} {desc}", text)
 
@@ -1372,8 +1372,8 @@ class SettingsBox(Rig, unittest.TestCase):
             text = lambda: "\n".join("".join(r) for r in scr.s.ch)
             scr.set_sel = [r.key for r in scr.set_rows()].index("web.port"); scr.draw()
             self.assertIn("▸ port", text())
-            self.assertIn("web screen now: running · http", text())
-            self.assertIn("sudo ufw allow PORT/tcp", text())               # its description, pinned below
+            self.assertIn("web screen now", text()); self.assertIn("running", text()); self.assertIn("http", text())
+            self.assertIn("sudo ufw allow PORT/tcp", " ".join(" ".join(l.split("│")[2] for l in text().splitlines() if l.count("│") == 3).split()))   # its description, beside it
             scr.set_sel = 0; scr.draw()
             self.assertIn("▸ most at risk at once", text())
             self.assertNotIn("web screen now", text())
@@ -1432,20 +1432,21 @@ class Tabs(Rig, unittest.TestCase):
                 self.assertEqual(scr.tab, name)
                 self.assertTrue(all(r[1] + r[3] <= 120 and r[0] + r[2] <= 39 for r in scr.rects.values()))
                 top, _ = self.rows()
-                for other, sup in zip(dash.BOXES, dash.SUPER + " "):            # every box has a tab, whichever is shown
+                for other, sup in zip(dash.BOXES, [*dash.SUPER, ""]):           # every box has a tab, whichever is shown
                     self.assertIn(f"{sup}{other} ", top)
-                at = [top.index(f" {name} ") if name == "help" else top.index(name) for name in dash.BOXES]
+                at = [top.index("help") - 1 if name == "help" else top.index(name) for name in dash.BOXES]
                 self.assertEqual(at, sorted(at))
                 lit = {n for n, x in zip(dash.BOXES, at) if scr.s.at[0][x + 1] & self.curses.A_REVERSE}
                 self.assertEqual(lit, {name})                                   # the one on screen is the bright one
-                dark = [(scr.s.at[0][x + 1] >> 9) & 0x1FF for n, x in zip(dash.BOXES, at) if n != name]
-                self.assertTrue(all(b - 1 in dash.TAB_BG for b in dark))         # the others are filled too
+                dark = {(scr.s.at[0][x + 1] >> 9) & 0x1FF for n, x in zip(dash.BOXES, at) if n != name}
+                self.assertEqual(dark, {scr.P.t["fill"] + 1})                    # the others all on one fill
+                self.assertEqual(top.count("▏"), len(dash.BOXES) - 1)            # with a line to the left of each
             seen = []
             for key in (9, 9, self.curses.KEY_BTAB, self.curses.KEY_BTAB, self.curses.KEY_BTAB):
                 self.press(key); seen.append(scr.tab)
             self.assertEqual(seen, ["spot", "contract", "spot", "help", "themes"])   # tab wraps, shift+tab goes back
             self.press("5")
-            self.press("v", "p", "n", "N", "R", "g", "o", "s", "t", "T", "?", 27, 260, 261)   # nothing there any more
+            self.press("v", "p", "n", "N", "R", "g", "o", "s", "?", 27, 260, 261)   # nothing there any more
             self.assertEqual((scr.tab, scr.overlay, scr.modal, self.cmds()), ("variants", None, None, []))
 
     def test_tabs_fit_the_smallest_screen(self):
@@ -1458,7 +1459,7 @@ class Tabs(Rig, unittest.TestCase):
                     self.press(key)
                     top = self.rows()[0]
                     self.assertTrue(top.endswith("╮") and top.startswith("╭"), (W, top))
-                    self.assertIn(" help ", top)
+                    self.assertIn("help ", top)
 
     def test_each_box_has_its_keys_below_and_the_log_the_rest(self):
         with tempfile.TemporaryDirectory() as d:
@@ -1490,18 +1491,100 @@ class Tabs(Rig, unittest.TestCase):
             k, scr = self.setup(d, 30, 100)
             for _ in range(12):                                                 # the gate lists every variant
                 self.new(k)
-            for key in "7h":
+            c = self.curses
+            for key, down, up in (("7", c.KEY_DOWN, c.KEY_UP), ("h", c.KEY_NPAGE, c.KEY_PPAGE)):
                 self.press(key)
-                first = self.text().splitlines()[1]
+                if key == "h":
+                    self.press(c.KEY_DOWN)                                      # the variants: more than fits
+                    self.assertIn("VARIANTS", self.text()); self.assertNotIn("ABOUT", self.text())
+                first = self.text().splitlines()[1:8]
                 self.assertRegex(self.rows()[1], r" 1-\d+ of \d+ ")
-                self.press(self.curses.KEY_DOWN)
-                self.assertNotEqual(self.text().splitlines()[1], first)
-                self.press(self.curses.KEY_END, self.curses.KEY_DOWN); end = self.text()
+                self.press(down)
+                self.assertNotEqual(self.text().splitlines()[1:8], first)
+                self.press(c.KEY_END, down); end = self.text()
                 self.assertNotIn("▼", end)
-                self.press(self.curses.KEY_UP)                                  # no slack built up past the end
+                self.press(up)                                                  # no slack built up past the end
                 self.assertNotEqual(self.text(), end)
-                self.press(self.curses.KEY_HOME)
-                self.assertEqual(self.text().splitlines()[1], first)
+                self.press(c.KEY_HOME)
+                self.assertEqual(self.text().splitlines()[1:8], first)
+            for _ in range(9):
+                self.press(c.KEY_DOWN)                                          # stops at the last section
+            self.assertIn("COMMANDS", self.text()); self.assertIn("tern live-check", self.text())
+
+    def test_every_help_section_draws_at_every_size(self):
+        with tempfile.TemporaryDirectory() as d:
+            k, scr = self.setup(d, 30, 100)
+            for H, W in ((30, 100), (31, 104), (44, 160), (60, 240)):
+                self.size(H, W); self.press("h", self.curses.KEY_HOME)
+                for j, (title, _) in enumerate(scr.help_sections(W - 22)):
+                    scr.help_sel = j; scr.draw()
+                    self.assertIn(title, self.text())
+                    for r in scr.s.ch[1:H - 2]:                                  # nothing runs past the box
+                        self.assertIn("".join(r)[-1], "│")
+
+
+    def test_t_steps_the_theme_on_every_box(self):
+        from tern import dash, themes
+        with tempfile.TemporaryDirectory() as d:
+            k, scr = self.setup(d, 31, 104)
+            for key in dash.BOX_KEYS:
+                self.press(key); at = themes.NAMES.index(scr.P.name)
+                self.press("t"); self.assertEqual(scr.P.name, themes.NAMES[at + 1], key)
+                self.press("t", "T"); self.assertEqual((scr.P.name, scr.tab), (themes.NAMES[at + 1], dash.BOXES[dash.BOX_KEYS.index(key)]))
+            at = scr.P.name
+            self.press("5", "e", "t")                                           # while editing a variant too
+            self.assertNotEqual(scr.P.name, at); self.assertEqual((scr.overlay, self.cmds()), ("edit", []))
+            at = scr.P.name
+            self.press("s", "t"); self.assertEqual((scr.modal["buf"], scr.P.name), ("t", at))   # not while typing a name
+            self.press(27, 27, "9", 10, "t"); self.assertEqual(scr.P.name, at)  # or a value
+            self.press(27, "6"); self.assertIn(f"─theme {scr.P.name}─", self.rows()[1])
+
+    def test_every_box_draws_in_8_colors(self):
+        from tern import dash
+        with tempfile.TemporaryDirectory() as d:
+            k, scr = self.setup(d, 30, 100)
+            scr.P.many = False
+            for key in dash.BOX_KEYS:
+                self.press(key)
+                top = self.rows()[0]
+                self.assertEqual(top.count("│"), len(dash.BOXES) - 1, key)      # a plain line between the tabs
+            self.press("5", "e")
+            self.assertIn("CHANGES", self.text())
+
+    def test_the_palettes_are_kept_apart(self):
+        with tempfile.TemporaryDirectory() as d:
+            for H, W in ((30, 100), (31, 104), (44, 160)):
+                k, scr = self.setup(d, H, W)
+                self.press("0")
+                got = [r for r, row in enumerate(scr.s.ch) if "█" in row]
+                self.assertEqual(len(got), 14)
+                self.assertTrue(all(b - a == 2 for a, b in zip(got, got[1:])))   # a blank line between
+                for r in got:
+                    self.assertNotIn("█▸", "".join(scr.s.ch[r]))
+
+    def test_the_book_is_side_by_side(self):
+        import time
+        with tempfile.TemporaryDirectory() as d:
+            k, scr = self.setup(d, 30, 100)
+            now = time.time()
+            k.trades = None
+            self.sync(); scr.raw = dict(scr.raw)
+            book = {"equity": 5100.0, "start": 5000.0, "cash": 4900.0, "at_risk": 200.0, "fees": 3.5,
+                    "pos": [{"t": "KXHYPED-E-T64.2499", "k": 64.2499, "q": -25, "avg": 0.94, "mark": 0.99, "pnl": 1.25, "close": now + 3000}] * 30,
+                    "trades": [{"kind": "fill", "ticker": "KXETHD-E-T1689.99", "delta": 5, "price": 0.8, "fee": 0.06, "realized": 0, "ts": now},
+                               {"kind": "settle", "ticker": "KXETHD-E-T1689.99", "delta": -5, "result": "yes", "realized": 1.0, "ts": now}]}
+            st = {**scr.st, "paper": book, "mode": "paper"}
+            scr.st = st; scr.tab = "book"; scr.draw()
+            text = self.text()
+            row = next(l for l in text.splitlines() if "OPEN 30" in l)
+            self.assertLess(row.index("OPEN 30"), row.index("SETTLED"))
+            for want in ("$5,100.00", "+$100.00 +2.00%", "$4,900.00", "$200.00", "$3.50"):
+                self.assertIn(want, text)
+            self.assertRegex(text, r"HYPE +64\.25 NO +25 +94\.0 +99\.0 +\+\$1\.25")
+            self.assertRegex(text, r"ETH +1,690 YES +5 +won +\+\$1\.00"); self.assertRegex(text, r"ETH +1,690 YES +5 +80 +\$0\.06")
+            self.assertIn("▼", text)
+            scr.scroll("book", 10 ** 6); scr.draw()
+            self.assertNotIn("▼", self.text()); self.assertIn("▲", self.text())
 
     def test_the_themes_box_picks_as_it_moves(self):
         import json
@@ -1652,7 +1735,7 @@ class Tabs(Rig, unittest.TestCase):
             self.assertEqual(rows[0][:4], (1.0, "info", "shadow: KXETHD-E1 settled", 0))
             self.assertEqual([r[3] for r in rows], [0, 1, 2, 3, 0])             # 3 a row: 10 variants in 4 rows
             self.assertEqual([len(r[4]) for r in rows[:4]], [3, 3, 3, 1])
-            self.assertEqual({len(r[4]) for r in scr.log_rows([[1.0, "info", line]], 400)}, {3, 1})   # 3 however wide
+            self.assertEqual({len(r[4]) for r in scr.log_rows([[1.0, "info", line]], 400)}, {8, 2})   # a wider screen holds more
             self.assertEqual(rows[0][4][1], ("high favs ", "   +98.04"))       # display names, P&L right-aligned
             self.assertEqual(rows[-1][2:5], ("shadow: odd line · no cells", 0, None))   # not the shape: as it is
             text = self.text()
@@ -1943,7 +2026,8 @@ class ScreenVariants(Rig, unittest.TestCase):
             self.assertIsNone(scr.overlay); self.assertIn("5 shows them", scr.flash)
             self.press("5", "e")
             self.assertEqual((scr.overlay, scr.edit_var), ("edit", "band90"))
-            self.assertIn("edit band90", self.text())
+            self.assertIn("RULE  band90", self.text()); self.assertIn("─save as new─", self.text())
+            self.assertNotIn("┤save", self.text()); self.assertIn("⁵variants", self.text())
             self.press(self.curses.KEY_RIGHT, "s", *"mine", 10); self.run_cmds()
             self.assertEqual((k.shadow.own.rule("mine")["band_lo"], k.shadow.own.all["mine"]["from"]), (0.91, "band90"))
             scr.var_sel = "mine"; self.press("e")                              # one of your own too
@@ -2011,7 +2095,7 @@ class ScreenVariants(Rig, unittest.TestCase):
             k._command({"op": "variant_new", "from": "base", "name": "mine", "rule": {"band_lo": 0.69, "band_hi": 0.83, "cap": 1,
                                                                                       "contracts": 7, "paper_capital": 300}})
             scr.variant = "mine"; self.sync()
-            text = " ".join(" ".join(l if isinstance(l, str) else "".join(t for t, _ in l) for l in scr.help_lines(120)).split())
+            text = " ".join(" ".join(l if isinstance(l, str) else "".join(t for t, _ in l) for _, ls in scr.help_sections(120) for l in ls).split())
             for want in ("With mine, the variant selected", "mid is 69-83c", "1 a strike an hour", "the base rule (75-95c",
                          "7 contracts a strike", "mine starts with $300", "edit the highlighted one's settings", "marked +", "tern report --periods"):
                 self.assertIn(want, text)
@@ -2462,7 +2546,7 @@ class OneList(Rig, unittest.TestCase):
             self.press("4")
             self.assertIn("wide on paper", self.text())
             self.press("7")
-            self.assertIn("wide trades live only when every one passes", self.text())
+            self.assertIn("PAPER CHECKS   for wide", self.text())
             import json
             with open(os.path.join(d, "dash.json")) as fh:
                 self.assertEqual(json.load(fh)["variant"], "wide")             # the screen remembers it
@@ -3015,7 +3099,7 @@ class Web(unittest.TestCase):
             for k in ("9", "ArrowUp", "ArrowRight"):                           # the last row: log shows
                 f = hub.handle({"sid": sid, "w": 120, "h": 40, "key": k})
             self.assertEqual(f["prefs"]["log_filter"], "no_shadow")
-            self.assertIn("saved at once", "\n".join("".join(t for t, _ in r) for r in f["rows"]))
+            self.assertIn("Saved at once", "\n".join("".join(t for t, _ in r) for r in f["rows"]))
             self.assertEqual(os.listdir(os.path.join(d, "cmd")), [])
             self.assertFalse(os.path.exists(os.path.join(d, "dash.json")))
             f = hub.handle({"w": 120, "h": 40, "prefs": {"log_filter": "trades"}})   # a reload brings it back
@@ -3352,7 +3436,7 @@ class Reports(Rig, unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             k, scr = self.setup(d)
             self.assertIn("⁸reports", self.text())
-            text = "\n".join(l if isinstance(l, str) else "".join(t for t, _ in l) for l in scr.help_lines(200))
+            text = "\n".join(l if isinstance(l, str) else "".join(t for t, _ in l) for _, ls in scr.help_sections(200) for l in ls)
             self.assertIn("every record: worked out now, or saved", text)
 
 
@@ -3469,6 +3553,49 @@ class WebLogin(unittest.TestCase):
                 ts = [threading.Thread(target=guess) for _ in range(12)]
                 [t.start() for t in ts]; [t.join() for t in ts]
                 self.assertEqual(sorted(wrong).count(401), webauth.PER_IP)       # the right password cleared the earlier one
+
+
+class Themes(unittest.TestCase):
+    """Every theme has every role, a color for every box, and text that can be read where it is drawn."""
+
+    def test_every_theme_has_every_role(self):
+        from tern import dash, themes
+        roles = set(themes.THEMES["classic"])
+        for name, t in themes.THEMES.items():
+            self.assertEqual(set(t), roles, name)
+            self.assertEqual(list(t["border"]), dash.BOXES, name)
+            self.assertEqual(set(t["grads"]), {"spot", "yes", "eq_up", "eq_dn"}, name)
+        self.assertEqual(set(dash.FEW_BORDER), set(dash.BOXES))
+
+    def test_tabs_can_be_read_and_told_apart(self):
+        from tern import themes
+        for name, t in themes.THEMES.items():
+            colors = [c for c in t["border"].values() if c > 15]
+            self.assertTrue(all(themes.contrast(c, themes.BACK) >= 3 for c in colors), name)   # dark text on the bright tab
+            self.assertGreaterEqual(themes.contrast(t["tab"], t["fill"]) if t["tab"] > 15 else 9, 4, name)
+            self.assertGreaterEqual(themes.distance(t["fill"], themes.BACK), 8, name)           # a tab is not the background
+            for a, b in zip(colors, colors[1:]):
+                self.assertNotEqual(a, b, name)                                                 # nor the one next to it
+
+    def test_readable_only_moves_what_needs_it(self):
+        from tern import themes
+        self.assertEqual(themes.readable(231, 17), 231)
+        self.assertEqual(themes.readable(7, 237), 7)                           # the terminal's own colors: left alone
+        for name, t in themes.THEMES.items():
+            for c in t["rows"] + [t["key"], t["variant"], t["grey"]]:
+                if c > 15:
+                    self.assertGreaterEqual(themes.contrast(themes.readable(c, t["fill"]), t["fill"]), 4.0, (name, c))
+
+    def test_smooth_keeps_the_steps_and_their_order(self):
+        from tern import themes
+        for name, t in themes.THEMES.items():
+            for ramp in [*t["grads"].values(), t["rows"]]:
+                out = themes.smooth(tuple(ramp))
+                it = iter(out)
+                self.assertTrue(all(any(c == o for o in it) for c in ramp), name)   # the theme's own, in order
+                self.assertLess(len(out), 4 * len(ramp), name)
+            self.assertGreaterEqual(len(themes.visible(tuple(t["grads"]["spot"]))), 3, name)
+        self.assertGreater(len(themes.smooth((17, 231))), 2)
 
 
 if __name__ == "__main__":

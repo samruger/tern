@@ -44,7 +44,7 @@ NAMED = {"ArrowUp": curses.KEY_UP, "ArrowDown": curses.KEY_DOWN, "ArrowLeft": cu
          "Home": curses.KEY_HOME, "End": curses.KEY_END, "Tab": 9, "BackTab": curses.KEY_BTAB,
          "Enter": 10, "Escape": 27, "Backspace": 127}
 # keys that only change what this viewer sees: they reach the screen; everything else stops here
-VIEW_KEYS = set("1234567890hjkcCVe") | {"Enter", "Escape", "Home", "End", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "PageUp", "PageDown",
+VIEW_KEYS = set("1234567890hjktTcCVe") | {"Enter", "Escape", "Home", "End", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "PageUp", "PageDown",
                                        "Tab", "BackTab"}
 CONTROL_KEYS = {"q": "quit", "Q": "quit", "P": "engine pause/start", "s": "saving a report", "L": "live",
                 "r": "renaming", " ": "turning a variant on or off",
@@ -209,15 +209,8 @@ class WebScreen(dash.Screen):
     def engine_key(self) -> None:                # reached from the reports (o): elsewhere press() stops it
         self.say("view only: engine start/stop is done from the screen in the terminal")
 
-    def settings_lines(self) -> list:
-        out = super().settings_lines()
-        if self.set_rows()[self.set_sel].key == "screen.log":
-            return out                           # this row really is saved at once
-        for line in out:                         # its "saved at once" hints don't hold here
-            if isinstance(line, list) and len(line) == 1 and "saved at once" in line[0][0]:
-                t = line[0][0]
-                line[0] = (t.replace("saved at once", "view only here").ljust(len(t)), line[0][1])
-        return out
+    def saves_here(self, row) -> bool:
+        return row.key == "screen.log"
 
     def read(self) -> None:
         self.alive, self.alive_at = self.hub.alive(), time.time()
@@ -234,8 +227,8 @@ class WebScreen(dash.Screen):
         segs = [s for s in segs if isinstance(s, str) or not set(s[0::2]) & CONTROL_HINTS and s[:2] not in (("e", "dit"), ("s", "ave"))]   # any key piece
         super().box(y, x, h, w, title, color, segs)
 
-    def tab_seg(self, y, x, i, name, color, gap) -> int:
-        end = super().tab_seg(y, x, i, name, color, gap)
+    def tab_seg(self, y, x, i, name, color) -> int:
+        end = super().tab_seg(y, x, i, name, color)
         self.hits.append((y, x, end, dash.BOX_KEYS[i]))   # a click shows that box, as its key does
         return end
 
@@ -282,6 +275,10 @@ class WebScreen(dash.Screen):
         if self.tab == "reports":                # a listed report is picked
             if cx <= dash.REPORT_LIST_W and cy in self.rep_rows:
                 self.pick_report(self.rep_rows[cy])
+            return
+        if self.tab == "help":                   # and a help section
+            if cx <= self.rects["help"][3] and cy in self.help_rows:
+                self.scroll("help", self.help_rows[cy] - self.help_sel)
             return
         for name, rows in self.rowmap.items():
             r = self.rects.get(name)

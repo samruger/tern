@@ -34,7 +34,8 @@ FEW = {"grey": WHITE, "key": MAGENTA, "head": WHITE, "sym": CYAN, "event": BLUE,
        "word_a": WHITE, "word_b": WHITE, "word_c": WHITE, "ticker": CYAN, "strike": YELLOW, "slot": YELLOW,
        "verb": MAGENTA, "variant": CYAN, "phrase": YELLOW, "sep": MAGENTA, "value": WHITE,
        "rows": WHITE, "fade_txt": WHITE, "fade_ts": BLUE}
-FEW_BORDER = {"spot": CYAN, "contract": MAGENTA, "ladder": BLUE, "book": YELLOW, "log": BLUE}
+FEW_BORDER = {"spot": CYAN, "contract": MAGENTA, "ladder": BLUE, "book": YELLOW, "variants": GREEN, "log": BLUE,
+              "gate": RED, "reports": CYAN, "settings": MAGENTA, "themes": YELLOW, "help": GREEN}
 GRAD8 = {"spot": [BLUE, CYAN], "yes": [GREEN, YELLOW, RED], "eq_up": [GREEN], "eq_dn": [RED]}
 
 
@@ -72,10 +73,11 @@ class Pal:
         return a
 
     def on(self, fg: int, bg: int, bold: bool = False) -> int:
-        """fg on a background of its own (the tabs). 8 colors have no dark one to spare: no background there."""
+        """fg, or the nearest color readable there, on a background of its own. 8 colors have no dark one to spare: no
+        background there."""
         if not self.many:
             return self(fg, bold=bold)
-        fg = self.t["base"].get(fg, fg)
+        fg = themes.readable(self.t["base"].get(fg, fg), bg)
         if (fg, bg) not in self.cache:
             n = len(self.cache) + 1
             if n >= curses.COLOR_PAIRS:
@@ -83,6 +85,14 @@ class Pal:
             curses.init_pair(n, fg, bg)
             self.cache[fg, bg] = curses.color_pair(n)
         return self.cache[fg, bg] | (curses.A_BOLD if bold else 0)
+
+    def row(self, on: bool):
+        """What draws a list's row: as P(fg, bold), and on the theme's fill if it is the highlighted one."""
+        if not on:
+            return self
+        if not self.many:
+            return lambda fg, bold=False: self(fg, bold=bold) | curses.A_REVERSE
+        return lambda fg, bold=False: self.on(fg, self.t["fill"], bold)
 
     def c(self, role: str) -> int:
         """The theme's color for a role (see themes.py)."""
@@ -95,11 +105,12 @@ class Pal:
         """A color from a theme scale (rows, fade_txt, fade_ts) at 0..1 along it."""
         if not self.many:
             return FEW[role]
-        scale = self.t[role][::-1] if reverse else self.t[role]
-        return scale[max(0, min(len(scale) - 1, int(frac * (len(scale) - 1) + 0.5)))]
+        scale = themes.smooth(tuple(self.t[role]))[::-1 if reverse else 1]
+        c = scale[max(0, min(len(scale) - 1, int(frac * (len(scale) - 1) + 0.5)))]
+        return themes.readable(c, themes.BACK) if role == "rows" else c
 
     def grad(self, name: str) -> list[int]:
-        return self.t["grads"][name] if self.many else GRAD8[name]
+        return list(themes.visible(themes.smooth(tuple(self.t["grads"][name])))) if self.many else GRAD8[name]
 
 
 # log colors: the line's level tints its plain text and its marker; tokens get their own colors
@@ -207,7 +218,7 @@ def by_time(points: list, t0: float, t1: float, n: int) -> list[float]:
 def braille(vals: list[float], w: int, h: int, lo: float, hi: float, filled: bool = True,
             marks: list[float] | None = None) -> tuple[list[list[int]], list[list[int]]]:
     """Render vals (oldest first, right-aligned) into an h x w grid of braille codes.
-    Returns (codes, kind) where kind 1 = data dot, 2 = mark-only dot."""
+    Returns (codes, kind) where kind 1 = data dot, 2 = a dot of the first mark only, 3 = of the second, ..."""
     W, Hp = w * 2, h * 4
     codes = [[0] * w for _ in range(h)]
     kind = [[0] * w for _ in range(h)]
@@ -230,15 +241,15 @@ def braille(vals: list[float], w: int, h: int, lo: float, hi: float, filled: boo
             codes[yy // 4][x // 2] |= BITS[yy % 4][x % 2]
             kind[yy // 4][x // 2] = 1
         prev = y
-    for mv in marks or []:
+    for n, mv in enumerate(marks or []):
         if not lo <= mv <= hi:
             continue
         y = py(mv)
         for x in range(0, W, 2):
             r, c = y // 4, x // 2
-            if kind[r][c] != 1:
+            if kind[r][c] in (0, n + 2):
                 codes[r][c] |= BITS[y % 4][x % 2]
-                kind[r][c] = 2
+                kind[r][c] = n + 2
     return codes, kind
 
 
@@ -300,15 +311,19 @@ def stop_engine(runtime: str, pid: int | None) -> str:
 # The help's prose (the variant lists in it come from shadow.TABLE and shadow.RETIRED, their only home): (heading, paragraph) pairs, reflowed to the help's width after {braces} are filled
 # from the config in use (help_lines), so numbers are never stale. A line starting with "|" is kept as is.
 HELP = [
-    ("", "tern trades Kalshi's hourly crypto above-or-below markets by itself. Every trade comes from the "
+    ("ABOUT", "tern trades Kalshi's hourly crypto above-or-below markets by itself. Every trade comes from the "
          "rule; there are no manual orders. The engine runs on its own (tern.service) and keeps trading "
-         "with this screen closed."),
-    ("THE RULE", "Kalshi prices long shots too high and favorites too low. With {variant}, the variant selected, the "
+         "with this screen closed.\n"
+         "Kalshi prices long shots too high and favorites too low. With {variant}, the variant selected, the "
                  "rule enters at {minutes} minutes before each "
                  "hourly close: it buys the favorite side of every strike whose mid is {band} (spread "
                  "{spread}c or less) at the ask, {contracts:g} contracts a strike and at most ${hour_cost:,.0f} an hour "
                  "a coin ({rule_coins}){caps}, and holds it to settlement. Over 67 days of BTC history the base rule "
-                 "(75-95c, 25 20 15 10 minutes, 2c) made +0.6c a contract on data it was not chosen on."),
+                 "(75-95c, 25 20 15 10 minutes, 2c) made +0.6c a contract on data it was not chosen on.\n"
+              "(C) steps through {coins}. Which coins a variant trades is in its settings. "
+              "The 67-day test was BTC only, so the rule trades BTC unless you turn others on.\n"
+              "{variant} starts with ${paper:,.0f}, its paper start. Every variant that is on trades on paper all the "
+              "time, live or not, so its record keeps growing."),
     ("VARIANTS", "Each variant runs on paper side by side with the others, with its own record, its own cash and "
                  "real fees. The built-in ones:\n"
                  "{variants}\n"
@@ -322,48 +337,39 @@ HELP = [
                  "own; a deleted one's record stays on file.\n"
                  "Retired, records kept and listed by (tern report):\n"
                  "{retired}"),
-    ("THE GATE", "(7) Live trades a variant only after its own paper record has {days:g} days of hours "
+    ("LIVE", "(7) Live trades a variant only after its own paper record has {days:g} days of hours "
                  "traded, {entries} settled entries and P&L of ${pnl:g} or more after fees. Hours with the engine or the "
-                 "variant off don't count, and moving live to another never skips it: that one needs its own record."),
-    ("LIVE", "(L) goes live with the selected variant: it asks you to type \"live\". Selecting another one later does not "
+                 "variant off don't count, and moving live to another never skips it: that one needs its own record.\n"
+             "(L) goes live with the selected variant: it asks you to type \"live\". Selecting another one later does not "
              "move live; (L) with another selected asks whether to move it there, and (L) with live's own selected turns it "
              "off. It needs KALSHI_KEY_ID and KALSHI_KEY_FILE in "
              "~/.config/tern/kalshi.env. The status line turns red (● LIVE) once Kalshi accepts the key. "
              "Caps: ${risk:,.0f} at risk at once and ${order:,.0f} per order; a loss of ${day:,.0f} since local midnight "
              "turns live off and leaves open positions to settle. Every order is immediate-or-cancel. Kalshi "
              "is the record: its positions overwrite the engine's every 15 seconds."),
-    ("COINS", "(C) steps through {coins}. Which coins a variant trades is in its settings. "
-              "The 67-day test was BTC only, so the rule trades BTC unless you turn others on."),
-    ("PAPER", "{variant} starts with ${paper:,.0f}, its paper start. Every variant that is on trades on paper all the "
-              "time, live or not, so its record keeps growing."),
 ]
-HELP_WIDTH = 78                                   # the prose wraps here; the key legend may run wider
+HELP_WIDTH = 96                                   # the prose wraps here at the widest
 
 # the boxes and the status line: (number, name, what it shows)
 HELP_BOXES = [
-    ("¹", "spot", "the coin's price; (c) cycles the span: 5m 15m 1h 24h"),
-    ("²", "contract", "one strike as a bet (\"BTC above $61,900?\"): YES and NO bid/ask in cents,"),
-    ("", "", "  YES's price this hour on 0-100¢ (◀ now; green/red: where the rule buys"),
-    ("", "", "  YES/NO), and how far it is from being bought. Starts on the nearest ★"),
-    ("³", "ladder", "every strike high to low: bid, ask, probability bar, spread, volume and"),
-    ("", "", "  your position; ★ marks the band. ↑↓ picks the strike the contract box shows"),
-    ("⁴", "book", "the selected variant's equity, P&L, cash, at risk, fees and record, then open"),
-    ("", "", "  positions, settlements and fills; (V) switches paper / live"),
+    ("¹", "spot", "the coin's price, with its change, high and low over the span and the strike; (c) cycles the span: 5m 15m 1h 24h"),
+    ("²", "contract", "one strike as a bet (\"BTC above $61,900?\"): YES and NO bid/ask in cents, YES's price this hour on "
+                      "0-100¢ (◀ now; green/red: where the rule buys YES/NO), and how far it is from being bought. Starts on the nearest ★"),
+    ("³", "ladder", "every strike high to low: bid, ask, probability bar, spread, volume and your position; ★ marks the band. "
+                    "↑↓ picks the strike the contract box shows"),
+    ("⁴", "book", "the selected variant's money and record, its open positions, and what settled and was filled; (V) switches paper / live"),
+    ("⁵", "variants", "each variant's hours, entries, P&L, ¢ a contract, win rate, t, and gate progress (yellow: still short); "
+                      "● selected, L live's, + one you made; the highlighted one's P&L by hour below"),
     ("⁶", "log", "what the engine did, newest at the bottom; scroll back with ↑↓"),
-    ("⁵", "variants", "each variant's hours, entries, P&L, ¢ a contract, win rate, t,"),
-    ("", "", "  and gate progress (yellow: still short); ● selected, L live's, + one you"),
-    ("", "", "  made; the highlighted one's P&L by hour below"),
-    ("", "tabs", "one box fills the screen; the others are tabs on its top border: their keys show"),
-    ("", "", "  one, (tab) steps through. Its own keys are on its bottom border, and the log's"),
-    ("", "", "  has every key that isn't one box's"),
-    ("⁷", "gate", "what the selected variant still needs to go live, every variant side by side, caps"),
+    ("⁷", "gate", "what the selected variant still needs to go live, caps, and every variant side by side"),
     ("⁸", "reports", "every record: worked out now, or saved"),
     ("⁹", "settings", "live limits, gate, alerts, web, what the log shows"),
-    ("⁰", "themes", "{n} color themes: the one highlighted is in use".replace("{n}", str(len(themes.NAMES)))),
+    ("⁰", "themes", f"{len(themes.NAMES)} color themes: the one highlighted is in use"),
     ("", "help", "(h) this"),
-    ("", "status", "bottom row: PAPER or LIVE, the coin's price and 1h change, the hourly event"),
-    ("", "", "  and time to its close, rule ON/off with the next slot (+live when live"),
-    ("", "", "  trades), stale data warnings (usually Wi-Fi), engine ok / stale / down"),
+    ("", "tabs", "one box fills the screen; the others are tabs on its top border: their keys show one, (tab) steps through. "
+                 "Its own keys are on its bottom border, and the log's has every key that isn't one box's"),
+    ("", "status", "bottom row: PAPER or LIVE, the coin's price and 1h change, the hourly event and time to its close, rule "
+                   "ON/off with the next slot (+live when live trades), stale data warnings (usually Wi-Fi), engine ok / stale / down"),
 ]
 
 # overlay text worth a color: checks, key references like (7), words to type, warnings, paths and names
@@ -376,9 +382,8 @@ OVERLAY_TOKENS = re.compile(
     r"|(?P<path>~/\S+|\bKALSHI_KEY_(?:ID|FILE)\b|\blive\.\w+)")
 SHADOW_LINE = re.compile(r"^(shadow: \S+ settled|paper: \d+m slot on \S+ bought) · (.+)$")   # the engine's lines after an
                                                                                              # hour settles, and a slot
-LOG_GRID_COLS = 3                                # variants a row at most, however wide the screen
+LOG_GRID_COLS = 8                                # variants a row at most
 SHADOW_CELL = re.compile(r"^(\S+) ([+-]\d[\d,]*\.\d\d|\d+)$")
-RULE_LINE = "\0rule"                              # placeholder text: draw_overlay turns it into a divider
 
 # the help's key legend: two columns of (section, [(keys, what they do)])
 HELP_KEYS = [
@@ -392,7 +397,8 @@ HELP_KEYS = [
      ("look", [("c", "spot: chart span: 5m 15m 1h 24h"),
                ("V", "book: paper / live view"),
                ("s", "reports: save the one shown (PgUp PgDn page it)"),
-               ("↑↓ ←→", "themes: pick one")])],
+               ("↑↓ ←→", "themes: pick one"),
+               ("t T", "next / previous theme, on any screen")])],
     [("variants", [("enter", "select the highlighted one: the book,"),
                 ("", "band and gate show it"),
                 ("e", "edit the highlighted one's settings: s saves"),
@@ -422,7 +428,7 @@ HELP_CLI = [
     ("systemctl --user status tern", "the engine's service"),
 ]
 
-# what the log box may show (settings, s): key -> how the settings box names it
+# what the log box may show (settings): key -> how the settings box names it
 LOG_FILTERS = {"all": "everything", "no_shadow": "no shadow lines", "quiet": "live, warnings, commands",
                "trades": "trades only"}
 TRADE_LINE = re.compile(r"^(?:live: \d+m slot on .*, [1-9]\d* bought$|paper: \d+m slot on \S+ bought · |live: \S+ (?:settled|finalized) )")
@@ -436,8 +442,7 @@ CHARTS = {"5m": 300, "15m": 900, "1h": 3600, "24h": 86400}
 BOXES = ["spot", "contract", "ladder", "book", "variants", "log", "gate", "reports", "settings", "themes", "help"]
 BOX_KEYS = "1234567890h"
 SUPER = "¹²³⁴⁵⁶⁷⁸⁹⁰"                             # (help's h is in its name)
-TAB_BG = (238, 235)                              # the dark backgrounds of the tabs not on screen
-BORDER = {"variants": "ladder", "gate": "contract", "reports": "book", "settings": "contract", "themes": "spot", "help": "log"}
+
 DROP_FIRST = ("↑↓", "space")                     # border hints that go before the others when they don't all fit
 
 
@@ -467,13 +472,14 @@ PANEL_KEYS = {
     "contract": lambda s: [("C", "oin"), ("↑↓", " strike")],
     "ladder": lambda s: [("C", "oin"), ("↑↓", " strike")],
     "book": lambda s: [("V", "iew"), ("L", "ive"), "↑↓"],
+    "edit": lambda s: [("↑↓", " pick"), ("←→", " step"), ("enter", " type"), ("s", "ave as new"), ("esc", " discard")],
     "variants": lambda s: [("⏎", " select"), ("e", "dit"), ("space", " on/off"), ("r", "ename"), ("D", "elete"), ("L", "ive"), "↑↓"],
-    "log": lambda s: [("P", "ause" if s.alive else " start"), ("q", "uit"), "↑↓"],
+    "log": lambda s: [("t", "heme ", s.P.name), ("P", "ause" if s.alive else " start"), ("q", "uit"), "↑↓"],
     "gate": lambda s: [("L", "ive"), "↑↓"],
     "reports": lambda s: ([] if s.rep_sel.startswith("saved:") else [("s", "ave")]) + [("↑↓", " pick"), ("PgUp PgDn", " scroll")],
     "settings": lambda s: [("↑↓", " pick"), ("←→", " step"), ("enter", " type")],
     "themes": lambda s: [("↑↓ ←→", " pick")],
-    "help": lambda s: ["↑↓"],
+    "help": lambda s: [("↑↓", " pick"), ("PgUp PgDn", " scroll")],
 }
 
 
@@ -511,7 +517,8 @@ class Screen:
         self.var_new: dict | None = None       # a draft was sent to be saved: cid, and its variant and draft
         self.set_sent: dict[str, tuple] = {}   # key -> (value, time) sent but not yet in the status
         self.log_filter = "all"                # what the log box shows: LOG_FILTERS
-        self.offs: dict[str, int] = {}         # box -> the first line shown (gate, help)
+        self.offs: dict[str, int] = {}         # box -> the first line shown (gate, help, settings)
+        self.help_sel, self.help_rows = 0, {}   # the help section picked; row -> section, for clicks
         self.theme_rows = 1                    # the themes box: rows in a column, as last drawn
         self.modal: dict | None = None
         self.flash, self.flash_at = "", 0.0
@@ -687,10 +694,9 @@ class Screen:
         self.put(y + h - 1, x, bl + hz * (w - 2) + br, a)
         cx = x + 3
         if tabbed:
-            gap = 1 if sum(len(n) + 3 for n in BOXES) + len(BOXES) <= w - 4 else 0   # the border between them, if it fits
             cx = x + 2
             for i, name in enumerate(BOXES):
-                cx = self.tab_seg(y, cx, i, name, color, gap) + gap
+                cx = self.tab_seg(y, cx, i, name, color)
         else:
             self.put(y, cx, title, P(WHITE, bold=True)); cx += len(title)
         hy, start = (y + h - 1, x + 2) if tabbed else (y, cx)
@@ -713,17 +719,19 @@ class Screen:
             rx += n + 3
         self.clip = saved
 
-    def tab_seg(self, y: int, x: int, i: int, name: str, color: int, gap: int) -> int:
-        """One box's tab on the top border, filled like the status line's pieces: bright for the box on screen, dark for
-        the others. Returns where it ends."""
+    def tab_seg(self, y: int, x: int, i: int, name: str, color: int) -> int:
+        """One box's tab on the top border: bright in its box's color while that is on screen, else on the theme's fill
+        with a line on its left. Returns where it ends."""
         P = self.P
-        on = name == self.drawing
-        bg = TAB_BG[0 if gap else i % 2]                 # touching, two shades keep them apart
-        key = P(color, bold=True) | curses.A_REVERSE if on else P.on(P.c("key"), bg, bold=True)
-        text = P(color, bold=True) | curses.A_REVERSE if on else P.on(P.c("unit"), bg)
-        parts = [(" ", text), (SUPER[i], key), (name, text)] if i < len(SUPER) else \
-            [(" ", text), (name[0], key), (name[1:], text)]    # help's key is in its name
-        for t, a in [*parts, (" ", text)]:
+        if name == self.drawing:
+            key = text = line = P(color, bold=True) | curses.A_REVERSE
+        elif P.many:
+            bg = P.t["fill"]
+            key, text, line = P.on(P.c("key"), bg, bold=True), P.on(P.t["tab"], bg), P.on(color, bg)
+        else:
+            key, text, line = P(P.c("key"), bold=True), P(P.grey), P(color)
+        parts = [(SUPER[i], key), (name, text)] if i < len(SUPER) else [(name[0], key), (name[1:], text)]   # h is help's key
+        for t, a in [(" " if name == self.drawing else "▏" if P.many else "│", line), *parts, (" ", text)]:
             self.put(y, x, t, a); x += len(t)
         return x
 
@@ -761,19 +769,22 @@ class Screen:
         return self.st.get("strategy")
 
     def graph(self, y: int, x: int, h: int, w: int, vals: list[float], lo: float, hi: float, grad: list[int],
-              marks: list[float] | None = None, mark_color: int = YELLOW, filled: bool = True) -> None:
+              marks: list[tuple[float, int]] | None = None, filled: bool = True, fit: bool = False) -> None:
+        """A filled chart, colored by height: grad runs up the whole box or, with fit, up to the highest value drawn.
+        marks: (value, color) lines across it, the first ones on top."""
         if w <= 0 or h <= 0 or not vals:
             return
-        codes, kind = braille(vals, w, h, lo, hi, filled, marks)
+        codes, kind = braille(vals, w, h, lo, hi, filled, [v for v, _ in marks or []])
         P = self.P
+        top = next((r for r in range(h) if fit and 1 in kind[r]), 0)
         for r in range(h):
-            g = grad[min(len(grad) - 1, int((h - 1 - r) / max(1, h - 1) * (len(grad) - 1) + 0.5))] if len(grad) > 1 else grad[0]
-            ga, ma = P(g), P(mark_color)
+            g = grad[int(min(1.0, (h - 1 - r) / max(1, h - 1 - top)) * (len(grad) - 1) + 0.5)]
+            ga, ma = P(g), [P(c) for _, c in marks or []]
             run, run_attr, run_x = "", None, x
             for c in range(w):
                 code = codes[r][c]
                 ch = chr(0x2800 + code) if code else " "
-                at = ma if kind[r][c] == 2 else ga
+                at = ma[kind[r][c] - 2] if kind[r][c] > 1 else ga
                 if at != run_attr and run:
                     self.put(y + r, run_x, run, run_attr); run, run_x = "", x + c
                 run_attr = at; run += ch
@@ -893,7 +904,7 @@ class Screen:
         if row:
             strike = strike_of(row["k"])
         self.box(y, x, h, w, "spot", self.P.border("spot"), PANEL_KEYS["spot"](self))
-        gh = h - 3
+        gh = h - 4
         if not vals:
             self.put(y + h // 2, x + 3, "waiting for spot…", P(self.P.grey)); return
         lo, hi = min(vals), max(vals)
@@ -901,21 +912,37 @@ class Screen:
             lo, hi = min(lo, strike), max(hi, strike)
         pad = (hi - lo) * 0.08 or vals[-1] * 0.0005
         lo, hi = lo - pad, hi + pad
-        self.graph(y + 1, x + 1, gh, gw, vals, lo, hi, P.grad("spot"), [strike] if strike else None)
-        lx = x + 1 + gw + 1
-        for i, v in enumerate([hi, (hi + lo) / 2, lo]):
-            ry = y + 1 + [0, gh // 2, gh - 1][i]
-            self.put(ry, lx, px(v)[:10], P(self.P.grey))
-        if strike and lo <= strike <= hi:
-            ry = y + 1 + int(round((hi - strike) / (hi - lo) * (gh - 1)))
-            self.put(ry, lx, px(strike)[:10], P(YELLOW, bold=True))
-        span = "-" + self.chart
-        self.put(y + h - 2, x + 2, span, P(self.P.grey))
-        self.put(y + h - 2, x + 1 + gw - 3, "now", P(self.P.grey))
-        if strike and vals:
+        # the price, what it did in this span, and where the strike is
+        head: list = [(f"{prod.split('-')[0]} ${px(vals[-1])}", P(P.c("sym"), bold=True))]
+        chg = vals[-1] / vals[0] - 1 if vals[0] else 0.0
+        head += [(f"   {'▲' if chg >= 0 else '▼'}{chg:+.2%}", P(GREEN if chg >= 0 else RED, bold=True)), (f" {self.chart}", P(P.c("unit"))),
+                 ("   high ", P(P.grey)), (px(max(vals)), P(GREEN)), ("   low ", P(P.grey)), (px(min(vals)), P(RED))]
+        if strike:
             d = vals[-1] - strike
-            self.put(y + h - 2, x + 2 + gw // 2 - 12, f"spot {'above' if d >= 0 else 'below'} strike by ${px(abs(d))}",
-                     P(GREEN if d >= 0 else RED))
+            head += [("   strike ", P(P.grey)), (px(strike), P(YELLOW, bold=True)),
+                     (f"   {'above' if d >= 0 else 'below'} it by ${px(abs(d))}", P(GREEN if d >= 0 else RED))]
+        cx = x + 2
+        for text, attr in head:
+            self.put(y + 1, cx, text, attr); cx += len(text)
+        ticks = [round(k * (gh - 1) / 4) for k in range(5)]
+        at = lambda r: hi - (hi - lo) * r / max(1, gh - 1)
+        dim = P.t["fill"] if P.many else P.grey
+        self.graph(y + 2, x + 1, gh, gw, vals, lo, hi, P.grad("spot"),
+                   ([(strike, YELLOW)] if strike else []) + [(at(r), dim) for r in ticks[1:-1]], fit=True)
+        lx = x + 1 + gw + 1
+        sr = int(round((hi - strike) / (hi - lo) * (gh - 1))) if strike and lo <= strike <= hi else None
+        for r in ticks:
+            if r != sr:
+                self.put(y + 2 + r, lx, px(at(r))[:10], P(self.P.grey))
+        if sr is not None:
+            self.put(y + 2 + sr, lx, px(strike)[:10], P(YELLOW, bold=True))
+        self.time_axis(y + h - 2, x + 1, gw, now - span, now)
+
+    def time_axis(self, y: int, x: int, w: int, t0: float, t1: float) -> None:
+        """Clock times under a chart that runs from t0 to t1 (now)."""
+        for k in range(4):
+            self.put(y, x + 1 + k * w // 4, time.strftime("%H:%M", time.localtime(t0 + (t1 - t0) * k / 4)), self.P(self.P.grey))
+        self.put(y, x + w - 3, "now", self.P(self.P.grey))
 
     def ladder(self) -> list[dict]:
         """Strikes high to low, like a price axis."""
@@ -974,13 +1001,15 @@ class Screen:
             self.put(y + 1, cx, v + "   ", P(WHITE if k in ("YES", "NO") else c, bold=k != "vol")); cx += len(v) + 3
         if cx < x + w - 17:
             self.put(y + 1, x + w - 16, "bid/ask, cents", P(self.P.grey))
-        gh, gw = h - 4, w - 2 - 7
+        gh, gw = h - 5, w - 2 - 7
         if gh > 0:
             lo_b, hi_b = S.get("band_lo", 0.75), S.get("band_hi", 0.95)
             row_of = lambda v: max(0, min(gh - 1, int(round((1 - v) * (gh - 1)))))
-            mids = by_time(pts, min(t0, pts[0][0]) if pts else t0, t1, gw * 2) if pts else []
+            t0 = min(t0, pts[0][0]) if pts else t0
+            mids = by_time(pts, t0, t1, gw * 2) if pts else []
+            self.time_axis(y + h - 3, x + 1, gw, t0, t1)
             if mids:
-                self.graph(y + 2, x + 1, gh, gw, mids, 0.0, 1.0, P.grad("yes"), [lo_b, 1 - lo_b, 0.5], self.P.grey)
+                self.graph(y + 2, x + 1, gh, gw, mids, 0.0, 1.0, P.grad("yes"), [(lo_b, P.grey), (1 - lo_b, P.grey), (0.5, P.grey)])
             else:
                 self.put(y + 2 + gh // 2, x + 3, "history builds while the screen watches this strike"[:gw - 2], P(self.P.grey))
             # the bands beside the chart: green where the rule buys YES, red where it buys NO
@@ -1067,13 +1096,13 @@ class Screen:
             inb = S and S["band_lo"] <= fav < S["band_hi"] and spread is not None and spread <= S["max_spread"] + 1e-9
             above = spot is not None and spot > r["k"]
             sel = r["t"] == self.sel
-            base = curses.A_REVERSE if sel else 0
-            self.put(yy, x + 1, " " * (w - 2), base)
+            R = P.row(sel)
+            self.put(yy, x + 1, " " * (w - 2), R(WHITE))
             kc = GREEN if above else RED
-            self.put(yy, x + 1, "★" if inb else " ", P(YELLOW, bold=True) | base)
-            self.put(yy, x + 2, f"{strike_label(r['k']):>9}", P(kc, bold=sel) | base)
-            self.put(yy, x + 12, f"{cents(bid):>5}", P(GREEN) | base)
-            self.put(yy, x + 18, f"{cents(ask):>5}", P(RED) | base)
+            self.put(yy, x + 1, "★" if inb else " ", R(YELLOW, bold=True))
+            self.put(yy, x + 2, f"{strike_label(r['k']):>9}", R(kc, bold=sel))
+            self.put(yy, x + 12, f"{cents(bid):>5}", R(GREEN))
+            self.put(yy, x + 18, f"{cents(ask):>5}", R(RED))
             # probability bar
             frac = max(0.0, min(1.0, mid or 0))
             full = frac * barw
@@ -1081,14 +1110,14 @@ class Screen:
             bar = "█" * (n8 // 8) + (" ▏▎▍▌▋▊▉"[n8 % 8] if n8 % 8 else "")
             g = P.grad("yes")
             col = g[min(len(g) - 1, int(frac * (len(g) - 1) + 0.5))]
-            self.put(yy, x + 25, bar.ljust(barw), P(col) | base)
-            self.put(yy, x + 25 + barw - 4, f"{(mid or 0)*100:3.0f}%", P(WHITE, bold=True) | base)
-            tint = P(P.pick("rows", frac, reverse=True)) | base     # long shots blue, near-certain pink
+            self.put(yy, x + 25, bar.ljust(barw), R(col))
+            self.put(yy, x + 25 + barw - 4, f"{(mid or 0)*100:3.0f}%", R(WHITE, bold=True))
+            tint = R(P.pick("rows", frac, reverse=True))     # long shots blue, near-certain pink
             self.put(yy, x + 26 + barw, f"{(spread*100 if spread is not None else 0):>4.1f}", tint)
             self.put(yy, x + 31 + barw, f"{volume(r['v']):>7}", tint)
             hp = held.get(r["t"])
             if hp:
-                self.put(yy, x + 39 + barw, f"{hp['q']:+6g}"[:6], P(GREEN if hp["q"] > 0 else MAGENTA, bold=True) | base)
+                self.put(yy, x + 39 + barw, f"{hp['q']:+6g}"[:6], R(GREEN if hp["q"] > 0 else MAGENTA, bold=True))
         if top > 0:
             self.put(y, x + w - 2, "▲", P(YELLOW))
         if top + rows < len(lad):
@@ -1098,7 +1127,9 @@ class Screen:
         P, st = self.P, self.st
         vs = st.get("variants") or []
         G = st.get("gate_cfg") or {}
-        self.box(y, x, h, w, "variants", self.P.border("ladder"), PANEL_KEYS["variants"](self))
+        if self.overlay == "edit":                          # e: the highlighted one's settings, in this box
+            self.settings_panel(y, x, h, w, "variants"); return
+        self.box(y, x, h, w, "variants", self.P.border("variants"), PANEL_KEYS["variants"](self))
         if not vs:
             self.put(y + 2, x + 3, "waiting for the engine…", P(self.P.grey)); return
         names = [v["name"] for v in vs]
@@ -1106,9 +1137,15 @@ class Screen:
             self.var_sel = self.variant if self.variant in names else names[0]
         head = P(self.P.c("head"), bold=True)
         nw = max([8] + [len(self.vn(n)) for n in names])   # the name column: as wide as the longest name
-        sh = nw - 7                                         # ... and every column after it moves along
-        hdr = f"   {'variant':<{nw}} {'hours':>5} {'entries':>7} {'P&L':>9} {'¢/ct':>6} {'win':>4} {'t':>6} gate"
-        self.put(y + 1, x + 2, hdr[:w - 4], head)
+        cols = [("hours", 5), ("entries", 7), ("P&L", 9), ("¢/ct", 6), ("win", 4), ("t", 6)]
+        gap = 1 + max(0, min(4, (w - 7 - nw - 37 - 7 - 26) // 7))   # between the columns: what the width allows
+        at, cx = {}, x + 5 + nw
+        for name, cw in cols:
+            at[name] = cx + gap
+            cx += gap + cw
+            self.put(y + 1, at[name], f"{name:>{cw}}", head)
+        at["gate"] = cx + gap
+        self.put(y + 1, x + 5, "variant", head); self.put(y + 1, at["gate"], "gate", head)
         # The list scrolls under the fixed header: the rows that fit, moved so the highlighted one shows
         rows = max(1, min(len(vs), h - 3))
         si = names.index(self.var_sel)
@@ -1121,32 +1158,32 @@ class Screen:
         for j, v in enumerate(vs[top:top + rows], start=top):
             yy = y + 2 + j - top
             sel = v["name"] == self.var_sel
-            base = curses.A_REVERSE if sel else 0
-            self.put(yy, x + 1, " " * (w - 2), base)
-            row = P(P.pick("rows", j / max(1, len(vs) - 1))) | base
+            R = P.row(sel)
+            self.put(yy, x + 1, " " * (w - 2), R(WHITE))
+            row = R(P.pick("rows", j / max(1, len(vs) - 1)))
             if v["name"] == self.variant:                # selected; live's; one made here (the rest are built in)
-                self.put(yy, x + 2, "●", P(GREEN, bold=True) | base)
+                self.put(yy, x + 2, "●", R(GREEN, bold=True))
             if v.get("live") and st.get("live_enabled"):
-                self.put(yy, x + 3, "L", P(RED, bold=True) | base)
+                self.put(yy, x + 3, "L", R(RED, bold=True))
             if v.get("own"):
-                self.put(yy, x + 4, "+", P(P.c("key"), bold=True) | base)
+                self.put(yy, x + 4, "+", R(P.c("key"), bold=True))
             on = v.get("on", True)
-            self.put(yy, x + 5, f"{self.vn(v['name']):<{nw}}", P(P.c("variant") if on else P.grey, bold=on) | base)
+            self.put(yy, x + 5, f"{self.vn(v['name']):<{nw}}", R(P.c("variant") if on else P.grey, bold=on))
             pc = f"{v['per_contract']*100:+.2f}" if v.get("per_contract") is not None else "-"
             win = f"{v['win']:.0%}" if v.get("win") is not None else "-"
             t = f"{v['t']:+.2f}" if v.get("t") is not None else "-"
-            self.put(yy, x + 13 + sh, f"{v['hours']:>5} {v['entries']:>7} ", row)
-            pnl_c = P(GREEN if v["pnl"] >= 0 else RED, bold=True) | base
-            self.put(yy, x + 28 + sh, f"{v['pnl']:>+9.2f}", pnl_c)
-            self.put(yy, x + 38 + sh, f"{pc:>6} {win:>4} ", row)
+            self.put(yy, at["hours"], f"{v['hours']:>5}", row); self.put(yy, at["entries"], f"{v['entries']:>7}", row)
+            pnl_c = R(GREEN if v["pnl"] >= 0 else RED, bold=True)
+            self.put(yy, at["P&L"], f"{v['pnl']:>+9.2f}", pnl_c)
+            self.put(yy, at["¢/ct"], f"{pc:>6}", row); self.put(yy, at["win"], f"{win:>4}", row)
             tc = self.P.grey if v.get("t") is None else GREEN if v["t"] >= 2 else RED if v["t"] <= -2 else WHITE
-            self.put(yy, x + 50 + sh, f"{t:>6}", P(tc, bold=v.get("t") is not None and abs(v["t"]) >= 2) | base)
-            cx = x + 57 + sh
+            self.put(yy, at["t"], f"{t:>6}", R(tc, bold=v.get("t") is not None and abs(v["t"]) >= 2))
+            cx = at["gate"]
             g = v.get("gate") or {}
             if not on:
-                self.put(yy, cx, "off", P(RED, bold=True) | base)
+                self.put(yy, cx, "off", R(RED, bold=True))
             elif g.get("passed"):
-                self.put(yy, cx, "✓ passed", P(GREEN, bold=True) | base)
+                self.put(yy, cx, "✓ passed", R(GREEN, bold=True))
             else:
                 for c in g.get("checks", []):          # a passed check is a word; one still short shows how far
                     have = c["have"]
@@ -1155,7 +1192,7 @@ class Screen:
                            f"{have}/{c['need']}" if c["key"] == "entries" else
                            f"P&L<{'-' if c['need'] < 0 else ''}${abs(c['need']):g}")
                     txt = ("✓" if c["ok"] else "") + txt
-                    self.put(yy, cx, txt + " ", P(GREEN if c["ok"] else YELLOW) | base)
+                    self.put(yy, cx, txt + " ", R(GREEN if c["ok"] else YELLOW))
                     cx += len(txt) + 1
         # the picked variant: what it is, its cumulative P&L by hour, and what enter would do
         if top > 0:
@@ -1177,8 +1214,12 @@ class Screen:
         if len(curve) >= 2 and gh >= 2:
             vals = [0.0] + curve
             lo, hi = min(vals), max(vals)
+            vals = [vals[i * len(vals) // (gw * 2)] for i in range(gw * 2)] if len(vals) < gw * 2 else vals   # the whole width
             pad = (hi - lo) * 0.1 or 1.0
-            self.graph(gy, x + 1, gh, gw, vals, lo - pad, hi + pad, P.grad("eq_up" if vals[-1] >= 0 else "eq_dn"), [0.0], self.P.grey)
+            self.graph(gy, x + 1, gh, gw, vals, lo - pad, hi + pad, P.grad("eq_up" if vals[-1] >= 0 else "eq_dn"), [(0.0, P.grey)], fit=True)
+            zr = int(round((hi + pad) / (hi - lo + 2 * pad) * (gh - 1)))
+            if 0 < zr < gh - 1:
+                self.put(gy + zr, x + 1 + gw + 1, "$0", P(self.P.grey))
             self.put(gy, x + 1 + gw + 1, money(hi, True)[:10], P(self.P.grey))
             self.put(gy + gh - 1, x + 1 + gw + 1, money(lo, True)[:10], P(self.P.grey))
             self.put(gy + gh, x + 2, f"P&L over its last {len(curve)} hours", P(self.P.grey))
@@ -1349,98 +1390,108 @@ class Screen:
         for name in ("paper", "live"):
             label = f"{self.vn(self.variant)} on paper" if name == "paper" else \
                 f"live · {self.vn(self.live_variant())}" if st.get("live_enabled") and self.live_variant() else "live"
-            tabs += [(f" {label} ", P(WHITE, bold=True) | curses.A_REVERSE if name == v else P(self.P.grey)), (" ", 0)]
-        body = [tabs]                                    # the whole book is one list of lines and scrolls as one
-        if b:
-            eq, start = b.get("equity"), b.get("start") or 0
-            pnl = (eq - start) if eq is not None and start else None
-            val = P.c("value")               # book values in pink; labels take the row gradient
-            lines = [("equity", money(eq), val), ("P&L", money(pnl, True) + (f"  {pnl/start:+.2%}" if pnl is not None and start else ""),
-                                                     GREEN if (pnl or 0) >= 0 else RED),
-                     ("cash", money(b.get("cash")), val), ("at risk", money(b.get("at_risk")), YELLOW),
-                     ("fees", money(b.get("fees")), self.P.grey)]
-            if v == "live":
-                L = st.get("live_cfg") or {}
-                lines.append(("caps", f"risk {money(L.get('capital_usd'))} · order {money(L.get('max_order_usd'))} · day -{money(L.get('max_daily_loss'))}", self.P.grey))
-            g = st.get("gate") or {}
-            if g:
-                wr = f"{g['win']:.0%}" if g.get("win") is not None else "-"
-                c = GREEN if g["pnl"] >= 0 else RED
-                a1 = f"{g['entries']} settled · {g['open']} open · {money(g['pnl'], True)}"
-                a2 = f"win {wr} · {g['per_contract']*100:+.2f}¢/ct"
-                if len(a1) + len(a2) + 3 <= w - 13:
-                    lines.append(("record", f"{a1} · {a2}", c))
-                else:                                    # a narrow book: two lines, not one cut short
-                    lines += [("record", a1, c), ("", a2, c)]
-            body += [[(f"{k:<8} ", ROW), (val, P(c, bold=k == "equity"))] for k, val, c in lines]
-            body += [[("", 0)]] + self.book_lines(b)
+            tabs += [(f" {label} ", P(P.border("book"), bold=True) | curses.A_REVERSE if name == v else P(self.P.grey)), (" ", 0)]
         yy = y + 1
-        room = max(0, h - 2)
-        self.pos_off = max(0, min(self.pos_off, len(body) - room))
+        cx = x + 2
+        for text, attr in tabs:
+            self.put(yy, cx, text, attr); cx += len(text)
+        if not b:
+            return
+        g, L = st.get("gate") or {}, st.get("live_cfg") or {}
+        for tiles in (self.book_money(b), self.book_record(g)):
+            cw = (w - 4) // 5
+            for i, (label, text, color) in enumerate(tiles):
+                self.put(yy + 2, x + 2 + i * cw, label, P(self.P.c("head")))
+                self.put(yy + 3, x + 2 + i * cw, text, P(color, bold=True))
+            yy += 3
+        if v == "live":
+            yy += 2
+            self.put(yy, x + 2, f"caps   at risk {money(L.get('capital_usd'))} · an order {money(L.get('max_order_usd'))} · "
+                                f"a day's loss {money(L.get('max_daily_loss'))}", P(self.P.grey))
+        # the open positions on the left, what settled and was filled on the right; they scroll together
+        yy += 2
+        cw = (w - 5) // 2
+        left, right = self.book_open(b, cw), self.book_done(b, cw)
+        self.put(yy, x + 2, "", 0)
+        room = max(0, y + h - 1 - yy)
+        n = max(len(left), len(right))
+        self.pos_off = max(0, min(self.pos_off, n - room))
         if self.pos_off > 0:
-            self.put(y, x + w - 2, "▲", P(YELLOW))
-        if self.pos_off + room < len(body):
-            self.put(y + h - 1, x + w - 2, "▼", P(YELLOW))
-        for j, line in enumerate(body[self.pos_off:self.pos_off + room]):
-            cx = x + 2
+            self.put(yy, x + w - 2, "▲", P(YELLOW))
+        if self.pos_off + room < n:
+            self.put(y + h - 2, x + w - 2, "▼", P(YELLOW))
+        for j in range(room):
             row = P(P.pick("rows", j / max(1, room - 1)))     # btop-style gradient down the list
-            for text, attr in line:
-                self.put(yy, cx, text, row if attr == ROW else attr); cx += len(text)
-            yy += 1
+            for lines, cx in ((left, x + 2), (right, x + 3 + cw)):
+                for text, attr in lines[j + self.pos_off] if j + self.pos_off < len(lines) else []:
+                    self.put(yy + j, cx, text, row if attr == ROW else attr); cx += len(text)
 
-    def book_lines(self, b: dict) -> list[list[tuple[str, int]]]:
-        """The book's scrolling part (petrel style): open positions, then the last settlements, then
-        the last fills, newest first. Each line is a list of (text, attr) pieces."""
+    def book_money(self, b: dict) -> list[tuple[str, str, int]]:
+        """The book's money: (label, value, color)."""
+        eq, start, val = b.get("equity"), b.get("start") or 0, self.P.c("value")
+        pnl = (eq - start) if eq is not None and start else None
+        return [("equity", money(eq), val),
+                ("P&L", money(pnl, True) + (f" {pnl/start:+.2%}" if pnl is not None and start else ""), GREEN if (pnl or 0) >= 0 else RED),
+                ("cash", money(b.get("cash")), val), ("at risk", money(b.get("at_risk")), YELLOW), ("fees", money(b.get("fees")), val)]
+
+    def book_record(self, g: dict) -> list[tuple[str, str, int]]:
+        """The selected variant's record, as the book's money is."""
+        if not g:
+            return []
+        val, c = self.P.c("value"), GREEN if g["pnl"] >= 0 else RED
+        return [("settled", f"{g['entries']:,}", val), ("record", money(g["pnl"], True), c),
+                ("win", f"{g['win']:.0%}" if g.get("win") is not None else "-", val),
+                ("a contract", f"{g['per_contract']*100:+.2f}¢" if g.get("per_contract") is not None else "-", c), ("open", f"{g['open']:,}", val)]
+
+    def grid(self, title: str, cols: list[tuple[str, int]], rows: list[list[tuple[str, int]]], w: int, none: str) -> list:
+        """A table as lines of (text, attr): a title, the columns' names, the rows (or none), spread to w."""
+        head = self.P(self.P.c("head"), bold=True)
+        gap = 1 + max(0, min(4, (w - sum(c for _, c in cols) - len(cols) + 1) // (len(cols) - 1)))
+        left = ("coin", "side")                           # these columns start at their left end, the rest at their right
+        fit = lambda name, c, text: f"{text:<{c}}" if name in left else f"{text:>{c}}"
+        out = [[(title, self.P(self.P.border("book"), bold=True))], [((" " * gap).join(fit(n, c, n) for n, c in cols), head)]]
+        for r in rows:
+            out.append([(fit(n, c, t) + " " * gap, a) for (n, c), (t, a) in zip(cols, r)])
+        return out + ([] if rows else [[(none, self.P(self.P.grey))]])
+
+    def bet_cells(self, ticker: str, q: float) -> list[tuple[str, int]]:
+        """A table row's first cells: the coin, the strike, the side."""
+        series = (ticker or "").split("-")[0]
+        m = re.search(r"-[TB]([0-9.]+)$", ticker or "")
+        return [(cfgmod.SERIES.get(series, series[2:]).split("-")[0][:5], self.P(self.P.c("variant"))),
+                (strike_label(float(m.group(1))) if m else "?", ROW),
+                ("YES" if q > 0 else "NO", self.P(GREEN if q > 0 else MAGENTA, bold=True)), (f"{abs(q):g}", ROW)]
+
+    def book_open(self, b: dict, w: int) -> list:
         P, now = self.P, time.time()
-        grey, head, white = P(self.P.grey), P(self.P.c("head"), bold=True), ROW
-
-        def side(q):
-            return [(f"{'YES' if q > 0 else 'NO':<4}", P(GREEN if q > 0 else MAGENTA, bold=True))]
-
-        def strike(ticker):
-            m = re.search(r"-[TB]([0-9.]+)$", ticker or "")
-            return f"{strike_label(float(m.group(1))) if m else '?':>8} "
-
-        out: list[list[tuple[str, int]]] = []
         pos = b.get("pos") or []
-        out.append([(f"{'open':<4} {'strike':>8} {'side':<4} {'qty':>4} {'avg':>5} {'mark':>5} {'P&L':>8} {'closes':>6}", head)])
-        for p in pos:
-            pl = p.get("pnl")
-            out.append([(f"{'':<5}{strike_label(p.get('k')):>8} ", white), *side(p["q"]),
-                        (f" {abs(p['q']):>4g} {cents(p['avg']):>5} {cents(p.get('mark')):>5} ", white),
-                        (f"{money(pl, True):>8}", P(GREEN if (pl or 0) >= 0 else RED)),
-                        (f" {clock((p.get('close') or now) - now):>6}", grey)])
-        if not pos:
-            out.append([("     no open positions", grey)])
+        gain = lambda v: P(GREEN if (v or 0) >= 0 else RED)
+        rows = [[*self.bet_cells(p["t"], p["q"]), (cents(p["avg"]).strip(), ROW), (cents(p.get("mark")).strip(), ROW),
+                 (money(p.get("pnl"), True), gain(p.get("pnl"))), (clock((p.get("close") or now) - now), P(P.grey))] for p in pos]
+        return self.grid(f"OPEN {len(pos)}", [("coin", 4), ("strike", 7), ("side", 4), ("qty", 3), ("avg", 4), ("mark", 4),
+                                              ("P&L", 8), ("closes", 6)], rows, w, "no open positions")
 
+    def book_done(self, b: dict, w: int) -> list:
+        """What settled, then the fills, newest first."""
+        P, now = self.P, time.time()
+        gain = lambda v: P(GREEN if v >= 0 else RED)
         trades = list(reversed(b.get("trades") or []))
-        settled = [t for t in trades if t.get("kind") == "settle"]
-        out.append([("", 0)])
-        out.append([(f"{'settled':<8}{'strike':>6} {'side':<4} {'qty':>4} {'won':>5} {'P&L':>8} {'ago':>6}", head)])
-        for t in settled:
-            q = -t["delta"]
-            won = (t.get("result") == "yes") == (q > 0)
-            word, wc = ("void", grey) if t.get("result") == "void" else ("won", P(GREEN)) if won else ("lost", P(RED))
-            out.append([(f"{'':<5}{strike(t['ticker'])}", white), *side(q),
-                        (f" {abs(q):>4g} ", white), (f"{word:>5} ", wc),
-                        (f"{money(t['realized'], True):>8}", P(GREEN if t["realized"] >= 0 else RED)),
-                        (f" {ago(now - t['ts']):>6}", grey)])
-        if not settled:
-            out.append([("     none yet", grey)])
-
-        fills = [t for t in trades if t.get("kind") == "fill"]
-        out.append([("", 0)])
-        out.append([(f"{'fills':<8}{'strike':>6} {'side':<4} {'qty':>4} {'at':>5} {'fee':>5} {'P&L':>8} {'ago':>6}", head)])
-        for t in fills:
-            q = t["delta"]                                   # + bought YES, - bought NO at 1 - price
-            at = t["price"] if q > 0 else 1 - t["price"]
-            out.append([(f"{'':<5}{strike(t['ticker'])}", white), *side(q),
-                        (f" {abs(q):>4g} {cents(at):>5} {money(t['fee']):>5} ", white),
-                        (f"{money(t['realized'], True):>8}", P(GREEN if t["realized"] >= 0 else RED)),
-                        (f" {ago(now - t['ts']):>6}", grey)])
-        if not fills:
-            out.append([("     none yet", grey)])
-        return out
+        done, fills = [], []
+        for t in trades:
+            if t.get("kind") == "settle":
+                q = -t["delta"]
+                won = (t.get("result") == "yes") == (q > 0)
+                word, wc = ("void", P(P.grey)) if t.get("result") == "void" else ("won", P(GREEN)) if won else ("lost", P(RED))
+                done.append([*self.bet_cells(t["ticker"], q), (word, wc), (money(t["realized"], True), gain(t["realized"])),
+                             (ago(now - t["ts"]), P(P.grey))])
+            elif t.get("kind") == "fill":
+                q = t["delta"]                               # + bought YES, - bought NO at 1 - price
+                at = t["price"] if q > 0 else 1 - t["price"]
+                fills.append([*self.bet_cells(t["ticker"], q), (cents(at).strip(), ROW), (money(t["fee"]), ROW),
+                              (ago(now - t["ts"]), P(P.grey))])
+        first = [("coin", 4), ("strike", 7), ("side", 4), ("qty", 4)]
+        return self.grid("SETTLED", first + [("won", 5), ("P&L", 9), ("ago", 6)], done, w, "none yet") + [[("", 0)]] + \
+            self.grid("FILLS", first + [("at", 5), ("fee", 9), ("ago", 6)], fills, w, "none yet")
 
     def log_panel(self, y, x, h, w) -> None:
         P = self.P
@@ -1561,12 +1612,16 @@ class Screen:
     def wheel(self, my: int, mx: int, d: int) -> None:
         """Mouse wheel over a box: d is -1 (up) or +1 (down)."""
         name = next((n for n, (y, x, h, w) in self.rects.items() if y <= my < y + h and x <= mx < x + w), None)
-        self.scroll(name, 3 * d if name in ("report", "gate", "help") else d)
+        self.scroll(name, 3 * d if name in ("report", "gate", "helptext") else d)
 
     def scroll(self, name: str | None, d: int) -> None:
         """Move one box d steps (negative is up). Boxes that don't scroll ignore it."""
         if name in ("ladder", "contract"):
             self.step_ladder(d)
+        elif name == "help":
+            self.help_sel, self.offs["help"] = max(0, min(len(HELP) + 2, self.help_sel + d)), 0
+        elif name == "helptext":
+            self.offs["help"] = max(0, self.offs.get("help", 0) + d)   # pane clamps the far end
         elif name == "variants":
             names = [v["name"] for v in self.st.get("variants") or []]
             if names:
@@ -1574,8 +1629,8 @@ class Screen:
                 self.var_sel = names[max(0, min(len(names) - 1, i + d))]
         elif name == "book":
             self.pos_off = max(0, self.pos_off + d)    # book_panel clamps the far end
-        elif name in ("gate", "help"):
-            self.offs[name] = max(0, self.offs.get(name, 0) + d)   # lines_panel clamps the far end
+        elif name == "gate":
+            self.offs[name] = max(0, self.offs.get(name, 0) + d)   # pane clamps the far end
         elif name == "settings":
             self.set_sel, self.set_sub = (self.set_sel + (1 if d > 0 else -1)) % len(self.set_rows()), 0
         elif name == "themes":
@@ -1608,99 +1663,109 @@ class Screen:
             msg = f" {self.flash} "[:max(0, W - 4)]
             self.put(H - 2, 2, msg, self.P(YELLOW, bold=True) | curses.A_REVERSE)
 
-    def lines_panel(self, y: int, x: int, h: int, w: int, name: str, lines: list, pin: int = 0, follow: int | None = None) -> None:
-        """A box of lines (gate, help, settings). A line is a plain string (colored by `rich`) or a list of (text, attr).
-        ↑↓ scroll lines that don't fit. pin keeps the last pin lines at the bottom while the ones above them scroll
-        just enough to show line `follow` (the cursor's)."""
-        P = self.P
-        self.box(y, x, h, w, name, P.border(BORDER[name]), PANEL_KEYS[name](self))
-        lines = [self.rich(l) if isinstance(l, str) else l for l in lines]
-        body, foot = (lines[:-pin], lines[-pin:]) if pin else (lines, [])
-        room = h - 2 - pin
-        off = max(0, min(self.offs.get(name, 0), len(body) - room))
-        if follow is not None:
-            off = min(max(off, follow - room + 1), follow)
-        self.offs[name] = off
-        saved, self.clip = self.clip, x + w - 2
-        at = [(y + 1 + j, l) for j, l in enumerate(body[off:off + room])] + [(y + h - 1 - pin + j, l) for j, l in enumerate(foot)]
-        for yy, l in at:
-            cx = x + 2
-            for text, attr in l:
-                if text == RULE_LINE:                      # a divider across the box
-                    text = "─" * (w - 4)
-                self.put(yy, cx, text, attr); cx += len(text)
+    def pane(self, y: int, x: int, h: int, w: int, lines: list, off: int = 0) -> int:
+        """Lines in a part of a box, from line `off`: a string (colored by `rich`) or a list of (text, attr). Returns off,
+        kept to what there is."""
+        off = max(0, min(off, len(lines) - h))
+        saved, self.clip = self.clip, x + w
+        for j, l in enumerate(lines[off:off + h]):
+            cx = x
+            for text, attr in self.rich(l) if isinstance(l, str) else l:
+                self.put(y + j, cx, text, attr); cx += len(text)
         self.clip = saved
         if off > 0:
-            self.put(y + 1, x + w - 2, "▲", P(YELLOW))
-        if off + room < len(body):
-            self.put(y + room, x + w - 2, "▼", P(YELLOW))
-        if len(body) > room and not pin and not self.flashing():
-            self.put(y + h - 1, x + 3, f" {off + 1}-{min(len(body), off + room)} of {len(body)} ", P(P.grey))
+            self.put(y, x + w, "▲", self.P(YELLOW))
+        if off + h < len(lines):
+            self.put(y + h - 1, x + w, "▼", self.P(YELLOW))
+        return off
+
+    def count_lines(self, y: int, x: int, off: int, room: int, n: int) -> None:
+        """Which lines are showing, on the bottom border, when they are not all there."""
+        if n > room and not self.flashing():
+            self.put(y, x, f" {off + 1}-{off + room} of {n} ", self.P(self.P.grey))
+
+    def split(self, y: int, x: int, h: int, name: str, lw: int) -> None:
+        """The line between a box's two panes."""
+        for r in range(1, h - 1):
+            self.put(y + r, x + lw, "│", self.P(self.P.border(name)))
 
     def gate_panel(self, y, x, h, w) -> None:
-        self.lines_panel(y, x, h, w, "gate", self.gate_lines())
+        self.box(y, x, h, w, "gate", self.P.border("gate"), PANEL_KEYS["gate"](self))
+        lines, room = self.gate_lines(w - 4), h - 2
+        top = 1 if len(lines) < room else 0                # a blank line under the tabs, if there is one to spare
+        self.offs["gate"] = off = self.pane(y + 1 + top, x + 2, room - top, w - 4, lines, self.offs.get("gate", 0))
+        self.count_lines(y + h - 1, x + 3, off, room, len(lines))
 
     def help_panel(self, y, x, h, w) -> None:
-        self.lines_panel(y, x, h, w, "help", self.help_lines(w + 4))
+        """The sections on the left, and the one picked."""
+        P, lw = self.P, 17
+        self.box(y, x, h, w, "help", P.border("help"), PANEL_KEYS["help"](self))
+        self.split(y, x, h, "help", lw)
+        self.rects = {"help": (y, x, h, lw + 1), "helptext": (y, x + lw + 1, h, w - lw - 1)}
+        secs = self.help_sections(w - lw - 5)
+        self.help_rows = {}
+        for j, (title, _) in enumerate(secs):
+            R = P.row(j == self.help_sel)
+            self.put(y + 2 + j, x + 1, f"  {title.lower()}".ljust(lw - 1), R(P.pick("rows", j / (len(secs) - 1)), bold=j == self.help_sel))
+            self.help_rows[y + 2 + j] = j
+        title, lines = secs[self.help_sel]
+        self.put(y + 2, x + lw + 3, title, P(P.c("key"), bold=True))
+        room = h - 5
+        self.offs["help"] = off = self.pane(y + 4, x + lw + 3, room, w - lw - 5, lines, self.offs.get("help", 0))
+        self.count_lines(y + h - 1, x + lw + 3, off, room, len(lines))
 
-    def settings_panel(self, y, x, h, w) -> None:
-        if self.edit_var:                                  # (never drawn: the editor is over the variants)
-            return
+    def settings_panel(self, y, x, h, w, name="settings") -> None:
+        """The settings on the left, what the one picked is on the right; a variant's (e), in its box."""
+        P = self.P
+        self.box(y, x, h, w, name, P.border(name), PANEL_KEYS["edit" if name == "variants" else name](self))
+        size = lambda l: sum(len(t) for t, _ in l)
         lines = self.settings_lines()
-        self.lines_panel(y, x, h, w, "settings", lines, pin=len(lines) - self.set_foot, follow=self.set_line)
+        lw = min(max(46, max(map(size, lines)) + 4), w - 32)
+        self.split(y, x, h, name, lw)
+        room, n = h - 3, self.set_line
+        off = max(0, min(self.offs.get("settings", 0), len(lines) - room))
+        self.offs["settings"] = off = min(max(off, n - room + 1), max(0, n - 1))   # the one picked, and what's above it
+        lines[n] = [*lines[n], (" " * max(0, lw - 2 - size(lines[n])), P.row(True)(WHITE))]
+        self.pane(y + 2, x + 1, room, lw - 2, [[(" ", P.row(i == n)(WHITE))] + l for i, l in enumerate(lines)], off)
+        self.pane(y + 2, x + lw + 3, room, w - lw - 5, self.settings_about(w - lw - 5))
 
     def themes_panel(self, y, x, h, w) -> None:
         """Every theme, with its colors; the highlighted one is in use."""
         P = self.P
-        self.box(y, x, h, w, "themes", P.border(BORDER["themes"]), PANEL_KEYS["themes"](self))
-        names, cw, room = themes.NAMES, 32, h - 2
-        cols = max(1, (w - 4) // cw)
-        self.theme_rows = rows = max(1, -(-len(names) // cols))
-        at = names.index(P.name) if P.name in names else 0
-        off = max(0, min(at % rows - room + 1, rows - room)) if rows > room else 0
+        self.box(y, x, h, w, "themes", P.border("themes"), PANEL_KEYS["themes"](self))
+        names, room = themes.NAMES, h - 2
+        cols = min(4, (w - 4) // 24)
+        cw = (w - 4) // cols
+        nw = max(map(len, names))
+        sw = min(24, cw - nw - 4)                         # a palette's width: what the column has left
+        self.theme_rows = rows = -(-len(names) // cols)   # a blank line between them keeps the palettes apart
+        at = names.index(P.name)
+        off = max(0, min(at % rows * 2 - room // 2, rows * 2 - 1 - room))
         for i, name in enumerate(names):
             c, r = divmod(i, rows)
-            if not 0 <= r - off < room:
+            if not 0 <= r * 2 - off < room:
                 continue
-            yy, cx, on = y + 1 + r - off, x + 2 + c * cw, i == at
-            self.put(yy, cx, ("▸ " if on else "  "), P(P.c("key"), bold=True))
-            self.put(yy, cx + 2, f"{name:<17}", P(P.c("variant") if on else WHITE, bold=on))
-            t = themes.THEMES[name]
-            for j, col in enumerate([t["key"], *t["grads"]["yes"]][:9]):
-                self.put(yy, cx + 19 + j, "█", P(col) if P.many else 0)
+            yy, cx, t = y + 1 + r * 2 - off, x + 2 + c * cw, themes.THEMES[name]
+            R = P.row(i == at)
+            self.put(yy, cx, f"{'▸' if i == at else ' '} ", R(P.c("key"), bold=True))
+            self.put(yy, cx + 2, f"{name:<{nw}} ", R(t["border"]["spot"] if P.many else WHITE, bold=i == at))
+            ramp = themes.smooth(tuple(t["grads"]["yes"]))
+            for j in range(sw if P.many else 0):
+                self.put(yy, cx + 3 + nw + j, "█", P(ramp[j * len(ramp) // sw]))
         if not P.many:
-            self.put(y + h - 2, x + 2, "full color needs a 256-color terminal", P(YELLOW))
+            self.put(y + h - 2, x + 2 + (cols - 1) * cw, "needs 256 colors", P(YELLOW))
 
-    def draw_overlay(self, lines: list, title: str, color: int = CYAN, hints=None, pin: int = 0, follow: int | None = None) -> None:
-        """A centered box of lines over the screen: a question, or a variant being edited. pin and follow as in
-        lines_panel."""
+    def draw_overlay(self, lines: list, title: str, color: int = CYAN) -> None:
+        """A centered box of lines over the screen: a question."""
         H, W = self.s.getmaxyx()
         lines = [self.rich(l) if isinstance(l, str) else l for l in lines]
         w = min(W - 4, max(sum(len(t) for t, _ in l) for l in lines) + 4)
         h = min(H - 2, len(lines) + 2)
         y, x = (H - h) // 2, (W - w) // 2
-        room, off = h - 2, 0
-        body, foot = (lines[:-pin], lines[-pin:]) if pin else (lines, [])
-        br = room - pin
-        if len(body) > br:
-            off = self.pin_off = max(0, min(getattr(self, "pin_off", 0), len(body) - br))
-            if follow is not None:
-                off = self.pin_off = min(max(off, follow - br + 1), follow)
         for r in range(h):
             self.put(y + r, x, " " * w)
-        self.box(y, x, h, w, title, color, hints or [("any key", " closes")])
-        saved, self.clip = self.clip, x + w - 2
-        for j, l in enumerate(body[off:off + br] + foot):
-            cx = x + 2
-            for text, attr in l:
-                if text == RULE_LINE:
-                    text = "─" * (w - 4)
-                self.put(y + 1 + j, cx, text, attr); cx += len(text)
-        self.clip = saved
-        if off > 0:
-            self.put(y + 1, x + w - 2, "▲", self.P(YELLOW))
-        if off + br < len(body):
-            self.put(y + br, x + w - 2, "▼", self.P(YELLOW))
+        self.box(y, x, h, w, title, color)
+        self.pane(y + 1, x + 2, h - 2, w - 4, lines)
 
     def rich(self, line: str) -> list[tuple[str, int]]:
         """Color a line of help, gate or prompt text: a leading CAPS heading, [x] / [ ] checks, (k) key
@@ -1735,9 +1800,9 @@ class Screen:
             out += self.log_spans(line[i:], "", WHITE)
         return out or [("", 0)]
 
-    def help_lines(self, W: int = 200) -> list:
-        """The help: prose filled from the config in use, the boxes, the key legend (two columns
-        when the screen is wide enough, else one), and the command line. It scrolls."""
+    def help_sections(self, w: int) -> list[tuple[str, list]]:
+        """The help, as (title, lines): prose filled from the config in use, the boxes, the key legend (two columns
+        when w is wide enough, else one), and the command line."""
         P, st = self.P, self.st
         S = st.get("strategy") or cfgmod.Strategy().__dict__
         G = st.get("gate_cfg") or cfgmod.Gate().__dict__
@@ -1756,38 +1821,42 @@ class Screen:
             coins=" ".join(v.split("-")[0] for v in cfgmod.SERIES.values()), paper=((self.vrow(self.variant) or {}).get("rule") or {}).get("paper_capital") or cfgmod.Config().paper_capital,
             variants="\n".join(f"|  {n:<8} {d}" for n, d in shadowmod.DESC.items()),
             retired="\n".join(f"|  {n:<8} {d}" for n, d in shadowmod.RETIRED.items()))
-        lines: list = []
-        width = max(40, min(HELP_WIDTH, W - 8))
-        for n, (heading, para) in enumerate(HELP):
-            if n:
-                lines.append("")
-            pad = 10 if heading else 0
-            first = True
+        out: list[tuple[str, list]] = []
+        width = max(40, min(HELP_WIDTH, w))
+        for title, para in HELP:
+            lines: list = []
             for chunk in para.format(**fill).split("\n"):
-                if chunk.startswith("|"):                 # a literal line, indented under the text
-                    lines.append(" " * pad + chunk[1:]); first = False; continue
-                for k, ln in enumerate(textwrap.wrap(chunk, width - pad)):
-                    lead = f"{heading:<{pad}}" if first else " " * pad
-                    lines.append(lead + ln); first = False
-        head = lambda t: [(t, P(P.c("key"), bold=True))]
-        divider = [(RULE_LINE, P(P.grey))]
-        lines += ["", divider, head("BOXES")]
+                if chunk.startswith("|"):                 # a literal line: a name, then what it is
+                    m = re.match(r"(\s*\S+)(.*)$", chunk[1:])
+                    name, rest = (m[1], m[2]) if m[2].strip() else ("", chunk[1:])
+                    pad = " " * (len(name) + len(m[2]) - len(m[2].lstrip()))
+                    for k, t in enumerate(textwrap.wrap(rest.strip(), width - len(pad))):
+                        lines.append([(name + pad[len(name):] if k == 0 else pad, P(P.c("variant"), bold=True)), *self.log_spans(t, "", WHITE)])
+                    continue
+                lines += ([""] if lines else []) + textwrap.wrap(chunk, width)
+                if chunk.endswith(":"):
+                    lines.append("")
+            out.append((title, lines))
+        lines = []
         for num, name, what in HELP_BOXES:
-            lines.append([("  " + f"{num:<1}", P(P.c("key"), bold=True)), (f"{name:<9}", P(P.c("variant"), bold=True)),
-                          (" " + what, P(WHITE))])
-        lines += ["", divider, head("KEYS")]
+            color = P.border(name) if name in BOXES else P.c("variant")
+            room = max(20, w - 12)
+            for k, t in enumerate(textwrap.wrap(what, room)):
+                lines.append([(f"{num if k == 0 else '':<1}", P(P.c("key"), bold=True)), (f" {name if k == 0 else '':<9} ", P(color, bold=True)), (t, P(WHITE))])
+        out.append(("BOXES", lines))
+        lines = []
         cols = []
         for col in HELP_KEYS:
             kw = max(len(k) for _, keys in col for k, _ in keys) + 2      # this column's key width
             blocks = []
             for section, keys in col:
-                blocks.append([[("  " + section, P(P.c("head"), bold=True))]] +
-                              [[("    " + f"{k:<{kw}}", P(P.c("key"), bold=True)),
+                blocks.append([[(section, P(P.c("head"), bold=True))]] +
+                              [[("  " + f"{k:<{kw}}", P(P.c("key"), bold=True)),
                                 (what.format(themes=len(themes.NAMES)), P(WHITE))] for k, what in keys])
             cols.append(blocks)
         width = max(sum(len(t) for t, _ in r) for b in cols[0] for r in b) + 3
         right_w = max(sum(len(t) for t, _ in r) for b in cols[1] for r in b)
-        if width + right_w + 8 <= W - 4:                          # side by side, sections stacked in each column
+        if width + right_w <= w:                          # side by side, sections stacked in each column
             left = [r for n, b in enumerate(cols[0]) for r in ([[("", 0)]] if n else []) + b]
             right = [r for n, b in enumerate(cols[1]) for r in ([[("", 0)]] if n else []) + b]
             for j in range(max(len(left), len(right))):
@@ -1797,37 +1866,71 @@ class Screen:
         else:                                                     # narrow: one column
             for n, b in enumerate(cols[0] + cols[1]):
                 lines += ([[("", 0)]] if n else []) + b
-        lines += ["", divider, head("COMMAND LINE")]
+        out.append(("KEYS", lines))
         cw = max(len(c) for c, _ in HELP_CLI) + 2
-        lines += [[("  " + f"{c:<{cw}}", P(P.c("ticker"))), (what, P(WHITE))] for c, what in HELP_CLI]
-        lines += ["", [(f"  runtime files: {cfgmod.RUNTIME}", P(P.grey))]]
-        return lines
+        lines = [[(f"{c:<{cw}}", P(P.c("ticker"))), (what, P(WHITE))] for c, what in HELP_CLI]
+        out.append(("COMMANDS", lines + [[], [(f"runtime files: {cfgmod.RUNTIME}", P(P.grey))]]))
+        return out
 
-    def gate_lines(self) -> list:
+    def meter(self, frac: float, n: int) -> list:
+        """A btop-style meter, n wide."""
+        P, g = self.P, self.P.grad("yes")
+        k = int(max(0.0, min(1.0, frac)) * n + 0.5)
+        return [("■", P(g[i * (len(g) - 1) // max(1, n - 1)])) for i in range(k)] + [("■" * (n - k), P(P.t["fill"] if P.many else P.grey))]
+
+    def gate_lines(self, w: int = 100) -> list:
+        """The checks with how far each has come and what going live takes, then every variant side by side."""
         st, P = self.st, self.P
-        g = st.get("gate") or {}
         L = st.get("live_cfg") or {}
-
-        def head(text, note=""):
-            return [(text, P(P.c("head"), bold=True))] + ([(note, P(P.grey))] if note else [])
+        lw = (w - 3) // 2
+        head = lambda text, note="": [(text, P(P.c("head"), bold=True)), (note, P(P.grey))]
+        box = lambda ok: ("[x] " if ok else "[ ] ", P(GREEN if ok else RED, bold=True))
+        plain = P(WHITE)
         live, lg = self.live_variant(), st.get("live_gate") or {}
-        out: list = [head("PAPER CHECKS", f"   {self.vn(self.variant)} trades live only when every one passes"),
-                     "  (unless live.auto_needs_gate is false)" +
-                     (f" · live {'trades' if st.get('live_enabled') else 'is set to'} {self.vn(live)}" if live and live != self.variant else "")]
+        name = self.vn(self.variant)
+        left: list = [head("PAPER CHECKS", f"   for {name}"), []]
+        short = {"days": "days traded", "entries": "settled entries", "pnl": "P&L"}
+        for c in (st.get("gate") or {}).get("checks", []):
+            if c.get("key") not in short:
+                left.append([box(c["ok"]), (c["name"], plain)]); continue
+            have, need = c["have"], c["need"]
+            txt = f"{have:.1f} / {need:g}" if c["key"] == "days" else f"{have:,} / {need:,}" if c["key"] == "entries" else \
+                f"{money(have, True)} / ${need:,.0f}"
+            left.append([box(c["ok"]), (f"{short[c['key']]:<16}", plain), (f"{txt:>15}  ", P(GREEN if c["ok"] else YELLOW, bold=True)),
+                         *self.meter(1.0 if c["ok"] else have / need if need > 0 else 0.0, max(6, lw - 40))])
+        left += [[], [("Live trades a variant only when all of them pass", P(P.grey))]]
+        key = cfgmod.KEYFILE_ENV.replace(os.path.expanduser("~"), "~")
+        right: list = [head("GO LIVE", "   all three are needed"), [],
+                       [box(st.get("keys")), ("Kalshi key present ", plain), (key, P(P.c("ticker")))],
+                       [box(st.get("live_enabled")), ("armed with L" + (f", {self.vn(live)}" if st.get("live_enabled") and live else ""), plain)],
+                       [box(st.get("mode") == "live"), ("authenticated" + (f": {st.get('live_error')}" if st.get("live_error") else ""), plain)],
+                       []]
         if st.get("live_enabled") and not lg.get("ok", True):
-            out.append(f"  [ ] live waits: {(lg.get('checks') or [{}])[0].get('name', '')}")
-        for c in g.get("checks", []):
-            out.append(f"  [{'x' if c['ok'] else ' '}] {c['name']}  ({c['detail']})")
-        if st.get("shadow"):
-            rows = shadowmod.table(st["shadow"])
-            out += ["", head("VARIANTS", "   side by side on paper; (5) shows them, (enter) selects one (tern report)")]
-            out += [[("  " + rows[0], P(P.grey, bold=True))]] + ["  " + l for l in rows[1:]]
-        out += ["", head("GO LIVE", "   all three are needed")]
-        out.append(f"  [{'x' if st.get('keys') else ' '}] Kalshi key present ({cfgmod.KEYFILE_ENV})")
-        out.append(f"  [{'x' if st.get('live_enabled') else ' '}] armed with L" + (f", {self.vn(live)}" if st.get("live_enabled") and live else ""))
-        out.append(f"  [{'x' if st.get('mode') == 'live' else ' '}] authenticated" + (f": {st.get('live_error')}" if st.get("live_error") else ""))
-        out += ["", head("CAPS"), f"  ${L.get('capital_usd', 0):,.0f} at risk · ${L.get('max_order_usd', 0):,.0f} per order · "
-                    f"-${L.get('max_daily_loss', 0):,.0f} a day turns live off"]
+            right.append([box(False), (f"live waits: {(lg.get('checks') or [{}])[0].get('name', '')}", P(YELLOW, bold=True))])
+        elif live and live != self.variant:
+            right.append([(f"live {'trades' if st.get('live_enabled') else 'is set to'} {self.vn(live)}", P(YELLOW))])
+        elif not (st.get("live_cfg") or {}).get("auto_needs_gate", True):
+            right.append([("live.auto_needs_gate is false: the checks are not needed", P(YELLOW))])
+        out: list = []
+        for j in range(max(len(left), len(right))):
+            l, r = (left[j] if j < len(left) else []), (right[j] if j < len(right) else [])
+            out.append([*l, (" " * max(0, lw + 3 - sum(len(t) for t, _ in l)), 0), *r])
+        out += [[], head("CAPS") + self.rich(f"   ${L.get('capital_usd', 0):,.0f} at risk · ${L.get('max_order_usd', 0):,.0f} per order · "
+                                              f"-${L.get('max_daily_loss', 0):,.0f} a day turns live off")]
+        rows = st.get("shadow") or []
+        if rows:
+            table = shadowmod.table(rows)
+            most = max([abs(r["pnl"]) for r in rows] + [1e-9])
+            bar = w - len(table[0]) - 5
+            out += [[], head("VARIANTS", "   side by side on paper"), [("  " + table[0], P(P.grey, bold=True))]]
+            for j, (r, l) in enumerate(zip(rows, table[1:])):   # the name, the numbers down the gradient, P&L by its sign
+                num = P(P.pick("rows", j / max(1, len(rows) - 1)))
+                m = re.match(r"(\s*\S+)(.*)$", l)
+                n = int(abs(r["pnl"]) / most * bar + 0.5)
+                out.append([("  " + m[1], P(P.c("variant"), bold=True))] +
+                           [(t, P(GREEN, bold=True) if "+" in t else P(RED, bold=True) if re.match(r"-\d", t) else num)
+                            for t in re.split(r"([+-]\d[\d.,]*)", m[2]) if t] +
+                           [("   " + "■" * n, P(GREEN if r["pnl"] >= 0 else RED))])
         return out
 
     # ------------------------------------------------------------ reports (o)
@@ -1849,10 +1952,10 @@ class Screen:
         entries = self.rep_entries()
         cur = next(r for r in entries if r.id == self.rep_sel)
         lw = REPORT_LIST_W
-        self.box(y, x, h, w, "reports", P.border(BORDER["reports"]), PANEL_KEYS["reports"](self))
+        self.box(y, x, h, w, "reports", P.border("reports"), PANEL_KEYS["reports"](self))
         self.rects = {"reports": (y, x, h, lw + 1), "report": (y, x + lw + 1, h, w - lw - 1)}
         for r in range(1, h - 1):
-            self.put(y + r, x + lw, "│", P(P.border(BORDER["reports"])))
+            self.put(y + r, x + lw, "│", P(P.border("reports")))
         rows: list = []                                   # a heading, "" or an entry: LIVE, then SAVED
         for saved, title in ((False, "LIVE"), (True, "SAVED")):
             these = [r for r in entries if r.saved == saved]
@@ -1868,9 +1971,8 @@ class Screen:
                 self.put(yy, x + 2, r, P(P.c("head"), bold=True) if r.isupper() else P(WHITE))
                 continue
             sel = r.id == self.rep_sel
-            base = curses.A_REVERSE if sel else 0
             name = r.label if len(r.label) <= lw - 5 else r.label[:lw - 6] + "…"
-            self.put(yy, x + 1, f"   {name}".ljust(lw - 1), P(P.pick("rows", entries.index(r) / max(1, len(entries) - 1)), bold=sel) | base)
+            self.put(yy, x + 1, f"   {name}".ljust(lw - 1), P.row(sel)(P.pick("rows", entries.index(r) / max(1, len(entries) - 1)), bold=sel))
             self.rep_rows[yy] = r.id
         if self.rep_top > 0:
             self.put(y + 1, x + lw - 1, "▲", P(YELLOW))
@@ -1966,7 +2068,13 @@ class Screen:
             self.say(msg)
         threading.Thread(target=work).start()             # not a daemon: closing the screen lets it finish
 
-    # ------------------------------------------------------------ settings (s)
+    def next_theme(self, d: int) -> None:
+        self.P.set_theme(themes.next_name(self.P.name, d))
+        self.save_prefs()
+        if not self.shown("themes"):
+            self.say(f"theme {self.P.name}" + ("" if self.P.many else " (needs a 256-color terminal)"))
+
+    # ------------------------------------------------------------ settings
     def set_rows(self) -> list:
         """The box's rows: a variant's, or the desk's and the screen's."""
         if self.edit_var:
@@ -2009,68 +2117,83 @@ class Screen:
         rows = self.set_rows()
         self.set_sel %= len(rows)
         lw = max(len(r.label) for r in rows)
-        armed = self.armed()
         out: list = []
         for i, row in enumerate(rows):
             if row.group:
-                out += ([""] if out else []) + [[(row.group, P(P.c("head"), bold=True))] + self.rule_head(row)]
+                out += ([[]] if out else []) + [[(" " + row.group, P(P.c("head"), bold=True))] + self.rule_head(row)]
             sel = i == self.set_sel
             if sel and self.set_buf is not None:
                 val = [(f" {self.set_buf}▏", P(YELLOW, bold=True) | curses.A_REVERSE)]
             elif row.kind in ("slots", "coins"):         # each choice, on bright and off grey; the cursor's reversed
                 v = self.set_value(row.key) or []
                 ch = self.set_choices(row)
-                val = [(" ", 0)]
+                val = [(" ", P.row(sel)(WHITE))]
                 for j, c in enumerate(ch):
                     label = str(c) if row.kind == "slots" else cfgmod.SERIES[c].split("-")[0]
                     on = c in v
-                    val += [(f" {label} ", P(GREEN if on else P.grey, bold=on) |
+                    val += [(f" {label} ", P.row(sel)(GREEN if on else P.grey, bold=on) |
                              (curses.A_REVERSE if sel and j == min(self.set_sub, len(ch) - 1) else 0))]
                 if row.sec == "rule" and row.name in self.draft:
-                    val += [(" *", P(YELLOW, bold=True))]
+                    val += [(" *", P.row(sel)(YELLOW, bold=True))]
             else:
                 v = self.set_value(row.key)
                 changed = row.sec == "rule" and row.name in self.draft
                 col = YELLOW if changed or row.key in self.set_sent else (GREEN if v else RED) if row.kind == "bool" else P.c("key")
                 val = [(f" {self.set_fmt(row, v)} ", P(col, bold=True) | (curses.A_REVERSE if sel else 0))]
                 if changed:                              # 19 → 10 *
-                    val = [(f" {self.set_fmt(row, self.rule_now(row.name))} →", P(P.grey))] + val + [("*", P(YELLOW, bold=True))]
+                    val = [(f" {self.set_fmt(row, self.rule_now(row.name))} →", P.row(sel)(P.grey))] + val + \
+                        [("*", P.row(sel)(YELLOW, bold=True))]
             if sel:                                      # the line the settings box keeps in view
-                self.set_line = len(out) - (1 if i == 0 else 0)   # the first row: its heading too
-            mark = ("▸ ", P(P.c("key"), bold=True)) if sel else ("  ", 0)
-            out.append([mark, (f"{row.label:<{lw}}  ", P(WHITE, bold=sel))] + val)
+                self.set_line = len(out)
+            R = P.row(sel)
+            out.append([("▸ " if sel else "  ", R(P.c("key"), bold=True)),
+                        (f"{row.label:<{lw}}  ", R(P.pick("rows", i / max(1, len(rows) - 1)), bold=sel))] + val)
+        return out
+
+    def settings_about(self, w: int) -> list:
+        """What the setting picked is, what it can be, and what saving it does."""
+        P = self.P
+        rows = self.set_rows()
         row = rows[self.set_sel]
-        def details(r) -> list[str]:
-            """The two lines under the divider for row r."""
-            if r.sec == "rule":
-                how = "←→ pick one · space or enter turns it on / off" if r.kind in ("slots", "coins") else \
-                    f"{self.set_fmt(r, r.lo)} to {self.set_fmt(r, r.hi)}, steps of " + ("1¢" if r.kind == "p" else f"{r.step:g}")
-                return [r.what, how]
-            if r.kind in ("usd", "n"):
-                return [r.what, f"{self.set_fmt(r, r.lo)} to {self.set_fmt(r, r.hi)}, steps of {self.set_fmt(r, r.step)}  ·  saved at once"]
-            return [r.what, "←→ or enter changes it  ·  saved at once"]
-        # pad to the widest any row needs, so the box keeps one size while the cursor moves
-        wide = max(len(t) for r in rows for t in details(r))
-        self.set_foot = len(out)                         # from here down stays put while the rows scroll
-        out += [RULE_LINE] + [[(t.ljust(wide), P(P.grey))] for t in details(row)]
+        out: list = [[(row.label, P(P.c("key"), bold=True))], []]
+        say = lambda text, color, bold=False: out.extend([[(t, P(color, bold=bold))] for t in textwrap.wrap(text, max(10, w))])
+        say(row.what, WHITE)
+        out.append([])
+        saved = "Saved at once." if self.saves_here(row) else "View only here."
+        if row.sec == "rule":
+            say("←→ pick one · space or enter turns it on / off" if row.kind in ("slots", "coins") else
+                f"{self.set_fmt(row, row.lo)} to {self.set_fmt(row, row.hi)}, steps of " + ("1¢" if row.kind == "p" else f"{row.step:g}"), P.grey)
+        elif row.kind in ("usd", "n"):
+            say(f"{self.set_fmt(row, row.lo)} to {self.set_fmt(row, row.hi)}, steps of {self.set_fmt(row, row.step)}", P.grey)
+            say(saved, P.grey)
+        else:
+            say("←→ or enter changes it. " + saved, P.grey)
         if row.sec == "web":                             # what the service is doing now, and where to open it
             ws = self.st.get("web_state") or {}
             st = ws.get("state", "unknown")
-            say = {"active": ("running · " + ws.get("url", ""), GREEN), "inactive": ("stopped", P.grey),
+            now = {"active": ("running", GREEN), "inactive": ("stopped", P.grey),
                    "failed": ("failed: journalctl --user -u tern-web", RED),
                    "activating": ("starting… (stuck here: the port may be taken; journalctl --user -u tern-web)", YELLOW),
                    "deactivating": ("stopping…", YELLOW)}.get(st, (st, P.grey))
-            out += [[("web screen now: ", P(WHITE)), (say[0], P(say[1], bold=True))]]
-        else:                                            # the same height on every row
-            out += [[("", 0)]]
+            out += [[], [("web screen now", P(P.c("head"), bold=True))]]
+            say(*now, True)
+            if st == "active":
+                out.extend([[(u, P(P.c("ticker")))] for u in ws.get("url", "").split(" · ")])
+        if self.edit_var:
+            changed = self.draft_lines()
+            out += [[], [("CHANGES", P(P.c("head"), bold=True))]] + [[(t, P(YELLOW))] for t in changed or ["none yet"]] + [[]]
+            say(f"Nothing is saved until s: that makes a new variant; {self.vn(self.edit_var)} stays as it is.", P.grey)
         if any(r.key not in (self.raw.get("settings") or {}) for r in rows if r.sec not in ("screen", "rule")) or \
                 self.edit_var and any("on" not in v for v in self.raw.get("variants") or []):
-            out += [[("The engine running is older than this screen: restart it (P, P) to change these.", P(YELLOW, bold=True))]]
-        elif self.edit_var:
-            out += [[(f"Nothing is saved until s: that makes a new variant; {self.vn(self.edit_var)} stays as it is.", P(P.grey))]]
-        elif armed:
-            out += [[("Live is armed: raising a live limit or lowering a gate asks you to type \"live\".", P(YELLOW, bold=True))]]
+            out.append([])
+            say("The engine running is older than this screen: restart it (P, P) to change these.", YELLOW, True)
+        elif not self.edit_var and self.armed():
+            out.append([])
+            say("Live is armed: raising a live limit or lowering a gate asks you to type \"live\".", YELLOW, True)
         return out
+
+    def saves_here(self, row) -> bool:
+        return True
 
     def rule_head(self, row) -> list:
         """What follows RULE: the variant the draft starts from, and how much of it is changed."""
@@ -2228,11 +2351,6 @@ class Screen:
         getattr(self, self.tab + "_panel")(0, 0, H - 1, W)
         self.clip, self.drawing = None, ""
         self.footer(H, W)
-        if self.overlay == "edit":
-            lines = self.settings_lines()
-            self.draw_overlay(lines, f"edit {self.vn(self.edit_var)}", self.P.border("contract"), pin=len(lines) - self.set_foot,
-                              follow=self.set_line, hints=[("↑↓", " pick"), ("←→", " step"), ("enter", " type"),
-                                                           ("s", "ave as new"), ("esc", " discard")])
         if self.modal:
             self.draw_overlay(self.modal["lines"], self.modal["title"], self.modal.get("color", YELLOW))
         self.s.refresh()
@@ -2311,6 +2429,9 @@ class Screen:
                     self.say("engine kept running")
                 return True
             return True
+        if ch in (ord("t"), ord("T")) and self.set_buf is None:
+            self.next_theme(-1 if ch == ord("T") else 1)
+            return True
         if self.overlay == "edit":
             self.settings_key(ch)
             return True
@@ -2324,10 +2445,10 @@ class Screen:
             return False
         if ch in (curses.KEY_UP, curses.KEY_DOWN, curses.KEY_PPAGE, curses.KEY_NPAGE, ord("k"), ord("j")):
             page = ch in (curses.KEY_PPAGE, curses.KEY_NPAGE)
-            self.scroll("report" if self.tab == "reports" and page else self.tab, {curses.KEY_UP: -1, ord("k"): -1, curses.KEY_DOWN: 1, ord("j"): 1,
+            self.scroll({"reports": "report", "help": "helptext"}.get(self.tab, self.tab) if page else self.tab, {curses.KEY_UP: -1, ord("k"): -1, curses.KEY_DOWN: 1, ord("j"): 1,
                                      curses.KEY_PPAGE: -10, curses.KEY_NPAGE: 10}[ch])
         elif ch in (curses.KEY_HOME, curses.KEY_END):
-            self.scroll("report" if self.tab == "reports" else self.tab, -10 ** 6 if ch == curses.KEY_HOME else 10 ** 6)
+            self.scroll({"reports": "report", "help": "helptext"}.get(self.tab, self.tab), -10 ** 6 if ch == curses.KEY_HOME else 10 ** 6)
         elif ch in (curses.KEY_LEFT, curses.KEY_RIGHT) and self.tab == "themes":
             self.scroll("themes", -self.theme_rows if ch == curses.KEY_LEFT else self.theme_rows)
         elif ch in (10, 13, curses.KEY_ENTER):

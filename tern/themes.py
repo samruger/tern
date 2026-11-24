@@ -1,4 +1,5 @@
-"""Color schemes for the screen. `t` on the screen steps to the next one, `T` back, in this order.
+"""Color schemes for the screen. `t` on the screen steps to the next one, `T` back, in this order; the themes box
+lists them.
 
 Every color is a 256-color index (see https://www.ditig.com/256-colors-cheat-sheet). A theme only
 applies on a 256-color terminal; on 8 colors the screen keeps its basic fallbacks.
@@ -7,8 +8,10 @@ Roles:
   base      what the 8 basic names draw as: red = losses / NO side / errors, green = gains / YES,
             yellow = warnings and the selected strike, white = plain text, and so on
   grey      quiet text: column values, hints, ages
-  key       the box numbers and the pressable letter of each hint on the borders
-  border    each box's frame
+  key       the tabs' numbers and the pressable letter of each hint on the borders
+  border    each box's frame, and its tab while it is on screen
+  fill      the dark background of the tabs not on screen, and of a list's highlighted row
+  tab       those tabs' names
   head      column headers in the ladder and book
   sym, event, unit
             the status line: the coin, the hourly contract, small labels like "1h"
@@ -18,18 +21,26 @@ Roles:
             log tokens: a contract, its strike, "15m slot", "settled", a shadow variant
             ("band90"), "favorites in band", the · between parts
   value     the book's money values
-  rows      the btop-style gradient down the book, and (reversed) the ladder's spread/volume tint
+  rows      the btop-style gradient down the lists, and (reversed) the ladder's spread/volume tint
   fade_txt, fade_ts
             the log's age fade, newest first, for text and timestamps
-  grads     the charts: spot price, YES price (cheap → dear), equity up, equity down
+  grads     the charts: spot price, YES price (cheap → dear), P&L up, P&L down
+
+A box fills the screen, so a gradient covers a lot of rows: `smooth` puts the colors between its steps in, and
+`readable` is what a color draws as on a fill it would be hard to read on.
 """
+
+from functools import lru_cache
+from math import dist
 
 THEMES: dict[str, dict] = {
     # the original look: basic colors, light grey
     "classic": {
         "base": {},
         "grey": 248, "key": 205, "head": 248,
-        "border": {"spot": 6, "contract": 5, "ladder": 208, "book": 3, "equity": 2, "log": 4},
+        "border": {"spot": 6, "contract": 5, "ladder": 208, "book": 3, "variants": 2, "log": 4,
+                   "gate": 50, "reports": 218, "settings": 214, "themes": 205, "help": 44},
+        "fill": 237, "tab": 7,
         "sym": 6, "event": 75, "unit": 110,
         "word_a": 183, "word_b": 218, "word_c": 180,
         "ticker": 73, "strike": 222, "slot": 214, "verb": 183, "variant": 117, "phrase": 180, "sep": 205,
@@ -47,7 +58,9 @@ THEMES: dict[str, dict] = {
     "tokyo night": {
         "base": {1: 210, 2: 149, 3: 179, 4: 111, 5: 141, 6: 117, 7: 189},
         "grey": 103, "key": 215, "head": 111,
-        "border": {"spot": 117, "contract": 141, "ladder": 111, "book": 140, "equity": 67, "log": 104},
+        "border": {"spot": 117, "contract": 141, "ladder": 111, "book": 140, "variants": 67, "log": 104,
+                   "gate": 179, "reports": 189, "settings": 215, "themes": 74, "help": 147},
+        "fill": 17, "tab": 103,
         "sym": 117, "event": 111, "unit": 103,
         "word_a": 146, "word_b": 141, "word_c": 104,
         "ticker": 111, "strike": 215, "slot": 141, "verb": 140, "variant": 117, "phrase": 179, "sep": 60,
@@ -66,7 +79,9 @@ THEMES: dict[str, dict] = {
     "synthwave": {
         "base": {1: 204, 2: 122, 3: 221, 4: 69, 5: 170, 6: 81, 7: 189},
         "grey": 146, "key": 205, "head": 117,
-        "border": {"spot": 81, "contract": 171, "ladder": 69, "book": 205, "equity": 75, "log": 170},
+        "border": {"spot": 81, "contract": 171, "ladder": 69, "book": 205, "variants": 75, "log": 170,
+                   "gate": 87, "reports": 63, "settings": 219, "themes": 99, "help": 218},
+        "fill": 54, "tab": 146,
         "sym": 81, "event": 75, "unit": 110,
         "word_a": 183, "word_b": 218, "word_c": 147,
         "ticker": 111, "strike": 219, "slot": 213, "verb": 183, "variant": 117, "phrase": 147, "sep": 205,
@@ -85,7 +100,9 @@ THEMES: dict[str, dict] = {
     "sunset": {
         "base": {1: 197, 2: 150, 3: 220, 4: 99, 5: 170, 6: 209, 7: 230},
         "grey": 181, "key": 220, "head": 215,
-        "border": {"spot": 208, "contract": 205, "ladder": 141, "book": 214, "equity": 170, "log": 99},
+        "border": {"spot": 208, "contract": 205, "ladder": 141, "book": 214, "variants": 170, "log": 99,
+                   "gate": 197, "reports": 222, "settings": 203, "themes": 183, "help": 209},
+        "fill": 53, "tab": 181,
         "sym": 214, "event": 209, "unit": 181,
         "word_a": 217, "word_b": 211, "word_c": 183,
         "ticker": 209, "strike": 221, "slot": 205, "verb": 217, "variant": 215, "phrase": 183, "sep": 205,
@@ -104,7 +121,9 @@ THEMES: dict[str, dict] = {
     "ocean": {
         "base": {1: 210, 2: 85, 3: 229, 4: 33, 5: 147, 6: 51, 7: 195},
         "grey": 109, "key": 214, "head": 87,
-        "border": {"spot": 45, "contract": 33, "ladder": 37, "book": 81, "equity": 30, "log": 39},
+        "border": {"spot": 45, "contract": 33, "ladder": 37, "book": 81, "variants": 30, "log": 39,
+                   "gate": 49, "reports": 214, "settings": 51, "themes": 32, "help": 43},
+        "fill": 17, "tab": 109,
         "sym": 51, "event": 45, "unit": 109,
         "word_a": 116, "word_b": 80, "word_c": 152,
         "ticker": 45, "strike": 229, "slot": 87, "verb": 116, "variant": 123, "phrase": 152, "sep": 37,
@@ -123,7 +142,9 @@ THEMES: dict[str, dict] = {
     "retro": {
         "base": {1: 167, 2: 142, 3: 214, 4: 109, 5: 175, 6: 108, 7: 223},
         "grey": 144, "key": 208, "head": 214,
-        "border": {"spot": 214, "contract": 175, "ladder": 108, "book": 208, "equity": 142, "log": 109},
+        "border": {"spot": 214, "contract": 175, "ladder": 108, "book": 208, "variants": 142, "log": 109,
+                   "gate": 130, "reports": 220, "settings": 137, "themes": 178, "help": 223},
+        "fill": 52, "tab": 144,
         "sym": 214, "event": 108, "unit": 144,
         "word_a": 180, "word_b": 173, "word_c": 137,
         "ticker": 109, "strike": 214, "slot": 208, "verb": 175, "variant": 108, "phrase": 180, "sep": 137,
@@ -142,7 +163,9 @@ THEMES: dict[str, dict] = {
     "matrix": {
         "base": {1: 203, 2: 83, 3: 220, 4: 35, 5: 157, 6: 48, 7: 194},
         "grey": 108, "key": 220, "head": 120,
-        "border": {"spot": 46, "contract": 34, "ladder": 40, "book": 77, "equity": 28, "log": 71},
+        "border": {"spot": 46, "contract": 34, "ladder": 40, "book": 77, "variants": 28, "log": 71,
+                   "gate": 154, "reports": 157, "settings": 220, "themes": 119, "help": 65},
+        "fill": 22, "tab": 194,
         "sym": 46, "event": 84, "unit": 108,
         "word_a": 151, "word_b": 114, "word_c": 108,
         "ticker": 84, "strike": 228, "slot": 156, "verb": 151, "variant": 120, "phrase": 150, "sep": 34,
@@ -159,9 +182,11 @@ THEMES: dict[str, dict] = {
     },
     # Christmas: snow white, berry red and holly green, with gold only on the key hints
     "christmas": {
-        "base": {1: 196, 2: 40, 3: 231, 4: 28, 5: 160, 6: 71, 7: 255},
+        "base": {1: 196, 2: 40, 3: 231, 4: 28, 5: 196, 6: 71, 7: 255},
         "grey": 188, "key": 220, "head": 255,
-        "border": {"spot": 160, "contract": 34, "ladder": 255, "book": 28, "equity": 196, "log": 255},
+        "border": {"spot": 196, "contract": 34, "ladder": 255, "book": 28, "variants": 203, "log": 157,
+                   "gate": 217, "reports": 220, "settings": 71, "themes": 210, "help": 77},
+        "fill": 22, "tab": 188,
         "sym": 196, "event": 77, "unit": 188,
         "word_a": 194, "word_b": 217, "word_c": 255,
         "ticker": 77, "strike": 255, "slot": 203, "verb": 217, "variant": 157, "phrase": 194, "sep": 196,
@@ -180,7 +205,9 @@ THEMES: dict[str, dict] = {
     "dracula": {
         "base": {1: 210, 2: 84, 3: 228, 4: 141, 5: 212, 6: 117, 7: 255},
         "grey": 103, "key": 212, "head": 141,
-        "border": {"spot": 117, "contract": 212, "ladder": 141, "book": 215, "equity": 84, "log": 98},
+        "border": {"spot": 117, "contract": 212, "ladder": 141, "book": 215, "variants": 84, "log": 98,
+                   "gate": 225, "reports": 135, "settings": 111, "themes": 228, "help": 183},
+        "fill": 54, "tab": 146,
         "sym": 117, "event": 141, "unit": 103,
         "word_a": 183, "word_b": 218, "word_c": 146,
         "ticker": 141, "strike": 215, "slot": 212, "verb": 183, "variant": 117, "phrase": 228, "sep": 212,
@@ -199,7 +226,9 @@ THEMES: dict[str, dict] = {
     "cyberpunk": {
         "base": {1: 197, 2: 50, 3: 226, 4: 33, 5: 201, 6: 51, 7: 230},
         "grey": 145, "key": 226, "head": 51,
-        "border": {"spot": 226, "contract": 201, "ladder": 51, "book": 199, "equity": 45, "log": 165},
+        "border": {"spot": 226, "contract": 201, "ladder": 51, "book": 199, "variants": 45, "log": 165,
+                   "gate": 219, "reports": 220, "settings": 213, "themes": 228, "help": 207},
+        "fill": 54, "tab": 145,
         "sym": 226, "event": 51, "unit": 145,
         "word_a": 159, "word_b": 219, "word_c": 229,
         "ticker": 51, "strike": 226, "slot": 201, "verb": 213, "variant": 87, "phrase": 229, "sep": 201,
@@ -216,9 +245,11 @@ THEMES: dict[str, dict] = {
     },
     # Halloween: pumpkin orange, witch purple, slime green
     "halloween": {
-        "base": {1: 160, 2: 118, 3: 214, 4: 92, 5: 134, 6: 208, 7: 223},
+        "base": {1: 196, 2: 118, 3: 214, 4: 92, 5: 134, 6: 208, 7: 223},
         "grey": 138, "key": 118, "head": 208,
-        "border": {"spot": 208, "contract": 92, "ladder": 202, "book": 134, "equity": 76, "log": 130},
+        "border": {"spot": 208, "contract": 134, "ladder": 202, "book": 141, "variants": 76, "log": 130,
+                   "gate": 150, "reports": 214, "settings": 223, "themes": 166, "help": 144},
+        "fill": 53, "tab": 250,
         "sym": 208, "event": 141, "unit": 138,
         "word_a": 180, "word_b": 177, "word_c": 144,
         "ticker": 141, "strike": 214, "slot": 118, "verb": 177, "variant": 215, "phrase": 150, "sep": 208,
@@ -237,7 +268,9 @@ THEMES: dict[str, dict] = {
     "pastel": {
         "base": {1: 211, 2: 121, 3: 229, 4: 153, 5: 219, 6: 159, 7: 255},
         "grey": 146, "key": 218, "head": 153,
-        "border": {"spot": 159, "contract": 218, "ladder": 153, "book": 225, "equity": 157, "log": 183},
+        "border": {"spot": 159, "contract": 218, "ladder": 153, "book": 225, "variants": 157, "log": 183,
+                   "gate": 116, "reports": 104, "settings": 224, "themes": 219, "help": 194},
+        "fill": 54, "tab": 146,
         "sym": 159, "event": 153, "unit": 146,
         "word_a": 189, "word_b": 225, "word_c": 194,
         "ticker": 153, "strike": 229, "slot": 218, "verb": 225, "variant": 159, "phrase": 194, "sep": 218,
@@ -256,7 +289,9 @@ THEMES: dict[str, dict] = {
     "nord": {
         "base": {1: 174, 2: 150, 3: 222, 4: 110, 5: 139, 6: 116, 7: 255},
         "grey": 103, "key": 222, "head": 116,
-        "border": {"spot": 110, "contract": 139, "ladder": 116, "book": 109, "equity": 150, "log": 67},
+        "border": {"spot": 110, "contract": 139, "ladder": 116, "book": 109, "variants": 150, "log": 67,
+                   "gate": 173, "reports": 68, "settings": 222, "themes": 189, "help": 66},
+        "fill": 17, "tab": 103,
         "sym": 116, "event": 110, "unit": 103,
         "word_a": 152, "word_b": 182, "word_c": 146,
         "ticker": 110, "strike": 222, "slot": 173, "verb": 182, "variant": 116, "phrase": 152, "sep": 67,
@@ -273,9 +308,11 @@ THEMES: dict[str, dict] = {
     },
     # Valentine's Day: roses, blush pinks, and a little chocolate
     "valentine": {
-        "base": {1: 160, 2: 211, 3: 223, 4: 132, 5: 199, 6: 217, 7: 225},
+        "base": {1: 196, 2: 211, 3: 223, 4: 132, 5: 199, 6: 217, 7: 225},
         "grey": 181, "key": 197, "head": 211,
-        "border": {"spot": 197, "contract": 211, "ladder": 161, "book": 218, "equity": 168, "log": 125},
+        "border": {"spot": 197, "contract": 211, "ladder": 198, "book": 218, "variants": 168, "log": 224,
+                   "gate": 205, "reports": 138, "settings": 212, "themes": 217, "help": 204},
+        "fill": 52, "tab": 181,
         "sym": 204, "event": 211, "unit": 181,
         "word_a": 224, "word_b": 218, "word_c": 181,
         "ticker": 211, "strike": 225, "slot": 197, "verb": 218, "variant": 217, "phrase": 224, "sep": 197,
@@ -294,7 +331,9 @@ THEMES: dict[str, dict] = {
     "st patrick": {
         "base": {1: 167, 2: 46, 3: 220, 4: 35, 5: 178, 6: 48, 7: 230},
         "grey": 150, "key": 220, "head": 220,
-        "border": {"spot": 34, "contract": 220, "ladder": 40, "book": 178, "equity": 28, "log": 76},
+        "border": {"spot": 34, "contract": 220, "ladder": 40, "book": 178, "variants": 28, "log": 76,
+                   "gate": 222, "reports": 120, "settings": 214, "themes": 151, "help": 184},
+        "fill": 22, "tab": 193,
         "sym": 220, "event": 77, "unit": 150,
         "word_a": 193, "word_b": 222, "word_c": 151,
         "ticker": 77, "strike": 220, "slot": 214, "verb": 186, "variant": 120, "phrase": 222, "sep": 220,
@@ -311,9 +350,11 @@ THEMES: dict[str, dict] = {
     },
     # red light: darkroom / night-vision, every shade of red; gains show amber, losses deep red
     "red light": {
-        "base": {1: 160, 2: 215, 3: 223, 4: 124, 5: 168, 6: 203, 7: 224},
+        "base": {1: 196, 2: 215, 3: 223, 4: 124, 5: 168, 6: 203, 7: 224},
         "grey": 131, "key": 196, "head": 203,
-        "border": {"spot": 196, "contract": 160, "ladder": 124, "book": 167, "equity": 88, "log": 131},
+        "border": {"spot": 196, "contract": 172, "ladder": 197, "book": 167, "variants": 208, "log": 131,
+                   "gate": 214, "reports": 224, "settings": 166, "themes": 223, "help": 203},
+        "fill": 52, "tab": 174,
         "sym": 203, "event": 167, "unit": 131,
         "word_a": 174, "word_b": 210, "word_c": 138,
         "ticker": 167, "strike": 217, "slot": 203, "verb": 174, "variant": 210, "phrase": 181, "sep": 160,
@@ -332,7 +373,9 @@ THEMES: dict[str, dict] = {
     "amber": {
         "base": {1: 166, 2: 220, 3: 229, 4: 136, 5: 172, 6: 214, 7: 223},
         "grey": 137, "key": 229, "head": 214,
-        "border": {"spot": 214, "contract": 208, "ladder": 178, "book": 172, "equity": 136, "log": 130},
+        "border": {"spot": 214, "contract": 208, "ladder": 178, "book": 172, "variants": 136, "log": 130,
+                   "gate": 186, "reports": 220, "settings": 180, "themes": 221, "help": 144},
+        "fill": 52, "tab": 180,
         "sym": 220, "event": 214, "unit": 137,
         "word_a": 180, "word_b": 215, "word_c": 144,
         "ticker": 214, "strike": 229, "slot": 220, "verb": 179, "variant": 221, "phrase": 186, "sep": 172,
@@ -349,9 +392,11 @@ THEMES: dict[str, dict] = {
     },
     # autumn: maple red, pumpkin, harvest gold, bark brown
     "autumn": {
-        "base": {1: 160, 2: 106, 3: 214, 4: 66, 5: 131, 6: 179, 7: 230},
+        "base": {1: 196, 2: 106, 3: 214, 4: 66, 5: 131, 6: 179, 7: 230},
         "grey": 138, "key": 208, "head": 179,
-        "border": {"spot": 166, "contract": 178, "ladder": 130, "book": 124, "equity": 100, "log": 94},
+        "border": {"spot": 166, "contract": 178, "ladder": 130, "book": 167, "variants": 100, "log": 209,
+                   "gate": 186, "reports": 131, "settings": 214, "themes": 144, "help": 172},
+        "fill": 52, "tab": 174,
         "sym": 208, "event": 179, "unit": 138,
         "word_a": 180, "word_b": 216, "word_c": 144,
         "ticker": 179, "strike": 220, "slot": 208, "verb": 174, "variant": 186, "phrase": 180, "sep": 166,
@@ -370,7 +415,9 @@ THEMES: dict[str, dict] = {
     "fourth of july": {
         "base": {1: 196, 2: 81, 3: 229, 4: 27, 5: 203, 6: 75, 7: 255},
         "grey": 146, "key": 196, "head": 75,
-        "border": {"spot": 196, "contract": 255, "ladder": 27, "book": 160, "equity": 33, "log": 252},
+        "border": {"spot": 196, "contract": 255, "ladder": 69, "book": 203, "variants": 33, "log": 252,
+                   "gate": 39, "reports": 217, "settings": 117, "themes": 210, "help": 111},
+        "fill": 17, "tab": 146,
         "sym": 255, "event": 75, "unit": 146,
         "word_a": 189, "word_b": 217, "word_c": 153,
         "ticker": 75, "strike": 210, "slot": 196, "verb": 189, "variant": 117, "phrase": 153, "sep": 196,
@@ -389,7 +436,9 @@ THEMES: dict[str, dict] = {
     "aurora": {
         "base": {1: 204, 2: 48, 3: 228, 4: 63, 5: 171, 6: 50, 7: 195},
         "grey": 109, "key": 48, "head": 86,
-        "border": {"spot": 48, "contract": 135, "ladder": 43, "book": 171, "equity": 37, "log": 99},
+        "border": {"spot": 48, "contract": 135, "ladder": 43, "book": 171, "variants": 37, "log": 99,
+                   "gate": 35, "reports": 183, "settings": 123, "themes": 98, "help": 29},
+        "fill": 17, "tab": 109,
         "sym": 48, "event": 86, "unit": 109,
         "word_a": 158, "word_b": 183, "word_c": 152,
         "ticker": 86, "strike": 219, "slot": 171, "verb": 183, "variant": 122, "phrase": 158, "sep": 135,
@@ -408,7 +457,9 @@ THEMES: dict[str, dict] = {
     "rainbow": {
         "base": {1: 203, 2: 119, 3: 227, 4: 75, 5: 213, 6: 87, 7: 255},
         "grey": 189, "key": 226, "head": 87,
-        "border": {"spot": 196, "contract": 208, "ladder": 226, "book": 46, "equity": 33, "log": 129},
+        "border": {"spot": 196, "contract": 208, "ladder": 226, "book": 46, "variants": 33, "log": 201,
+                   "gate": 155, "reports": 213, "settings": 203, "themes": 221, "help": 86},
+        "fill": 17, "tab": 189,
         "sym": 208, "event": 87, "unit": 189,
         "word_a": 215, "word_b": 141, "word_c": 157,
         "ticker": 75, "strike": 227, "slot": 213, "verb": 141, "variant": 87, "phrase": 215, "sep": 201,
@@ -427,7 +478,9 @@ THEMES: dict[str, dict] = {
     "prism": {
         "base": {1: 204, 2: 86, 3: 228, 4: 69, 5: 207, 6: 51, 7: 231},
         "grey": 152, "key": 231, "head": 123,
-        "border": {"spot": 51, "contract": 45, "ladder": 75, "book": 105, "equity": 135, "log": 201},
+        "border": {"spot": 51, "contract": 45, "ladder": 75, "book": 105, "variants": 135, "log": 201,
+                   "gate": 30, "reports": 213, "settings": 189, "themes": 207, "help": 183},
+        "fill": 54, "tab": 250,
         "sym": 51, "event": 81, "unit": 152,
         "word_a": 159, "word_b": 183, "word_c": 189,
         "ticker": 81, "strike": 219, "slot": 207, "verb": 183, "variant": 123, "phrase": 189, "sep": 171,
@@ -444,9 +497,11 @@ THEMES: dict[str, dict] = {
     },
     # lava: one big gradient from molten red to white-hot yellow; gains glow yellow, losses dark red
     "lava": {
-        "base": {1: 160, 2: 227, 3: 229, 4: 130, 5: 166, 6: 214, 7: 230},
+        "base": {1: 196, 2: 227, 3: 229, 4: 130, 5: 166, 6: 214, 7: 230},
         "grey": 180, "key": 231, "head": 220,
-        "border": {"spot": 124, "contract": 160, "ladder": 202, "book": 208, "equity": 214, "log": 220},
+        "border": {"spot": 196, "contract": 214, "ladder": 202, "book": 208, "variants": 186, "log": 220,
+                   "gate": 203, "reports": 221, "settings": 167, "themes": 227, "help": 216},
+        "fill": 52, "tab": 180,
         "sym": 214, "event": 208, "unit": 180,
         "word_a": 223, "word_b": 216, "word_c": 186,
         "ticker": 208, "strike": 229, "slot": 202, "verb": 216, "variant": 221, "phrase": 223, "sep": 196,
@@ -465,7 +520,9 @@ THEMES: dict[str, dict] = {
     "ice and fire": {
         "base": {1: 203, 2: 86, 3: 222, 4: 33, 5: 209, 6: 117, 7: 255},
         "grey": 146, "key": 214, "head": 153,
-        "border": {"spot": 45, "contract": 39, "ladder": 105, "book": 168, "equity": 202, "log": 196},
+        "border": {"spot": 45, "contract": 39, "ladder": 105, "book": 168, "variants": 202, "log": 196,
+                   "gate": 215, "reports": 189, "settings": 203, "themes": 51, "help": 217},
+        "fill": 17, "tab": 146,
         "sym": 117, "event": 75, "unit": 146,
         "word_a": 153, "word_b": 217, "word_c": 223,
         "ticker": 75, "strike": 216, "slot": 208, "verb": 189, "variant": 117, "phrase": 223, "sep": 203,
@@ -484,7 +541,9 @@ THEMES: dict[str, dict] = {
     "galaxy": {
         "base": {1: 204, 2: 122, 3: 229, 4: 62, 5: 177, 6: 111, 7: 231},
         "grey": 146, "key": 229, "head": 147,
-        "border": {"spot": 63, "contract": 99, "ladder": 61, "book": 135, "equity": 69, "log": 171},
+        "border": {"spot": 63, "contract": 219, "ladder": 69, "book": 135, "variants": 111, "log": 171,
+                   "gate": 189, "reports": 177, "settings": 229, "themes": 141, "help": 153},
+        "fill": 54, "tab": 146,
         "sym": 147, "event": 111, "unit": 146,
         "word_a": 183, "word_b": 219, "word_c": 189,
         "ticker": 111, "strike": 229, "slot": 177, "verb": 183, "variant": 153, "phrase": 189, "sep": 99,
@@ -503,7 +562,9 @@ THEMES: dict[str, dict] = {
     "mint chip": {
         "base": {1: 167, 2: 121, 3: 229, 4: 79, 5: 138, 6: 122, 7: 230},
         "grey": 144, "key": 121, "head": 158,
-        "border": {"spot": 121, "contract": 137, "ladder": 115, "book": 94, "equity": 79, "log": 130},
+        "border": {"spot": 121, "contract": 137, "ladder": 115, "book": 130, "variants": 79, "log": 173,
+                   "gate": 157, "reports": 180, "settings": 158, "themes": 144, "help": 230},
+        "fill": 22, "tab": 187,
         "sym": 121, "event": 115, "unit": 144,
         "word_a": 187, "word_b": 180, "word_c": 151,
         "ticker": 115, "strike": 230, "slot": 173, "verb": 180, "variant": 158, "phrase": 187, "sep": 137,
@@ -522,7 +583,9 @@ THEMES: dict[str, dict] = {
     "coffee": {
         "base": {1: 167, 2: 150, 3: 222, 4: 137, 5: 174, 6: 180, 7: 230},
         "grey": 138, "key": 215, "head": 180,
-        "border": {"spot": 137, "contract": 173, "ladder": 130, "book": 180, "equity": 94, "log": 136},
+        "border": {"spot": 137, "contract": 173, "ladder": 130, "book": 180, "variants": 136, "log": 131,
+                   "gate": 186, "reports": 172, "settings": 224, "themes": 179, "help": 174},
+        "fill": 52, "tab": 181,
         "sym": 215, "event": 180, "unit": 138,
         "word_a": 187, "word_b": 181, "word_c": 144,
         "ticker": 180, "strike": 223, "slot": 215, "verb": 181, "variant": 186, "phrase": 187, "sep": 137,
@@ -541,7 +604,9 @@ THEMES: dict[str, dict] = {
     "bubblegum": {
         "base": {1: 197, 2: 121, 3: 228, 4: 117, 5: 213, 6: 159, 7: 231},
         "grey": 182, "key": 159, "head": 219,
-        "border": {"spot": 213, "contract": 117, "ladder": 219, "book": 159, "equity": 207, "log": 153},
+        "border": {"spot": 213, "contract": 117, "ladder": 219, "book": 159, "variants": 207, "log": 153,
+                   "gate": 198, "reports": 147, "settings": 205, "themes": 225, "help": 206},
+        "fill": 53, "tab": 182,
         "sym": 213, "event": 117, "unit": 182,
         "word_a": 225, "word_b": 159, "word_c": 218,
         "ticker": 117, "strike": 228, "slot": 213, "verb": 225, "variant": 159, "phrase": 218, "sep": 207,
@@ -560,7 +625,9 @@ THEMES: dict[str, dict] = {
     "sakura": {
         "base": {1: 168, 2: 150, 3: 223, 4: 146, 5: 218, 6: 151, 7: 231},
         "grey": 181, "key": 211, "head": 218,
-        "border": {"spot": 218, "contract": 151, "ladder": 225, "book": 175, "equity": 150, "log": 182},
+        "border": {"spot": 218, "contract": 151, "ladder": 225, "book": 175, "variants": 150, "log": 182,
+                   "gate": 108, "reports": 168, "settings": 224, "themes": 132, "help": 194},
+        "fill": 53, "tab": 181,
         "sym": 218, "event": 151, "unit": 181,
         "word_a": 225, "word_b": 194, "word_c": 224,
         "ticker": 151, "strike": 225, "slot": 211, "verb": 218, "variant": 194, "phrase": 224, "sep": 211,
@@ -579,7 +646,9 @@ THEMES: dict[str, dict] = {
     "desert": {
         "base": {1: 167, 2: 108, 3: 222, 4: 73, 5: 173, 6: 80, 7: 230},
         "grey": 144, "key": 80, "head": 180,
-        "border": {"spot": 173, "contract": 80, "ladder": 180, "book": 108, "equity": 137, "log": 73},
+        "border": {"spot": 173, "contract": 80, "ladder": 180, "book": 108, "variants": 137, "log": 73,
+                   "gate": 130, "reports": 187, "settings": 209, "themes": 151, "help": 216},
+        "fill": 52, "tab": 144,
         "sym": 209, "event": 80, "unit": 144,
         "word_a": 187, "word_b": 180, "word_c": 151,
         "ticker": 73, "strike": 223, "slot": 209, "verb": 180, "variant": 116, "phrase": 187, "sep": 173,
@@ -598,7 +667,9 @@ THEMES: dict[str, dict] = {
     "tropical": {
         "base": {1: 204, 2: 49, 3: 221, 4: 38, 5: 211, 6: 44, 7: 231},
         "grey": 152, "key": 214, "head": 51,
-        "border": {"spot": 44, "contract": 214, "ladder": 211, "book": 41, "equity": 38, "log": 209},
+        "border": {"spot": 44, "contract": 214, "ladder": 211, "book": 41, "variants": 38, "log": 209,
+                   "gate": 50, "reports": 223, "settings": 30, "themes": 221, "help": 217},
+        "fill": 23, "tab": 231,
         "sym": 214, "event": 51, "unit": 152,
         "word_a": 158, "word_b": 217, "word_c": 223,
         "ticker": 44, "strike": 221, "slot": 211, "verb": 217, "variant": 86, "phrase": 223, "sep": 209,
@@ -617,7 +688,9 @@ THEMES: dict[str, dict] = {
     "midnight": {
         "base": {1: 174, 2: 115, 3: 230, 4: 61, 5: 146, 6: 110, 7: 255},
         "grey": 103, "key": 230, "head": 153,
-        "border": {"spot": 61, "contract": 103, "ladder": 67, "book": 146, "equity": 60, "log": 110},
+        "border": {"spot": 105, "contract": 146, "ladder": 67, "book": 147, "variants": 111, "log": 110,
+                   "gate": 153, "reports": 104, "settings": 75, "themes": 189, "help": 117},
+        "fill": 17, "tab": 103,
         "sym": 153, "event": 110, "unit": 103,
         "word_a": 188, "word_b": 152, "word_c": 146,
         "ticker": 110, "strike": 230, "slot": 153, "verb": 188, "variant": 152, "phrase": 188, "sep": 67,
@@ -636,7 +709,9 @@ THEMES: dict[str, dict] = {
     "grape": {
         "base": {1: 204, 2: 154, 3: 228, 4: 98, 5: 165, 6: 141, 7: 231},
         "grey": 140, "key": 154, "head": 177,
-        "border": {"spot": 129, "contract": 165, "ladder": 98, "book": 135, "equity": 92, "log": 171},
+        "border": {"spot": 165, "contract": 141, "ladder": 98, "book": 135, "variants": 139, "log": 171,
+                   "gate": 155, "reports": 219, "settings": 154, "themes": 189, "help": 177},
+        "fill": 54, "tab": 183,
         "sym": 177, "event": 141, "unit": 140,
         "word_a": 183, "word_b": 219, "word_c": 189,
         "ticker": 141, "strike": 191, "slot": 165, "verb": 183, "variant": 177, "phrase": 189, "sep": 129,
@@ -655,7 +730,9 @@ THEMES: dict[str, dict] = {
     "sherbet": {
         "base": {1: 204, 2: 155, 3: 228, 4: 215, 5: 211, 6: 191, 7: 231},
         "grey": 181, "key": 155, "head": 215,
-        "border": {"spot": 215, "contract": 211, "ladder": 191, "book": 216, "equity": 204, "log": 155},
+        "border": {"spot": 215, "contract": 211, "ladder": 191, "book": 216, "variants": 204, "log": 155,
+                   "gate": 166, "reports": 193, "settings": 172, "themes": 218, "help": 130},
+        "fill": 53, "tab": 181,
         "sym": 215, "event": 191, "unit": 181,
         "word_a": 223, "word_b": 218, "word_c": 193,
         "ticker": 191, "strike": 223, "slot": 211, "verb": 218, "variant": 193, "phrase": 223, "sep": 211,
@@ -674,7 +751,9 @@ THEMES: dict[str, dict] = {
     "monochrome": {
         "base": {1: 210, 2: 151, 3: 255, 4: 247, 5: 250, 6: 252, 7: 254},
         "grey": 245, "key": 255, "head": 252,
-        "border": {"spot": 255, "contract": 252, "ladder": 249, "book": 246, "equity": 243, "log": 240},
+        "border": {"spot": 255, "contract": 252, "ladder": 249, "book": 246, "variants": 243, "log": 254,
+                   "gate": 244, "reports": 253, "settings": 245, "themes": 251, "help": 247},
+        "fill": 237, "tab": 249,
         "sym": 255, "event": 252, "unit": 245,
         "word_a": 248, "word_b": 250, "word_c": 247,
         "ticker": 250, "strike": 255, "slot": 255, "verb": 249, "variant": 253, "phrase": 248, "sep": 243,
@@ -693,7 +772,9 @@ THEMES: dict[str, dict] = {
     "forest": {
         "base": {1: 167, 2: 113, 3: 186, 4: 29, 5: 132, 6: 72, 7: 194},
         "grey": 108, "key": 186, "head": 150,
-        "border": {"spot": 29, "contract": 64, "ladder": 71, "book": 101, "equity": 22, "log": 65},
+        "border": {"spot": 29, "contract": 64, "ladder": 71, "book": 101, "variants": 28, "log": 65,
+                   "gate": 174, "reports": 157, "settings": 187, "themes": 113, "help": 144},
+        "fill": 22, "tab": 194,
         "sym": 113, "event": 72, "unit": 108,
         "word_a": 151, "word_b": 144, "word_c": 187,
         "ticker": 72, "strike": 186, "slot": 174, "verb": 144, "variant": 150, "phrase": 187, "sep": 101,
@@ -712,7 +793,9 @@ THEMES: dict[str, dict] = {
     "gruvbox": {
         "base": {1: 203, 2: 142, 3: 214, 4: 108, 5: 174, 6: 108, 7: 187},
         "grey": 138, "key": 208, "head": 214,
-        "border": {"spot": 108, "contract": 174, "ladder": 208, "book": 214, "equity": 142, "log": 108},
+        "border": {"spot": 108, "contract": 174, "ladder": 208, "book": 214, "variants": 142, "log": 66,
+                   "gate": 209, "reports": 143, "settings": 221, "themes": 138, "help": 230},
+        "fill": 237, "tab": 181,
         "sym": 214, "event": 208, "unit": 138,
         "word_a": 187, "word_b": 174, "word_c": 144,
         "ticker": 108, "strike": 214, "slot": 208, "verb": 174, "variant": 108, "phrase": 144, "sep": 244,
@@ -731,7 +814,9 @@ THEMES: dict[str, dict] = {
     "catppuccin": {
         "base": {1: 211, 2: 151, 3: 223, 4: 111, 5: 183, 6: 116, 7: 189},
         "grey": 247, "key": 216, "head": 147,
-        "border": {"spot": 116, "contract": 183, "ladder": 111, "book": 218, "equity": 151, "log": 147},
+        "border": {"spot": 116, "contract": 183, "ladder": 111, "book": 218, "variants": 151, "log": 147,
+                   "gate": 216, "reports": 74, "settings": 217, "themes": 104, "help": 224},
+        "fill": 54, "tab": 145,
         "sym": 116, "event": 147, "unit": 247,
         "word_a": 146, "word_b": 218, "word_c": 146,
         "ticker": 111, "strike": 223, "slot": 216, "verb": 183, "variant": 116, "phrase": 224, "sep": 103,
@@ -750,7 +835,9 @@ THEMES: dict[str, dict] = {
     "rose pine": {
         "base": {1: 168, 2: 151, 3: 216, 4: 152, 5: 182, 6: 152, 7: 189},
         "grey": 103, "key": 216, "head": 182,
-        "border": {"spot": 152, "contract": 182, "ladder": 181, "book": 216, "equity": 66, "log": 168},
+        "border": {"spot": 152, "contract": 182, "ladder": 181, "book": 216, "variants": 66, "log": 168,
+                   "gate": 110, "reports": 176, "settings": 174, "themes": 67, "help": 217},
+        "fill": 54, "tab": 146,
         "sym": 181, "event": 182, "unit": 103,
         "word_a": 189, "word_b": 181, "word_c": 103,
         "ticker": 152, "strike": 216, "slot": 168, "verb": 182, "variant": 181, "phrase": 189, "sep": 60,
@@ -769,7 +856,9 @@ THEMES: dict[str, dict] = {
     "solarized": {
         "base": {1: 166, 2: 100, 3: 136, 4: 32, 5: 168, 6: 36, 7: 254},
         "grey": 247, "key": 166, "head": 32,
-        "border": {"spot": 32, "contract": 62, "ladder": 36, "book": 136, "equity": 100, "log": 168},
+        "border": {"spot": 32, "contract": 168, "ladder": 36, "book": 136, "variants": 100, "log": 247,
+                   "gate": 166, "reports": 31, "settings": 179, "themes": 37, "help": 230},
+        "fill": 17, "tab": 246,
         "sym": 36, "event": 32, "unit": 246,
         "word_a": 247, "word_b": 62, "word_c": 254,
         "ticker": 32, "strike": 136, "slot": 166, "verb": 62, "variant": 36, "phrase": 247, "sep": 242,
@@ -788,7 +877,9 @@ THEMES: dict[str, dict] = {
     "everforest": {
         "base": {1: 174, 2: 144, 3: 180, 4: 109, 5: 175, 6: 108, 7: 187},
         "grey": 245, "key": 174, "head": 144,
-        "border": {"spot": 109, "contract": 175, "ladder": 144, "book": 180, "equity": 108, "log": 174},
+        "border": {"spot": 109, "contract": 175, "ladder": 144, "book": 180, "variants": 108, "log": 174,
+                   "gate": 66, "reports": 187, "settings": 244, "themes": 253, "help": 247},
+        "fill": 237, "tab": 145,
         "sym": 144, "event": 109, "unit": 245,
         "word_a": 187, "word_b": 175, "word_c": 248,
         "ticker": 109, "strike": 180, "slot": 174, "verb": 175, "variant": 108, "phrase": 187, "sep": 244,
@@ -807,7 +898,9 @@ THEMES: dict[str, dict] = {
     "kanagawa": {
         "base": {1: 168, 2: 107, 3: 180, 4: 110, 5: 103, 6: 109, 7: 187},
         "grey": 242, "key": 215, "head": 110,
-        "border": {"spot": 110, "contract": 103, "ladder": 110, "book": 180, "equity": 66, "log": 131},
+        "border": {"spot": 110, "contract": 103, "ladder": 216, "book": 180, "variants": 66, "log": 131,
+                   "gate": 186, "reports": 68, "settings": 187, "themes": 104, "help": 215},
+        "fill": 17, "tab": 246,
         "sym": 110, "event": 110, "unit": 242,
         "word_a": 180, "word_b": 174, "word_c": 146,
         "ticker": 110, "strike": 180, "slot": 215, "verb": 103, "variant": 109, "phrase": 180, "sep": 59,
@@ -826,7 +919,9 @@ THEMES: dict[str, dict] = {
     "vaporwave": {
         "base": {1: 204, 2: 49, 3: 228, 4: 45, 5: 206, 6: 45, 7: 255},
         "grey": 146, "key": 228, "head": 45,
-        "border": {"spot": 45, "contract": 206, "ladder": 135, "book": 228, "equity": 49, "log": 206},
+        "border": {"spot": 45, "contract": 206, "ladder": 135, "book": 228, "variants": 49, "log": 105,
+                   "gate": 218, "reports": 39, "settings": 134, "themes": 44, "help": 171},
+        "fill": 54, "tab": 146,
         "sym": 45, "event": 135, "unit": 146,
         "word_a": 218, "word_b": 135, "word_c": 159,
         "ticker": 45, "strike": 228, "slot": 206, "verb": 135, "variant": 49, "phrase": 218, "sep": 97,
@@ -845,7 +940,9 @@ THEMES: dict[str, dict] = {
     "volcano": {
         "base": {1: 202, 2: 149, 3: 221, 4: 209, 5: 168, 6: 215, 7: 254},
         "grey": 247, "key": 221, "head": 209,
-        "border": {"spot": 202, "contract": 202, "ladder": 214, "book": 144, "equity": 209, "log": 244},
+        "border": {"spot": 202, "contract": 220, "ladder": 214, "book": 144, "variants": 209, "log": 244,
+                   "gate": 130, "reports": 168, "settings": 215, "themes": 181, "help": 208},
+        "fill": 52, "tab": 247,
         "sym": 209, "event": 221, "unit": 247,
         "word_a": 223, "word_b": 209, "word_c": 181,
         "ticker": 209, "strike": 221, "slot": 202, "verb": 168, "variant": 215, "phrase": 223, "sep": 244,
@@ -864,7 +961,9 @@ THEMES: dict[str, dict] = {
     "arctic": {
         "base": {1: 210, 2: 115, 3: 223, 4: 75, 5: 147, 6: 117, 7: 231},
         "grey": 146, "key": 231, "head": 153,
-        "border": {"spot": 195, "contract": 153, "ladder": 75, "book": 153, "equity": 116, "log": 67},
+        "border": {"spot": 195, "contract": 153, "ladder": 75, "book": 116, "variants": 104, "log": 67,
+                   "gate": 147, "reports": 74, "settings": 68, "themes": 189, "help": 111},
+        "fill": 17, "tab": 146,
         "sym": 195, "event": 153, "unit": 146,
         "word_a": 189, "word_b": 153, "word_c": 195,
         "ticker": 75, "strike": 223, "slot": 231, "verb": 147, "variant": 117, "phrase": 189, "sep": 67,
@@ -883,7 +982,9 @@ THEMES: dict[str, dict] = {
     "toxic": {
         "base": {1: 203, 2: 118, 3: 190, 4: 135, 5: 171, 6: 85, 7: 194},
         "grey": 144, "key": 190, "head": 118,
-        "border": {"spot": 118, "contract": 135, "ladder": 190, "book": 85, "equity": 76, "log": 171},
+        "border": {"spot": 118, "contract": 135, "ladder": 190, "book": 85, "variants": 76, "log": 171,
+                   "gate": 64, "reports": 104, "settings": 65, "themes": 141, "help": 192},
+        "fill": 22, "tab": 187,
         "sym": 118, "event": 190, "unit": 144,
         "word_a": 192, "word_b": 141, "word_c": 151,
         "ticker": 85, "strike": 190, "slot": 118, "verb": 141, "variant": 171, "phrase": 192, "sep": 65,
@@ -902,7 +1003,9 @@ THEMES: dict[str, dict] = {
     "royal": {
         "base": {1: 167, 2: 78, 3: 221, 4: 69, 5: 135, 6: 75, 7: 255},
         "grey": 140, "key": 221, "head": 221,
-        "border": {"spot": 221, "contract": 135, "ladder": 69, "book": 179, "equity": 98, "log": 137},
+        "border": {"spot": 221, "contract": 135, "ladder": 69, "book": 179, "variants": 98, "log": 137,
+                   "gate": 75, "reports": 175, "settings": 229, "themes": 189, "help": 222},
+        "fill": 54, "tab": 183,
         "sym": 221, "event": 135, "unit": 140,
         "word_a": 189, "word_b": 222, "word_c": 146,
         "ticker": 69, "strike": 221, "slot": 179, "verb": 135, "variant": 75, "phrase": 189, "sep": 60,
@@ -921,7 +1024,9 @@ THEMES: dict[str, dict] = {
     "copper": {
         "base": {1: 167, 2: 79, 3: 179, 4: 73, 5: 174, 6: 79, 7: 224},
         "grey": 138, "key": 79, "head": 179,
-        "border": {"spot": 173, "contract": 73, "ladder": 131, "book": 79, "equity": 179, "log": 66},
+        "border": {"spot": 173, "contract": 73, "ladder": 131, "book": 79, "variants": 179, "log": 66,
+                   "gate": 130, "reports": 224, "settings": 116, "themes": 216, "help": 187},
+        "fill": 52, "tab": 181,
         "sym": 179, "event": 79, "unit": 138,
         "word_a": 187, "word_b": 116, "word_c": 180,
         "ticker": 73, "strike": 179, "slot": 173, "verb": 174, "variant": 79, "phrase": 187, "sep": 95,
@@ -940,7 +1045,9 @@ THEMES: dict[str, dict] = {
     "day trader": {
         "base": {1: 203, 2: 77, 3: 221, 4: 75, 5: 141, 6: 81, 7: 231},
         "grey": 152, "key": 221, "head": 81,
-        "border": {"spot": 75, "contract": 221, "ladder": 77, "book": 209, "equity": 81, "log": 153},
+        "border": {"spot": 75, "contract": 221, "ladder": 77, "book": 209, "variants": 81, "log": 153,
+                   "gate": 141, "reports": 151, "settings": 215, "themes": 103, "help": 186},
+        "fill": 17, "tab": 152,
         "sym": 221, "event": 75, "unit": 152,
         "word_a": 195, "word_b": 222, "word_c": 151,
         "ticker": 75, "strike": 221, "slot": 209, "verb": 141, "variant": 81, "phrase": 195, "sep": 103,
@@ -959,7 +1066,9 @@ THEMES: dict[str, dict] = {
     "night trader": {
         "base": {1: 203, 2: 84, 3: 215, 4: 69, 5: 141, 6: 81, 7: 189},
         "grey": 103, "key": 84, "head": 81,
-        "border": {"spot": 61, "contract": 61, "ladder": 24, "book": 60, "equity": 29, "log": 61},
+        "border": {"spot": 69, "contract": 81, "ladder": 29, "book": 146, "variants": 84, "log": 75,
+                   "gate": 80, "reports": 141, "settings": 117, "themes": 147, "help": 159},
+        "fill": 17, "tab": 103,
         "sym": 84, "event": 81, "unit": 103,
         "word_a": 146, "word_b": 147, "word_c": 110,
         "ticker": 81, "strike": 215, "slot": 84, "verb": 141, "variant": 69, "phrase": 146, "sep": 60,
@@ -978,7 +1087,9 @@ THEMES: dict[str, dict] = {
     "candy cane": {
         "base": {1: 197, 2: 85, 3: 229, 4: 204, 5: 211, 6: 158, 7: 231},
         "grey": 181, "key": 85, "head": 231,
-        "border": {"spot": 197, "contract": 231, "ladder": 197, "book": 231, "equity": 85, "log": 197},
+        "border": {"spot": 197, "contract": 231, "ladder": 196, "book": 217, "variants": 85, "log": 203,
+                   "gate": 29, "reports": 204, "settings": 35, "themes": 210, "help": 122},
+        "fill": 52, "tab": 181,
         "sym": 197, "event": 231, "unit": 181,
         "word_a": 231, "word_b": 204, "word_c": 158,
         "ticker": 204, "strike": 231, "slot": 197, "verb": 217, "variant": 85, "phrase": 224, "sep": 138,
@@ -997,7 +1108,9 @@ THEMES: dict[str, dict] = {
     "green tea": {
         "base": {1: 167, 2: 149, 3: 186, 4: 108, 5: 248, 6: 151, 7: 255},
         "grey": 144, "key": 179, "head": 149,
-        "border": {"spot": 107, "contract": 144, "ladder": 65, "book": 144, "equity": 108, "log": 137},
+        "border": {"spot": 107, "contract": 144, "ladder": 65, "book": 149, "variants": 108, "log": 137,
+                   "gate": 193, "reports": 101, "settings": 230, "themes": 179, "help": 151},
+        "fill": 22, "tab": 187,
         "sym": 149, "event": 179, "unit": 144,
         "word_a": 187, "word_b": 180, "word_c": 151,
         "ticker": 108, "strike": 186, "slot": 179, "verb": 144, "variant": 149, "phrase": 187, "sep": 101,
@@ -1016,7 +1129,9 @@ THEMES: dict[str, dict] = {
     "psychedelic": {
         "base": {1: 203, 2: 83, 3: 227, 4: 69, 5: 207, 6: 87, 7: 231},
         "grey": 183, "key": 227, "head": 207,
-        "border": {"spot": 203, "contract": 215, "ladder": 227, "book": 83, "equity": 75, "log": 135},
+        "border": {"spot": 203, "contract": 215, "ladder": 227, "book": 83, "variants": 75, "log": 135,
+                   "gate": 85, "reports": 219, "settings": 87, "themes": 69, "help": 207},
+        "fill": 54, "tab": 183,
         "sym": 207, "event": 87, "unit": 183,
         "word_a": 219, "word_b": 157, "word_c": 153,
         "ticker": 87, "strike": 227, "slot": 209, "verb": 207, "variant": 83, "phrase": 219, "sep": 134,
@@ -1035,7 +1150,9 @@ THEMES: dict[str, dict] = {
     "alien": {
         "base": {1: 204, 2: 119, 3: 191, 4: 69, 5: 135, 6: 85, 7: 194},
         "grey": 109, "key": 119, "head": 85,
-        "border": {"spot": 85, "contract": 135, "ladder": 119, "book": 250, "equity": 77, "log": 98},
+        "border": {"spot": 85, "contract": 135, "ladder": 119, "book": 250, "variants": 77, "log": 98,
+                   "gate": 36, "reports": 68, "settings": 65, "themes": 183, "help": 122},
+        "fill": 22, "tab": 152,
         "sym": 119, "event": 85, "unit": 109,
         "word_a": 194, "word_b": 183, "word_c": 252,
         "ticker": 85, "strike": 191, "slot": 119, "verb": 135, "variant": 250, "phrase": 194, "sep": 65,
@@ -1065,3 +1182,89 @@ def next_name(name: str | None, step: int = 1) -> str:
     """The theme after `name` (step 1, the t key) or before it (step -1, T)."""
     i = NAMES.index(name) if name in THEMES else (-1 if step > 0 else 0)
     return NAMES[(i + step) % len(NAMES)]
+
+
+# ---------------------------------------------------------------- the 256 colors
+
+BACK = 234                                        # about the background these are for
+CUBE = (0, 95, 135, 175, 215, 255)
+
+
+def rgb(i: int) -> tuple[int, int, int]:
+    """A 256-color index, 16 and up (the first 16 are whatever the terminal says they are)."""
+    if i >= 232:
+        return (8 + 10 * (i - 232),) * 3
+    n = i - 16
+    return CUBE[n // 36], CUBE[n // 6 % 6], CUBE[n % 6]
+
+
+def _linear(c: int) -> float:
+    c /= 255
+    return c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4
+
+
+def _light(c: tuple) -> float:
+    r, g, b = map(_linear, c)
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b
+
+
+def contrast(a: int, b: int) -> float:
+    """How far apart two colors are in lightness, 1 (the same) to 21 (black and white)."""
+    x, y = sorted((_light(rgb(a)), _light(rgb(b))))
+    return (y + 0.05) / (x + 0.05)
+
+
+def _lab(c: tuple) -> tuple[float, float, float]:
+    r, g, b = map(_linear, c)
+    f = lambda t: t ** (1 / 3) if t > 0.008856 else 7.787 * t + 16 / 116
+    x, y, z = f((0.4124 * r + 0.3576 * g + 0.1805 * b) / 0.9505), f(0.2126 * r + 0.7152 * g + 0.0722 * b), \
+        f((0.0193 * r + 0.1192 * g + 0.9505 * b) / 1.089)
+    return 116 * y - 16, 500 * (x - y), 200 * (y - z)
+
+
+LAB = {i: _lab(rgb(i)) for i in range(16, 256)}
+
+
+def distance(a: int, b: int) -> float:
+    """How different two colors look: 2 is barely, 10 is plainly."""
+    return dist(LAB[a], LAB[b])
+
+
+def _nearest(c: tuple) -> int:
+    at = _lab(c)
+    return min(LAB, key=lambda i: dist(LAB[i], at))
+
+
+@lru_cache(maxsize=None)
+def readable(fg: int, bg: int, least: float = 4.0) -> int:
+    """fg, or the color nearest to it that can be read on bg."""
+    if fg < 16 or bg < 16 or contrast(fg, bg) >= least:
+        return fg
+    return min((i for i in range(16, 256) if contrast(i, bg) >= least), key=lambda i: distance(i, fg))
+
+
+@lru_cache(maxsize=None)
+def visible(ramp: tuple) -> tuple:
+    """A chart's gradient without the steps too dark to see on a dark background."""
+    return tuple(c for c in ramp if c < 16 or contrast(c, BACK) >= 1.5) or ramp
+
+
+@lru_cache(maxsize=None)
+def _between(a: int, b: int, depth: int) -> tuple:
+    """The colors to show between a and b: the one nearest to halfway, where there is one that lies between them."""
+    if not depth or a < 16 or b < 16 or a == b:
+        return ()
+    d = distance(a, b)
+    c = _nearest(tuple((p + q) / 2 for p, q in zip(rgb(a), rgb(b))))
+    if c in (a, b) or max(distance(a, c), distance(c, b)) > 0.85 * d or distance(a, c) + distance(c, b) > 1.35 * d:
+        return ()
+    return _between(a, c, depth - 1) + (c,) + _between(c, b, depth - 1)
+
+
+@lru_cache(maxsize=None)
+def smooth(ramp: tuple) -> tuple:
+    """A gradient with the 256-color terminal's own in-between colors put in."""
+    out = [ramp[0]]
+    for a, b in zip(ramp, ramp[1:]):
+        out += [*_between(a, b, 2), b]
+    return tuple(out)
