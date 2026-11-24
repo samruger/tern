@@ -5,7 +5,7 @@ with a btop-style terminal screen: braille charts, a strike ladder, and paper an
 Every trade comes from its rule; there are no manual orders.
 It paper trades from the start and sends no real order until you arm live.
 
-<img width="1364" height="668" alt="The dash: spot and contract charts, strike ladder, book and log" src="docs/screenshots/01-page1-trade.png" />
+<img width="1364" height="668" alt="The ladder: every strike of the hour" src="docs/screenshots/01-page1-trade.png" />
 
 - **Paper and live.** Every variant trades on paper all the time. Live is off until you arm it with one of them, and has its own caps, gate and daily loss limit.
 - **Variants.** Ten built-in versions of the rule run side by side on paper, each with its own record. Make your own from the screen: any of their settings, saved as a new variant.
@@ -62,11 +62,9 @@ The write-up is [research/RESEARCH.md](research/RESEARCH.md).
 
 ## The screen
 
-The dash has spot, contract, ladder, book and log. `v` opens the variants over it, with the highlighted one's P&L by
-hour under them, and `esc` goes back. Each fits itself to the terminal: tables keep all their rows and the charts give
-up height first. A screen big enough for every box (about 121×37, and a row more for each variant of your own) shows
-them all at once. The boxes are numbered in reading order; a box's number zooms it to the whole screen, and the same
-number again (the bottom border says `3 back`) or `esc` restores it.
+One box fills the screen: spot, contract, ladder, book, variants or log. The others are tabs on its top border: `1` to
+`6` show one, and `tab` and shift+tab step through them. A box's own keys are on its bottom border, and the log's has
+every key that isn't one box's. The status line is always at the bottom.
 
 <img width="1364" height="668" alt="The variants, and the highlighted one's P&L by hour" src="docs/screenshots/02-page2-compare.png" />
 
@@ -77,13 +75,13 @@ number again (the bottom border says `3 back`) or `esc` restores it.
 | ² contract | the selected strike's YES price this hour, seeded from Kalshi's minute candles, with the rule's band edges marked |
 | ³ ladder | every strike, high to low: bid, ask, probability bar, spread, volume, your position. ★ marks strikes in the rule's band |
 | ⁴ book | the selected variant's equity, P&L, cash, at risk, fees, record and open positions. `V` switches between paper and live |
-| ⁵ log | what the engine did |
-| variants (`v`) | each variant's record and gate progress, ● on the one selected, L on the one live trades, + on the ones you made, and the highlighted one's P&L by hour |
+| ⁶ log | what the engine did |
+| ⁵ variants | each variant's record and gate progress, ● on the one selected, L on the one live trades, + on the ones you made, and the highlighted one's P&L by hour |
 
 ## Variants
 
 There is one list of variants. The engine runs all of them on paper, side by side, each with its own record, its own
-cash and real fees. Highlight one in the variants box (`v`) with `↑↓` and press `enter` to **select** it: the
+cash and real fees. Highlight one in the variants box (`5`) with `↑↓` and press `enter` to **select** it: the
 book, ladder, contract and gate then show that variant, as if it were the only one. Selecting changes nothing
 that trades. `L` goes live with the selected one (see Paper and live). These are built in:
 
@@ -231,16 +229,14 @@ Requests are signed (Ed25519 or RSA-PSS) in pure Python, checked against openssl
 
 | Key | What it does |
 |---|---|
-| `v` / `esc` | the variants / back to the dash |
-| `1`–`5` | zoom a box to the whole screen; the same number goes back (`1`–`6` on one big screen), and so does `esc` |
-| `←→` | move between boxes |
-| `↑↓` `j` `k` `PgUp` `PgDn` | move in the focused box; the mouse wheel scrolls the box under the pointer |
-| `tab` / shift+tab | next / previous coin |
+| `1`–`6` `tab` shift+tab | show a box |
+| `↑↓` `j` `k` `PgUp` `PgDn` | move in the box; so does the mouse wheel |
+| `C` | next coin |
 | `c` | chart span: 5m, 15m, 1h, 24h |
 | `t` / `T` | next / previous color theme |
 | `V` | paper / live book |
-| `enter` | select the highlighted variant (`v`) |
-| `e` | edit the highlighted variant (`v`); `s` saves a new variant, `esc` discards |
+| `enter` | select the highlighted variant |
+| `e` | edit the highlighted variant; `s` saves a new variant, `esc` discards |
 | `space` | turn the highlighted variant on / off |
 | `D` `r` | delete / rename it |
 | `g` | the gate |
@@ -285,9 +281,9 @@ them. Reading one changes nothing, so the web screen has them too, without `s`.
 
 `tern web` serves the screen at http://localhost:8787/ (`--port` to move it). It is not a copy of the
 screen: each browser tab runs the real screen code on a virtual terminal, and the page paints its cells
-with the colors and font from foot's config if there is one, or a built-in set. So it looks and behaves the same: `v` the variants, box numbers, `c`
-chart span, `tab`/shift+tab coins, `t`/`T` themes, `V` paper/live, `enter` selects a variant (for that browser), `g` gate, `h`
-help, `↑↓ ←→` and the wheel. Clicking a key on a box border, a box's number, or a ladder or variant row
+with the colors and font from foot's config if there is one, or a built-in set. So it looks and behaves the same: the tabs, `c`
+chart span, `C` coins, `t`/`T` themes, `V` paper/live, `enter` selects a variant (for that browser), `g` gate, `h`
+help, `↑↓ ←→` and the wheel. Clicking a tab, a key on a box's border, or a ladder or variant row
 does what the key would; on a phone, drag to scroll.
 
 It is view only. `q`, `P`, `L`, `r`, `D`, `space` and `e` do nothing there, and their
@@ -376,7 +372,7 @@ The major ones, newest first.
 
 | Date | Change |
 |---|---|
-| 2026-11-23 | **One list of variants.** Profiles, the separate paper book and `w` are gone: `enter` selects the variant the screen shows, `L` goes live with it, `e` there edits one as a new one, `space` turns one on or off and `r` renames one. `s` is the settings (was `e`) and `P` pauses the engine (was `S`). `v` opens the variants and `esc` goes back (the pages and `p` are gone, and so is the equity box); `V` is the book's paper/live view. Profiles' own variants move into the list with their records (see Settings). `tern report --profile` and `--profiles` are now `--periods`. |
+| 2026-11-23 | **One list of variants.** Profiles, the separate paper book and `w` are gone: `enter` selects the variant the screen shows, `L` goes live with it, `e` there edits one as a new one, `space` turns one on or off and `r` renames one. `s` is the settings (was `e`) and `P` pauses the engine (was `S`). Every box fills the screen and the others are tabs (`1`–`6`, `tab`); the pages, zooming and the equity box are gone, `C` cycles coins and `V` is the book's paper/live view. Profiles' own variants move into the list with their records (see Settings). `tern report --profile` and `--profiles` are now `--periods`. |
 | 2026-11-23 | **Cash limit on paper:** no variant, and not the paper book, buys more than the cash it has left. Entries from before could. A variant that is out of cash says so in the variants box. |
 | 2026-11-23 | **Variants hold every trading setting**, contracts a strike, most an hour and paper start too. `E` opens them as a draft and `s` saves it as a new variant; a saved one never changes, and only `enter` changes what trades. Settings (`e`) has the profile and the desk only, the same under every profile. `n` in the variants box, and the rule, paper and "book trades" rows in settings, are gone. Variants saved before keep their profile's size. |
 | 2026-11-23 | **AGPL license** (version 3 or later). It was MIT, then briefly the GPL; copies from then stay under those. |

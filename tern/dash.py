@@ -299,7 +299,7 @@ HELP = [
     ("VARIANTS", "Each variant runs on paper side by side with the others, with its own record, its own cash and "
                  "real fees. The built-in ones:\n"
                  "{variants}\n"
-                 "(v) opens them. Highlight one with ↑↓ and press (enter) to select it, marked ●: the book, ladder, "
+                 "(5) shows them. Highlight one with ↑↓ and press (enter) to select it, marked ●: the book, ladder, "
                  "contract and gate show it. Selecting changes nothing that trades.\n"
                  "A variant holds everything about how it trades: its rule, contracts a strike, most an hour and paper start. "
                  "It never buys more than the cash it has left. Once saved it never changes. Make your own, marked +: (e) there opens "
@@ -319,7 +319,7 @@ HELP = [
              "Caps: ${risk:,.0f} at risk at once and ${order:,.0f} per order; a loss of ${day:,.0f} since local midnight "
              "turns live off and leaves open positions to settle. Every order is immediate-or-cancel. Kalshi "
              "is the record: its positions overwrite the engine's every 15 seconds."),
-    ("COINS", "(tab) and shift+tab step through {coins}. Which coins a variant trades is in its settings. "
+    ("COINS", "(C) steps through {coins}. Which coins a variant trades is in its settings. "
               "The 67-day test was BTC only, so the rule trades BTC unless you turn others on."),
     ("PAPER", "{variant} starts with ${paper:,.0f}, its paper start. Every variant that is on trades on paper all the "
               "time, live or not, so its record keeps growing."),
@@ -335,14 +335,14 @@ HELP_BOXES = [
     ("³", "ladder", "every strike high to low: bid, ask, probability bar, spread, volume and"),
     ("", "", "  your position; ★ marks the band. ↑↓ picks the strike the contract box shows"),
     ("⁴", "book", "the selected variant's equity, P&L, cash, at risk, fees and record, then open"),
-    ("", "", "  positions, settlements and fills; (v) switches paper / live"),
-    ("⁵", "log", "what the engine did, newest at the bottom; scroll back with ↑↓"),
-    ("", "variants", "(v) each variant's hours, entries, P&L, ¢ a contract, win rate, t,"),
+    ("", "", "  positions, settlements and fills; (V) switches paper / live"),
+    ("⁶", "log", "what the engine did, newest at the bottom; scroll back with ↑↓"),
+    ("⁵", "variants", "each variant's hours, entries, P&L, ¢ a contract, win rate, t,"),
     ("", "", "  and gate progress (yellow: still short); ● selected, L live's, + one you"),
     ("", "", "  made; the highlighted one's P&L by hour below"),
-    ("", "", "  (v) opens this list over the boxes above, (esc) goes back. A screen big enough"),
-    ("", "", "  for every box shows them all. A box's number zooms it to the whole screen;"),
-    ("", "", "  \"3 back\" on the bottom border: the same number, or esc, restores"),
+    ("", "tabs", "one box fills the screen; the others are tabs on its top border: (1) to (6) show"),
+    ("", "", "  one, (tab) steps through. Its own keys are on its bottom border, and the log's"),
+    ("", "", "  has every key that isn't one box's"),
     ("", "status", "bottom row: PAPER or LIVE, the coin's price and 1h change, the hourly event"),
     ("", "", "  and time to its close, rule ON/off with the next slot (+live when live"),
     ("", "", "  trades), stale data warnings (usually Wi-Fi), engine ok / stale / down"),
@@ -364,21 +364,18 @@ RULE_LINE = "\0rule"                              # placeholder text: draw_overl
 
 # the help's key legend: two columns of (section, [(keys, what they do)])
 HELP_KEYS = [
-    [("move", [("←→", "focus: the scrolling boxes"),
-               ("↑↓  j k", "scroll the focused box: the ladder picks a"),
+    [("move", [("tab S-tab", "next / previous box"),
+               ("1-6", "spot, contract, ladder, book, variants, log"),
+               ("↑↓  j k", "scroll: the ladder and contract pick a"),
                ("", "strike, variants highlights one"),
                ("PgUp PgDn", "ten steps at a time"),
-               ("mouse wheel", "scroll the box under the pointer"),
-               ("tab S-tab", "next / previous coin")]),
-     ("look", [("v", "the variants; esc goes back"),
-               ("1-5", "zoom spot, contract, ladder, book or log"),
-               ("", "to the whole screen (again, or esc: back)"),
-               ("c", "spot chart span: 5m 15m 1h 24h"),
+               ("C", "next coin")]),
+     ("look", [("c", "spot: chart span: 5m 15m 1h 24h"),
                ("V", "book: paper / live view"),
                ("o", "reports: every record, live and saved"),
                ("", "(←→ ↑↓ move, PgUp PgDn page, s saves one)"),
                ("t T", "next / previous of {themes} color themes")])],
-    [("variants", [("enter", "select the highlighted one (v): the book,"),
+    [("variants", [("enter", "select the highlighted one: the book,"),
                 ("", "band and gate show it"),
                 ("e", "edit the highlighted one's settings: s saves"),
                 ("", "them as a new variant, esc discards; that one"),
@@ -424,24 +421,10 @@ SCREEN_SETTINGS = [cfgmod.Setting("screen", "log", "log shows", kind="choice", g
 # spot chart spans: c cycles them in this order (the engine sends ~15 min of seconds and 24h of minutes)
 CHARTS = {"5m": 300, "15m": 900, "1h": 3600, "24h": 86400}
 
-# every box; on each view its number key is its place in that view's reading order (the variants' view has one)
-BOXES = ["spot", "contract", "ladder", "book", "log", "variants"]
-PANELS = BOXES                                   # older name, kept for the web and tests
-# each view's rows of boxes, top to bottom: page1 the dash, page2 the variants (v). A screen big enough for every box at its
-# smallest shows them all as one (merged). A box's number zooms it to the whole screen; the same number restores.
-PAGES = {"page1": [("spot", "contract"), ("ladder", "book"), ("log",)],
-         "page2": [("variants",)],
-         "merged": [("spot", "contract"), ("ladder", "book"), ("variants", "log")]}
-SHARE = {"spot": 0.36, "contract": 0.36, "ladder": 0.44, "book": 0.44, "log": 0.28}   # flexible rows' height shares
-DROP_FIRST = ("↑↓", "space")                     # border hints that go before the others when a box is narrow
-LEFT_SHARE = {"spot": 0.6, "ladder": 0.52, "variants": 0.6}         # a pair's left width share
-MIN_H = {"spot": 6, "contract": 8, "ladder": 8, "book": 9, "log": 4}   # a flexible box's smallest height
-WANT_W = {"ladder": 56, "variants": 81}   # the width a box needs to show all its columns (others 40)
+# the boxes, each filling the screen; the others are tabs on its top border. A box's number shows it, tab steps through
+BOXES = ["spot", "contract", "ladder", "book", "variants", "log"]
 SUPER = "¹²³⁴⁵⁶⁷⁸⁹"
-LEFT_MIN = {"ladder": 56, "variants": 57}   # the ladder's columns need this much before its bar has any room
-SCROLLS = ["ladder", "variants", "book", "log"]   # the boxes ←→ focus and ↑↓ scroll
-ORPHAN_DROP = ["t", "c", "L", "V", "", "s", "h", "P", "g", "q", "v", "tab"]   # off-screen boxes' hints, first dropped first
-COMFY_H = {"spot": 10, "contract": 10, "ladder": 12, "book": 12, "log": 8}   # sizes the merged view needs
+DROP_FIRST = ("↑↓", "space")                     # border hints that go before the others when they don't all fit
 
 
 # the reports screen (o): the list's width, and the lines of a report that are a table's header, a table's row
@@ -464,16 +447,15 @@ def wrap_report(lines: list[str], w: int) -> list[str]:
     return out
 
 
-def view_boxes(view: str) -> list[str]:
-    return [n for row in PAGES[view] for n in row]
-
-
-# key hints drawn on each box's top border (btop style); an off-screen box's hints move to the bottom row
+# each box's keys, on its bottom border. The log's has every key that isn't one box's
 PANEL_KEYS = {
-    "spot": lambda s: [("tab", " next coin"), ("c", "hart " + s.chart)],
-    "book": lambda s: [("V", "iew"), ("L", "ive")],
-    "contract": lambda s: [("t", "heme ", s.P.name)],
-    "log": lambda s: ([("v", "ariants")] if s.page == 1 else []) + [("g", "ate"), ("s", "ettings"), ("", "rep", "o", "rts"), ("P", "ause" if s.alive else " start"), ("h", "elp"), ("q", "uit")],
+    "spot": lambda s: [("C", "oin"), ("c", "hart " + s.chart)],
+    "contract": lambda s: [("C", "oin"), ("↑↓", " strike")],
+    "ladder": lambda s: [("C", "oin"), ("↑↓", " strike")],
+    "book": lambda s: [("V", "iew"), ("L", "ive"), "↑↓"],
+    "variants": lambda s: [("⏎", " select"), ("e", "dit"), ("space", " on/off"), ("r", "ename"), ("D", "elete"), ("L", "ive"), "↑↓"],
+    "log": lambda s: [("t", "heme ", s.P.name), ("g", "ate"), ("s", "ettings"), ("", "rep", "o", "rts"),
+                      ("P", "ause" if s.alive else " start"), ("h", "elp"), ("q", "uit"), "↑↓"],
 }
 
 
@@ -522,11 +504,8 @@ class Screen:
         self.log_anchor: tuple | None = None   # (ts, sub) of the bottom log row while scrolled back; None follows new lines
         self.pos_off = 0                       # first line shown under the book's totals
         self.prefs_path = os.path.join(runtime, "dash.json")
-        self.zoom: str | None = None           # the box a number key blew up to the whole screen (never saved)
-        self.page = 1                          # 1 the dash, 2 the variants (v opens them, esc goes back); never saved
-        self.panel_key = ""                    # the number drawn in the title of the box being drawn
-        self.drawing = ""                      # the box being drawn, so box() can mark the focused one
-        self.focus = "ladder"                  # the box ↑↓ scroll; ←→ move it
+        self.tab = BOXES[0]                    # the box on screen
+        self.drawing = ""                      # the box being drawn: box() gives it the tabs and its keys
         self.var_sel: str | None = None        # the variant the cursor is on in the variants box
         self.var_top = 0                       # first variant row shown when the list is taller than its box
         self.variant: str | None = None        # the variant selected (enter): the book, band and gate show it
@@ -552,6 +531,8 @@ class Screen:
                 self.variant = d["variant"]
             if d.get("log_filter") in LOG_FILTERS:
                 self.log_filter = d["log_filter"]
+            if d.get("tab") in BOXES:
+                self.tab = d["tab"]
             self.P.set_theme(d.get("theme"))
         except (OSError, json.JSONDecodeError, AttributeError, TypeError):
             pass
@@ -617,134 +598,22 @@ class Screen:
         try:
             with open(self.prefs_path + ".tmp", "w") as fh:
                 json.dump({"series": self.series, "chart": self.chart, "theme": self.P.name,
-                           "variant": self.variant, "log_filter": self.log_filter}, fh)
+                           "variant": self.variant, "log_filter": self.log_filter, "tab": self.tab}, fh)
             os.replace(self.prefs_path + ".tmp", self.prefs_path)
         except OSError:
             pass
 
-    def view(self, H: int, W: int) -> str:
-        """merged when every box fits at a comfortable size, else the dash (page1) or the variants (page2)."""
-        rows = PAGES["merged"]
-        need = sum(max(self.fixed_h(n)[0] if n == "variants" else COMFY_H[n] for n in row) for row in rows)
-        wide = max(sum(WANT_W.get(n, 40) for n in row) for row in rows)
-        return "merged" if need <= H - 1 and wide <= W else f"page{self.page}"
-
-    def fixed_h(self, name: str) -> tuple[int, int]:
-        """(wanted, smallest) height of the variants box: its rows, then the tip line; it scrolls, so it can give rows back."""
-        n = max(1, len(self.st.get("variants") or []))
-        return n + 4, min(n + 3, 10)
-
-    def toggle(self, i: int) -> None:
-        """1-6: zoom this view's i-th box (its number on its border) to the whole screen; its number again restores."""
-        H, W = self.s.getmaxyx()
-        v = self.view(H, W)
-        here = view_boxes(v)
-        if len(here) == 1:                           # the variants' view: its one box fills it already
-            return
-        if i >= len(here):
-            self.say(f"the boxes are 1-{len(here)}"); return
-        name = here[i]
-        self.zoom = None if self.zoom == name else name
-        if self.zoom in SCROLLS:
-            self.focus = self.zoom
-        self.flash = ""                              # the bottom border says how to go back
-
-    def zoomed(self, H: int, W: int) -> str | None:
-        """The zoomed box, if it is on this view (a resize can take it off: then it's dropped)."""
-        here = view_boxes(self.view(H, W)) if self.zoom else []
-        if self.zoom and (self.zoom not in here or len(here) == 1):
-            self.zoom = None
-        return self.zoom
+    def show_tab(self, name: str) -> None:
+        """1-6, tab: that box fills the screen."""
+        self.tab, self.flash = name, ""
+        self.save_prefs()
 
     def back_to(self, what: str) -> str:
         """How to get to the variants when they aren't on screen."""
-        return f"v opens the list, {what}"
-
-    def open_variants(self) -> None:
-        """v: the variants, over the dash. On a screen that shows every box: that one, if another is zoomed."""
-        self.zoom, self.flash = None, ""
-        H, W = self.s.getmaxyx()
-        if self.view(H, W) == "merged":
-            self.focus = "variants"
-        elif self.page == 2:                         # v again goes back, as o does
-            self.go_back()
-        else:
-            self.page, self.focus = 2, "variants"
-
-    def go_back(self) -> None:
-        """esc: from a zoomed box, or from the variants, to the dash."""
-        if self.zoom:
-            self.zoom = None
-        elif self.page == 2:
-            self.page, self.focus = 1, "ladder"
-        self.flash = ""
+        return f"{BOXES.index('variants') + 1} shows them, {what}"
 
     def shown(self, name: str) -> bool:
-        if self.rects:
-            return name in self.rects
-        H, W = self.s.getmaxyx()
-        return any(n == name for n, *_ in self.layout(H, W))
-
-    def fit(self, rows: list[tuple[str, ...]], avail: int) -> list[int]:
-        """Each row's height. The row holding variants takes what that needs to show every row; the others share the
-        rest by their shares, each at least its smallest. If even that is too much, variants gives rows back first
-        (it scrolls), then all shrink alike."""
-        fixed = [max((self.fixed_h(n) if n == "variants" else (MIN_H[n], MIN_H[n])) for n in row)
-                 if "variants" in row else None for row in rows]
-        mins = [max([MIN_H[n] for n in row if n in MIN_H] or [0]) if f is None else 0 for row, f in zip(rows, fixed)]
-        h = [f[0] if f else m for f, m in zip(fixed, mins)]
-        over = sum(h) - avail
-        for i, row in enumerate(rows):                   # give back down to the smallest
-            if over > 0 and fixed[i]:
-                floor = max([fixed[i][1]] + [MIN_H[n] for n in row if n in MIN_H])
-                give = min(over, h[i] - floor)
-                if give > 0:
-                    h[i] -= give; over -= give
-        if over > 0:                                       # still too tall: everything shrinks alike
-            tot = sum(h)
-            h = [max(3, x * avail // tot) for x in h]
-            h[-1] += avail - sum(h)
-            return h
-        flex = [i for i, f in enumerate(fixed) if f is None]
-        rest = avail - sum(h)
-        if not flex:
-            h[-1] += rest
-            return h
-        shares = [max(SHARE.get(n, 0.3) for n in rows[i]) for i in flex]
-        rest += sum(h[i] for i in flex)                    # the flexible rows split this between them
-        for i, sh in zip(flex, shares):
-            h[i] = max(mins[i], int(rest * sh / sum(shares)))
-        h[flex[-1]] += avail - sum(h)
-        for i in flex[:-1]:                                # the last one went under its smallest: take from the others
-            short = mins[flex[-1]] - h[flex[-1]]
-            if short > 0:
-                give = min(short, h[i] - mins[i]); h[i] -= give; h[flex[-1]] += give
-        return h
-
-    def layout(self, H: int, W: int) -> list[tuple[str, int, int, int, int]]:
-        """(panel, y, x, h, w) for every box shown on this view. A row's survivor takes the full width; a pair
-        too narrow for both stacks into two rows."""
-        view = self.view(H, W)
-        z = self.zoomed(H, W)
-        if z:
-            return [(z, 0, 0, H - 1, W)]
-        rows: list[tuple[str, ...]] = []
-        for row in PAGES[view]:
-            if len(row) == 2 and sum(LEFT_MIN.get(n, 30) for n in row) > W:   # not even at their smallest
-                rows += [(row[0],), (row[1],)]
-            else:
-                rows.append(row)
-        out, y = [], 0
-        for row, h in zip(rows, self.fit(rows, H - 1)):   # the status line takes the last row
-            if len(row) == 2:
-                l, r = row
-                lw = max(int(W * LEFT_SHARE.get(l, 0.5)), LEFT_MIN.get(l, 0), WANT_W.get(l, 0))
-                lw = min(lw, W - LEFT_MIN.get(r, 30))     # the right box keeps at least its smallest
-                out += [(l, y, 0, h, lw), (r, y, lw, h, W - lw)]
-            else:
-                out.append((row[0], y, 0, h, W))
-            y += h
-        return out
+        return name == self.tab
 
     def send(self, **cmd) -> str:
         """Put a command where the engine picks it up; returns its id (its result comes back under it)."""
@@ -784,15 +653,16 @@ class Screen:
         except curses.error:
             pass
 
-    def box(self, y: int, x: int, h: int, w: int, title: str, color: int, key: str = "", right=()) -> None:
-        """A rounded box with its number and title on the top border, btop style. `right` holds the
-        segments drawn at the top border's right end: a plain string (grey info) or a (key, rest)
-        hint whose key shows in the theme's key color. Segments that don't fit drop from the left."""
+    def box(self, y: int, x: int, h: int, w: int, title: str, color: int, right=()) -> None:
+        """A rounded box, btop style. One of BOXES has the tabs on its top border, with title at the right end when
+        that says more than its name, and `right`, its keys, on its bottom border. Any other box has its title on the
+        top border and `right` at that border's right end. `right` holds segments: a plain string (grey info) or a
+        (key, rest) hint whose key shows in the theme's key color."""
         P = self.P
         a = P(color)
-        key = key or self.panel_key
         saved, self.clip = self.clip, None
-        focused = self.drawing == (self.rep_focus if self.overlay == "reports" else self.focus)
+        tabbed = self.drawing in BOXES
+        focused = self.overlay == "reports" and self.drawing == self.rep_focus
         if focused:
             a |= curses.A_BOLD
         tl, hz, tr, vt, bl, br = "╭─╮│╰╯"
@@ -801,20 +671,22 @@ class Screen:
             self.put(y + r, x, vt, a)
             self.put(y + r, x + w - 1, vt, a)
         self.put(y + h - 1, x, bl + hz * (w - 2) + br, a)
-        cx = x + 2
-        self.put(y, cx, hz, a); cx += 1
-        if focused:   # title in the box's own color with a marker; the border is drawn bold
-            tab = f"{key}{title} ◂"
-            self.put(y, cx, tab, P(color, bold=True)); cx += len(tab)
+        cx = x + 3
+        if tabbed:
+            for i, name in enumerate(BOXES):
+                cx = self.tab_seg(y, cx, i, name, color, a)
+            if title != self.drawing:
+                info = title[:max(0, x + w - 5 - cx)]
+                self.put(y, x + w - 4 - len(info), info, P(WHITE, bold=True))
+        elif focused:   # title in the box's own color with a marker; the border is drawn bold
+            self.put(y, cx, title + " ◂", P(color, bold=True)); cx += len(title) + 2
         else:
-            if key:
-                self.put(y, cx, key, P(P.c("key"), bold=True)); cx += len(key)
             self.put(y, cx, title, P(WHITE, bold=True)); cx += len(title)
-        self.put(y, cx, hz, a)
+        hy, start = (y + h - 1, x + 2) if tabbed else (y, cx)
         segs = [right] if isinstance(right, str) else list(right)
         segs = [s for s in segs if s]
         lens = [len(s) if isinstance(s, str) else sum(map(len, s)) for s in segs]
-        fits = lambda: cx + 2 + sum(n + 3 for n in lens) <= x + w - 3   # each segment: ┤..├ and a ─ before it
+        fits = lambda: start + 2 + sum(n + 3 for n in lens) <= x + w - 3   # each segment: ┤..├ and a ─ before it
         for spare in DROP_FIRST:                         # the least needed go first: ↑↓, then space on/off
             if not fits():
                 i = next((j for j, g in enumerate(segs) if g == spare or isinstance(g, tuple) and g[0] == spare), None)
@@ -822,10 +694,28 @@ class Screen:
                     segs.pop(i); lens.pop(i)
         while segs and not fits():
             segs.pop(0); lens.pop(0)
-        rx = x + w - 3 - sum(n + 3 for n in lens) + 1        # keep the corner free for a scroll ▲
+        rx = x + w - 3 - sum(n + 3 for n in lens) + 1        # keep the corner free for a scroll ▲▼
+        free = 2 + len(f" {self.flash} ") + 1 if tabbed and self.flashing() else 0   # a flash covers the keys it reaches
         for seg, n in zip(segs, lens):
-            self.hint(y, rx, seg, a); rx += n + 3
+            if rx >= free:
+                self.hint(hy, rx, seg, a)
+            rx += n + 3
         self.clip = saved
+
+    def tab_seg(self, y: int, x: int, i: int, name: str, color: int, border: int) -> int:
+        """One box's tab on the top border; returns where the next one goes."""
+        P = self.P
+        if name == self.drawing:
+            text = f"┤{SUPER[i]}{name}├"
+            self.put(y, x, text, P(color, bold=True)); return x + len(text)
+        self.put(y, x, "─", border)
+        self.put(y, x + 1, SUPER[i], P(P.c("key"), bold=True))
+        self.put(y, x + 2, name, P(P.grey))
+        self.put(y, x + 2 + len(name), "─", border)
+        return x + 3 + len(name)
+
+    def flashing(self) -> bool:
+        return bool(self.flash) and time.time() - self.flash_at < 8
 
     def hint(self, y: int, x: int, seg, border: int) -> None:
         """One ┤segment├ on a border line."""
@@ -989,7 +879,7 @@ class Screen:
         row = self.row(self.sel)
         if row:
             strike = strike_of(row["k"])
-        self.box(y, x, h, w, prod.lower(), self.P.border("spot"), "", PANEL_KEYS["spot"](self))
+        self.box(y, x, h, w, prod.lower(), self.P.border("spot"), PANEL_KEYS["spot"](self))
         gh = h - 3
         if not vals:
             self.put(y + h // 2, x + 3, "waiting for spot…", P(self.P.grey)); return
@@ -1043,9 +933,9 @@ class Screen:
         prod = cfgmod.SERIES[self.series]
         coin = prod.split("-")[0]
         title = f"{coin} above ${strike_label(r['k'])}?" if r else "contract"
-        self.box(y, x, h, w, title, self.P.border("contract"), "", PANEL_KEYS["contract"](self))
+        self.box(y, x, h, w, title, self.P.border("contract"), PANEL_KEYS["contract"](self))
         if not r:
-            self.put(y + 2, x + 3, "pick a strike in the ladder", P(self.P.grey)); return
+            self.put(y + 2, x + 3, "waiting for the hourly event…", P(self.P.grey)); return
         hist = (st.get("hist") or {}).get(self.sel) or []
         pts = []
         for t, b, a in hist:
@@ -1125,23 +1015,27 @@ class Screen:
                                        f"{'over' if d >= 0 else 'under'}", WHITE)]
         return out
 
+    def pick_strike(self) -> None:
+        """A strike for the spot, contract and ladder boxes when none is picked, or the one picked is gone."""
+        lad = self.ladder()
+        if not lad or self.sel in [r["t"] for r in lad]:
+            return
+        spot = ((self.st.get("spot") or {}).get(cfgmod.SERIES[self.series]) or {}).get("now")
+        if spot:       # the nearest strike the rule would buy (★), else the nearest one
+            pool = [r for r in lad if self.in_band(r)] or lad
+            self.sel = min(pool, key=lambda r: abs(r["k"] - spot))["t"]
+        else:
+            self.sel = lad[len(lad) // 2]["t"]
+        self.write_view()
+
     def ladder_panel(self, y, x, h, w) -> None:
         P, st = self.P, self.st
         lad = self.ladder()
-        self.box(y, x, h, w, "ladder", self.P.border("ladder"), "", "↑↓")
+        self.box(y, x, h, w, "ladder", self.P.border("ladder"), PANEL_KEYS["ladder"](self))
         if not lad:
             self.put(y + 2, x + 3, "waiting for the hourly event…", P(self.P.grey)); return
-        prod = cfgmod.SERIES[self.series]
-        spot = ((st.get("spot") or {}).get(prod) or {}).get("now")
-        tickers = [r["t"] for r in lad]
-        if self.sel not in tickers:
-            if spot:   # the nearest strike the rule would buy (★), else the nearest one
-                pool = [r for r in lad if self.in_band(r)] or lad
-                self.sel = min(pool, key=lambda r: abs(r["k"] - spot))["t"]
-            else:
-                self.sel = tickers[len(tickers) // 2]
-            self.write_view()
-        i = tickers.index(self.sel)
+        spot = ((st.get("spot") or {}).get(cfgmod.SERIES[self.series]) or {}).get("now")
+        i = [r["t"] for r in lad].index(self.sel)
         rows = h - 3
         top = max(0, min(len(lad) - rows, i - rows // 2))
         book = self.cur_book()
@@ -1190,7 +1084,7 @@ class Screen:
         P, st = self.P, self.st
         vs = st.get("variants") or []
         G = st.get("gate_cfg") or {}
-        self.box(y, x, h, w, "variants", self.P.border("ladder"), "", [("⏎", " select"), ("e", "dit"), ("space", " on/off"), ("r", "ename"), ("D", "elete"), "↑↓"])
+        self.box(y, x, h, w, "variants", self.P.border("ladder"), PANEL_KEYS["variants"](self))
         if not vs:
             self.put(y + 2, x + 3, "waiting for the engine…", P(self.P.grey)); return
         names = [v["name"] for v in vs]
@@ -1296,7 +1190,7 @@ class Screen:
     def select_variant(self) -> None:
         """enter: the highlighted variant is the one the book, band and gate show. Nothing that trades changes."""
         if not self.shown("variants"):
-            self.say("enter selects a variant: " + self.back_to("highlight one in variants, then enter")); return
+            self.say("enter selects a variant: " + self.back_to("highlight one, then enter")); return
         cur = self.vrow(self.var_sel)
         if cur is None:
             return
@@ -1437,7 +1331,7 @@ class Screen:
         P, st = self.P, self.st
         v = self.book_view or ("live" if st.get("mode") == "live" else "paper")
         b = st.get(v) or {}
-        self.box(y, x, h, w, "book", self.P.border("book"), "", PANEL_KEYS["book"](self))
+        self.box(y, x, h, w, "book", self.P.border("book"), PANEL_KEYS["book"](self))
         tabs: list[tuple[str, int]] = []
         for name in ("paper", "live"):
             label = f"{self.vn(self.variant)} on paper" if name == "paper" else \
@@ -1537,7 +1431,7 @@ class Screen:
 
     def log_panel(self, y, x, h, w) -> None:
         P = self.P
-        self.box(y, x, h, w, "log", self.P.border("log"), "", PANEL_KEYS["log"](self))
+        self.box(y, x, h, w, "log", self.P.border("log"), PANEL_KEYS["log"](self))
         logs = self.log_rows(self.logs_shown(), w)
         rows = h - 2
         end = self.log_end(logs, rows)
@@ -1658,7 +1552,7 @@ class Screen:
 
     def scroll(self, name: str | None, d: int) -> None:
         """Move one box d steps (negative is up). Boxes that don't scroll ignore it."""
-        if name == "ladder":
+        if name in ("ladder", "contract"):
             self.step_ladder(d)
         elif name == "variants":
             names = [v["name"] for v in self.st.get("variants") or []]
@@ -1679,22 +1573,6 @@ class Screen:
             end = max(min(rows, len(logs)), min(len(logs), self.log_end(logs, rows) + 3 * d))
             self.log_anchor = None if end >= len(logs) else (logs[end - 1][0], logs[end - 1][3])
 
-    def focusable(self) -> list[str]:
-        """The scrolling boxes on screen, in reading order."""
-        H, W = self.s.getmaxyx()
-        return [n for n, *_ in self.layout(H, W) if n in SCROLLS]
-
-    def move_focus(self, d: int) -> None:
-        names = self.focusable()
-        if not names:
-            H, W = self.s.getmaxyx()
-            z = self.zoomed(H, W)
-            n = view_boxes(self.view(H, W)).index(z) + 1 if z else 0
-            self.say(f"{z} doesn't scroll · {n} back shows the others" if z else "no scrolling box is shown here"); return
-        i = names.index(self.focus) if self.focus in names else -1 if d > 0 else 0
-        self.focus = names[(i + d) % len(names)]
-        self.say(f"focus: {self.focus}")
-
     def step_ladder(self, d: int) -> None:
         tickers = [r["t"] for r in self.ladder()]
         if not tickers:
@@ -1704,38 +1582,10 @@ class Screen:
         self.write_view()
 
     def footer(self, H: int, W: int) -> None:
-        """Row H-2 is the bottom border of the lowest boxes. Zoomed, it carries the hints of the boxes not on
-        screen (so tab, ?, q... never go missing) at its right end, the variants' view only how to go back; a flash message
-        goes at its left."""
-        P = self.P
-        flashing = bool(self.flash) and time.time() - self.flash_at < 8
-        view = self.view(H, W)
-        z = self.zoomed(H, W)
-        if self.overlay == "reports":                           # its own boxes have their hints
-            page_seg = ()
-        elif z:                                                 # ─3 back─: the zoomed box's number restores
-            page_seg = (str(view_boxes(view).index(z) + 1), " back")
-        else:
-            page_seg = ("esc", " back") if view == "page2" else ()
-        paged = not flashing and bool(page_seg)
-        # the variants' view has its own hints and how to go back, not the dash's (those keys still work, and h lists
-        # them). A zoomed box hides every other, so then theirs move here
-        orphans = [] if self.overlay == "reports" or view == "page2" else \
-            [k for name, fn in PANEL_KEYS.items() if name not in self.rects for k in fn(self)]
-        width = lambda segs: sum(sum(map(len, seg)) + 3 for seg in segs) - 1
-        for key in ORPHAN_DROP:                       # too many for the row: the least needed go first, tab last
-            if width(orphans + ([page_seg] if paged else [])) <= W - 4:
-                break
-            orphans = [seg for seg in orphans if isinstance(seg, str) or seg[0] != key]
-        segs = orphans + ([page_seg] if paged else [])   # ─esc back─ (or ─3 back─) last, at the right end
-        rx = W - 3 - width(segs)
-        for seg in segs:
-            if rx >= 1:
-                self.hint(H - 2, rx, seg, P(P.grey))
-            rx += sum(map(len, seg)) + 3
-        if flashing:
+        """A flash message, on the box's bottom border (row H-2)."""
+        if self.flashing():
             msg = f" {self.flash} "[:max(0, W - 4)]
-            self.put(H - 2, 2, msg, P(YELLOW, bold=True) | curses.A_REVERSE)
+            self.put(H - 2, 2, msg, self.P(YELLOW, bold=True) | curses.A_REVERSE)
 
     def draw_overlay(self, lines: list, title: str, color: int = CYAN, scroll: bool = False, hints=None,
                      pin: int = 0, follow: int | None = None) -> None:
@@ -1758,7 +1608,7 @@ class Screen:
                 off = self.pin_off = min(max(off, follow - br + 1), follow)
             for r in range(h):
                 self.put(y + r, x, " " * w)
-            self.box(y, x, h, w, title, color, "", hints or [("any key", " closes")])
+            self.box(y, x, h, w, title, color, hints or [("any key", " closes")])
             saved, self.clip = self.clip, x + w - 2
             for j, l in enumerate(body[off:off + br] + foot):
                 cx = x + 2
@@ -1778,7 +1628,7 @@ class Screen:
         for r in range(h):
             self.put(y + r, x, " " * w)
         long = scroll and len(lines) > room
-        self.box(y, x, h, w, title, color, "", hints or ([("↑↓", " scroll"), ("esc", " close")] if long else [("any key", " closes")]))
+        self.box(y, x, h, w, title, color, hints or ([("↑↓", " scroll"), ("esc", " close")] if long else [("any key", " closes")]))
         saved, self.clip = self.clip, x + w - 2
         for j, l in enumerate(lines[off:off + room]):
             cx = x + 2
@@ -1914,7 +1764,7 @@ class Screen:
             out.append(f"  [{'x' if c['ok'] else ' '}] {c['name']}  ({c['detail']})")
         if st.get("shadow"):
             rows = shadowmod.table(st["shadow"])
-            out += ["", head("VARIANTS", "   side by side on paper; (v) opens them, (enter) selects one (tern report)")]
+            out += ["", head("VARIANTS", "   side by side on paper; (5) shows them, (enter) selects one (tern report)")]
             out += [[("  " + rows[0], P(P.grey, bold=True))]] + ["  " + l for l in rows[1:]]
         out += ["", head("GO LIVE", "   all three are needed")]
         out.append(f"  [{'x' if st.get('keys') else ' '}] Kalshi key present ({cfgmod.KEYFILE_ENV})")
@@ -1942,11 +1792,10 @@ class Screen:
         P = self.P
         entries = self.rep_entries()
         h, lw = H - 1, REPORT_LIST_W
-        self.panel_key = ""
         # the list: LIVE, then SAVED
         self.drawing = "reports"
         self.rects["reports"] = (0, 0, h, lw)
-        self.box(0, 0, h, lw, "reports", P.border("book"), "", ["↑↓"])
+        self.box(0, 0, h, lw, "reports", P.border("book"), ["↑↓"])
         rows: list = []                                   # a heading, "" or an entry
         for saved, title in ((False, "LIVE"), (True, "SAVED")):
             these = [r for r in entries if r.saved == saved]
@@ -1975,7 +1824,7 @@ class Screen:
         x, w = lw, W - lw
         self.drawing = "report"
         self.rects["report"] = (0, x, h, w)
-        self.box(0, x, h, w, cur.label, P.border("ladder"), "",
+        self.box(0, x, h, w, cur.label, P.border("ladder"),
                  ([] if cur.saved else [("s", "ave")]) + [("←→", " box"), ("↑↓", " scroll" if self.rep_focus == "report" else " pick"), ("esc", " close")])
         self.drawing = ""
         got = reports.FEED.get(self.runtime, cur.id)
@@ -2357,21 +2206,11 @@ class Screen:
             if self.modal:                           # P: pause the engine?
                 self.draw_overlay(self.modal["lines"], self.modal["title"], self.modal.get("color", YELLOW))
             self.s.refresh(); return
-        boxes = self.layout(H, W)
-        view = self.view(H, W)
-        here = view_boxes(view)
-        names = [b[0] for b in boxes if b[0] in SCROLLS]
-        if names and self.focus not in names:          # the focused box went off screen (page, zoom, size)
-            self.focus = names[0]
-        for name, y, x, h, w in boxes:
-            self.rects[name] = (y, x, h, w)
-            self.clip = x + w - 1
-            self.panel_key = SUPER[here.index(name)] if len(here) > 1 else ""
-            self.drawing = name
-            getattr(self, name + "_panel")(y, x, h, w)
-        self.clip = None
-        self.panel_key = ""
-        self.drawing = ""
+        self.pick_strike()
+        self.rects[self.tab] = (0, 0, H - 1, W)          # the status line takes the last row
+        self.clip, self.drawing = W - 1, self.tab
+        getattr(self, self.tab + "_panel")(0, 0, H - 1, W)
+        self.clip, self.drawing = None, ""
         self.footer(H, W)
         if self.overlay == "settings":
             lines = self.settings_lines()
@@ -2481,13 +2320,8 @@ class Screen:
         if ch in (ord("q"), ord("Q")):
             return False
         if ch in (curses.KEY_UP, curses.KEY_DOWN, curses.KEY_PPAGE, curses.KEY_NPAGE, ord("k"), ord("j")):
-            names = self.focusable()
-            if self.focus not in names and names:
-                self.focus = names[0]
-            self.scroll(self.focus, {curses.KEY_UP: -1, ord("k"): -1, curses.KEY_DOWN: 1, ord("j"): 1,
+            self.scroll(self.tab, {curses.KEY_UP: -1, ord("k"): -1, curses.KEY_DOWN: 1, ord("j"): 1,
                                      curses.KEY_PPAGE: -10, curses.KEY_NPAGE: 10}[ch])
-        elif ch in (curses.KEY_LEFT, curses.KEY_RIGHT):
-            self.move_focus(-1 if ch == curses.KEY_LEFT else 1)
         elif ch in (10, 13, curses.KEY_ENTER):
             self.select_variant()
         elif ch in (ord("D"), ord(" ")):
@@ -2495,27 +2329,24 @@ class Screen:
                 self.variant_key(ch)
             else:
                 self.say(("D deletes a variant: " if ch == ord("D") else "space turns a variant on or off: ") +
-                         self.back_to("highlight one in variants"))
+                         self.back_to("highlight one first"))
         elif ch == ord("r"):
             self.rename_ask()
         elif ord("1") <= ch <= ord(str(len(BOXES))):
-            self.toggle(ch - ord("1"))
-        elif ch == ord("v"):
-            self.open_variants()
-        elif ch == 27:
-            self.go_back()
+            self.show_tab(BOXES[ch - ord("1")])
         elif ch in (9, curses.KEY_BTAB):
+            self.show_tab(BOXES[(BOXES.index(self.tab) + (-1 if ch == curses.KEY_BTAB else 1)) % len(BOXES)])
+        elif ch == ord("C"):
             order = list(cfgmod.SERIES)
-            step = -1 if ch == curses.KEY_BTAB else 1
-            self.series = order[(order.index(self.series) + step) % len(order)] if self.series in order else order[0]
+            self.series = order[(order.index(self.series) + 1) % len(order)] if self.series in order else order[0]
             self.sel = None; self.write_view(); self.save_prefs(); self.say(f"viewing {cfgmod.SERIES[self.series]}")
         elif ch in (ord("t"), ord("T")):
             self.next_theme(-1 if ch == ord("T") else 1)
-        elif ch == ord("c"):
+        elif ch == ord("c") and self.shown("spot"):
             order = list(CHARTS)
             self.chart = order[(order.index(self.chart) + 1) % len(order)] if self.chart in order else "15m"
             self.save_prefs()
-        elif ch == ord("V"):
+        elif ch == ord("V") and self.shown("book"):
             cur = self.book_view or ("live" if self.st.get("mode") == "live" else "paper")
             self.book_view = "live" if cur == "paper" else "paper"
         elif ch == ord("g"):

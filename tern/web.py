@@ -44,7 +44,7 @@ NAMED = {"ArrowUp": curses.KEY_UP, "ArrowDown": curses.KEY_DOWN, "ArrowLeft": cu
          "Home": curses.KEY_HOME, "End": curses.KEY_END, "Tab": 9, "BackTab": curses.KEY_BTAB,
          "Enter": 10, "Escape": 27, "Backspace": 127}
 # keys that only change what this viewer sees: they reach the screen; everything else stops here
-VIEW_KEYS = set("123456jktTcvVgseoh?") | {"Enter", "Escape", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "PageUp", "PageDown",
+VIEW_KEYS = set("123456jktTcCVgseoh?") | {"Enter", "Escape", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "PageUp", "PageDown",
                                        "Tab", "BackTab"}
 CONTROL_KEYS = {"q": "quit", "Q": "quit", "P": "engine pause/start", "L": "live",
                 "r": "renaming", " ": "turning a variant on or off",
@@ -140,6 +140,8 @@ def clean_prefs(d) -> dict:
         out["variant"] = d["variant"]           # one since deleted falls back to live's on the next read
     if d.get("log_filter") in dash.LOG_FILTERS:
         out["log_filter"] = d["log_filter"]
+    if d.get("tab") in dash.BOXES:
+        out["tab"] = d["tab"]
     return out
 
 
@@ -170,12 +172,14 @@ class WebScreen(dash.Screen):
             self.variant = d["variant"]
         if "theme" in d:
             self.P.set_theme(d["theme"])
+        if "tab" in d:
+            self.tab = d["tab"]
         if "log_filter" in d:
             self.log_filter, self.log_anchor = d["log_filter"], None
 
     def current_prefs(self) -> dict:
         return {"series": self.series, "chart": self.chart, "theme": self.P.name,
-                "variant": self.variant, "log_filter": self.log_filter}
+                "variant": self.variant, "log_filter": self.log_filter, "tab": self.tab}
 
     def save_prefs(self) -> None:                # kept by the browser (localStorage), not in dash.json
         self.prefs = self.current_prefs()
@@ -221,13 +225,15 @@ class WebScreen(dash.Screen):
         self.hits, self.rowmap = [], {}
         super().draw()
 
-    def box(self, y, x, h, w, title, color, key="", right=()) -> None:
+    def box(self, y, x, h, w, title, color, right=()) -> None:
         segs = [right] if isinstance(right, str) else list(right)
         segs = [s for s in segs if isinstance(s, str) or not set(s[0::2]) & CONTROL_HINTS and s[:2] not in (("e", "dit"), ("s", "ave"))]   # any key piece
-        key = key or self.panel_key
-        if key in dash.SUPER:                    # the box number: a click zooms / restores it, as 1-8 do
-            self.hits.append((y, x + 3, x + 3 + len(key), str(dash.SUPER.index(key) + 1)))
-        super().box(y, x, h, w, title, color, key, segs)
+        super().box(y, x, h, w, title, color, segs)
+
+    def tab_seg(self, y, x, i, name, color, border) -> int:
+        end = super().tab_seg(y, x, i, name, color, border)
+        self.hits.append((y, x, end, str(i + 1)))   # a click shows that box, as its number does
+        return end
 
     def hint(self, y, x, seg, border) -> None:
         if not isinstance(seg, str):
@@ -235,16 +241,6 @@ class WebScreen(dash.Screen):
             if k:
                 self.hits.append((y, x + 1, x + 1 + sum(map(len, seg)), k))
         super().hint(y, x, seg, border)
-
-    def footer(self, H: int, W: int) -> None:
-        with _PAL_SWAP:                          # one tab at a time swaps the module's table
-            real = dash.PANEL_KEYS
-            dash.PANEL_KEYS = {n: (lambda fn: lambda s: [g for g in fn(s) if not set(g[0::2]) & CONTROL_HINTS])(fn)
-                               for n, fn in real.items()}   # off-screen boxes' hints, without the control ones
-            try:
-                super().footer(H, W)
-            finally:
-                dash.PANEL_KEYS = real
 
     def ladder_panel(self, y, x, h, w) -> None:
         super().ladder_panel(y, x, h, w)
@@ -285,9 +281,6 @@ class WebScreen(dash.Screen):
     def click(self, cy: int, cx: int) -> None:
         for y, x0, x1, k in self.hits:
             if y == cy and x0 <= cx < x1:
-                for name, (by, bx, bh, bw) in self.rects.items():   # a box's own hint acts on that box
-                    if by <= cy < by + bh and bx <= cx < bx + bw and name in dash.SCROLLS:
-                        self.focus = name
                 self.press(k); return
         if self.overlay == "reports":            # a listed report is picked; elsewhere a click focuses the box
             if cx < dash.REPORT_LIST_W and cy in self.rep_rows:
@@ -298,15 +291,11 @@ class WebScreen(dash.Screen):
         for name, rows in self.rowmap.items():
             r = self.rects.get(name)
             if r and cy in rows and r[1] < cx < r[1] + r[3] - 1:
-                self.focus = name
                 if name == "ladder":
                     self.sel = rows[cy]; self.write_view()
                 else:
                     self.var_sel = rows[cy]
                 return
-        for name, (y, x, h, w) in self.rects.items():
-            if y <= cy < y + h and x <= cx < x + w and name in dash.SCROLLS:
-                self.focus = name; return
 
     def frame(self, h: int, w: int) -> dict:
         if (h, w) != self.s.getmaxyx():
