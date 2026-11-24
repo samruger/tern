@@ -34,7 +34,7 @@ FEW = {"grey": WHITE, "key": MAGENTA, "head": WHITE, "sym": CYAN, "event": BLUE,
        "word_a": WHITE, "word_b": WHITE, "word_c": WHITE, "ticker": CYAN, "strike": YELLOW, "slot": YELLOW,
        "verb": MAGENTA, "variant": CYAN, "phrase": YELLOW, "sep": MAGENTA, "value": WHITE,
        "rows": WHITE, "fade_txt": WHITE, "fade_ts": BLUE}
-FEW_BORDER = {"spot": CYAN, "contract": MAGENTA, "ladder": BLUE, "book": YELLOW, "equity": GREEN, "log": BLUE}
+FEW_BORDER = {"spot": CYAN, "contract": MAGENTA, "ladder": BLUE, "book": YELLOW, "log": BLUE}
 GRAD8 = {"spot": [BLUE, CYAN], "yes": [GREEN, YELLOW, RED], "eq_up": [GREEN], "eq_dn": [RED]}
 
 
@@ -299,7 +299,7 @@ HELP = [
     ("VARIANTS", "Each variant runs on paper side by side with the others, with its own record, its own cash and "
                  "real fees. The built-in ones:\n"
                  "{variants}\n"
-                 "Highlight one with ↑↓ (page 2: p) and press (enter) to select it, marked ●: the book, equity, ladder, "
+                 "Highlight one with ↑↓ (page 2: p) and press (enter) to select it, marked ●: the book, ladder, "
                  "contract and gate show it. Selecting changes nothing that trades.\n"
                  "A variant holds everything about how it trades: its rule, contracts a strike, most an hour and paper start. "
                  "It never buys more than the cash it has left. Once saved it never changes. Make your own, marked +: (n) opens "
@@ -336,14 +336,13 @@ HELP_BOXES = [
     ("", "", "  your position; ★ marks the band. ↑↓ picks the strike the contract box shows"),
     ("⁴", "book", "the selected variant's equity, P&L, cash, at risk, fees and record, then open"),
     ("", "", "  positions, settlements and fills; (v) switches paper / live"),
-    ("⁵", "log", "what the engine did, newest at the bottom; scroll back with ↑↓ (page 2: ³)"),
+    ("⁵", "log", "what the engine did, newest at the bottom; scroll back with ↑↓"),
     ("¹", "variants", "page 2: each variant's hours, entries, P&L, ¢ a contract, win rate, t,"),
     ("", "", "  and gate progress (yellow: still short); ● selected, L live's, + one you"),
     ("", "", "  made; the highlighted one's P&L by hour below"),
-    ("²", "equity", "page 2: the selected variant's equity by the hour (live's by the minute)"),
-    ("", "pages", "(p) flips page 1 (boxes 1-5) and page 2 (1 variants, 2 equity, 3 log);"),
-    ("", "", "  \"page 1/2\" at the log's bottom right says which. A screen big enough"),
-    ("", "", "  for every box shows them all as one, numbered 1-7. A box's number zooms it"),
+    ("", "pages", "(p) flips page 1 (boxes 1-5) and page 2 (variants); \"page 1/2\" at the"),
+    ("", "", "  bottom right says which. A screen big enough for every box shows them"),
+    ("", "", "  all as one, numbered 1-6. A box's number zooms it"),
     ("", "", "  to the whole screen; \"3 back\" on the bottom border: the same number restores"),
     ("", "status", "bottom row: PAPER or LIVE, the coin's price and 1h change, the hourly event"),
     ("", "", "  and time to its close, rule ON/off with the next slot (+live when live"),
@@ -374,15 +373,14 @@ HELP_KEYS = [
      ("look", [("p", "page 1 / page 2"),
                ("1-5", "page 1: zoom spot, contract, ladder,"),
                ("", "book or log to the whole screen"),
-               ("1-3", "page 2: variants, equity, log"),
                ("", "(the same number again goes back)"),
                ("c", "spot chart span: 5m 15m 1h 24h"),
-               ("v", "book and equity: paper / live"),
+               ("v", "book: paper / live"),
                ("o", "reports: every record, live and saved"),
                ("", "(←→ ↑↓ move, PgUp PgDn page, s saves one)"),
                ("t T", "next / previous of {themes} color themes")])],
     [("variants", [("enter", "select the highlighted one (page 2): the book,"),
-                ("", "equity, band and gate show it"),
+                ("", "band and gate show it"),
                 ("n", "new one, from the highlighted one's settings:"),
                 ("", "change them, s saves it, esc discards; that"),
                 ("", "one and its record stay as they are"),
@@ -429,25 +427,25 @@ SCREEN_SETTINGS = [cfgmod.Setting("screen", "log", "log shows", kind="choice", g
 # spot chart spans: c cycles them in this order (the engine sends ~15 min of seconds and 24h of minutes)
 CHARTS = {"5m": 300, "15m": 900, "1h": 3600, "24h": 86400}
 
-# every box; on each view its number key is its place in that view's reading order (page 2: 1 variants ... 3 log)
-BOXES = ["spot", "contract", "ladder", "book", "equity", "log", "variants"]
+# every box; on each view its number key is its place in that view's reading order (page 2: 1 variants)
+BOXES = ["spot", "contract", "ladder", "book", "log", "variants"]
 PANELS = BOXES                                   # older name, kept for the web and tests
 # each view's rows of boxes, top to bottom; p flips page1 / page2, and a screen big enough for every box at its
 # smallest shows them all as one (merged). A box's number zooms it to the whole screen; the same number restores.
-PAGES = {"page1": [("spot", "contract"), ("ladder", "book"), ("log",)],          # equity is page 2's
-         "page2": [("variants",), ("equity",), ("log",)],
-         "merged": [("spot", "contract"), ("ladder", "book"), ("variants", "equity"), ("log",)]}
+PAGES = {"page1": [("spot", "contract"), ("ladder", "book"), ("log",)],
+         "page2": [("variants",)],
+         "merged": [("spot", "contract"), ("ladder", "book"), ("variants", "log")]}
 PAGE_NAMES = {1: "trade", 2: "compare"}
-SHARE = {"spot": 0.36, "contract": 0.36, "ladder": 0.44, "book": 0.44, "equity": 0.28, "log": 0.28}   # flexible rows' height shares
+SHARE = {"spot": 0.36, "contract": 0.36, "ladder": 0.44, "book": 0.44, "log": 0.28}   # flexible rows' height shares
 DROP_FIRST = ("↑↓", "space")                     # border hints that go before the others when a box is narrow
-LEFT_SHARE = {"spot": 0.6, "ladder": 0.52, "equity": 0.4, "variants": 0.6}         # a pair's left width share
-MIN_H = {"spot": 6, "contract": 8, "ladder": 8, "book": 9, "equity": 6, "log": 4}   # a flexible box's smallest height
+LEFT_SHARE = {"spot": 0.6, "ladder": 0.52, "variants": 0.6}         # a pair's left width share
+MIN_H = {"spot": 6, "contract": 8, "ladder": 8, "book": 9, "log": 4}   # a flexible box's smallest height
 WANT_W = {"ladder": 56, "variants": 81}   # the width a box needs to show all its columns (others 40)
 SUPER = "¹²³⁴⁵⁶⁷⁸⁹"
 LEFT_MIN = {"ladder": 56, "variants": 57}   # the ladder's columns need this much before its bar has any room
 SCROLLS = ["ladder", "variants", "book", "log"]   # the boxes ←→ focus and ↑↓ scroll
 ORPHAN_DROP = ["t", "c", "R", "L", "v", "r", "", "h", "S", "g", "q", "tab"]   # off-screen boxes' hints, first dropped first
-COMFY_H = {"spot": 10, "contract": 10, "ladder": 12, "book": 12, "equity": 8, "log": 8}   # sizes the merged view needs
+COMFY_H = {"spot": 10, "contract": 10, "ladder": 12, "book": 12, "log": 8}   # sizes the merged view needs
 
 
 # the reports screen (o): the list's width, and the lines of a report that are a table's header, a table's row
@@ -537,7 +535,7 @@ class Screen:
         self.focus = "ladder"                  # the box ↑↓ scroll; ←→ move it
         self.var_sel: str | None = None        # the variant the cursor is on in the variants box
         self.var_top = 0                       # first variant row shown when the list is taller than its box
-        self.variant: str | None = None        # the variant selected (enter): the book, equity, band and gate show it
+        self.variant: str | None = None        # the variant selected (enter): the book, band and gate show it
         self.raw: dict = {}                    # status.json as the engine wrote it; self.st is it with that one selected
         self.set_sub = 0                       # in a slots / coins row of the settings box: the choice the cursor is on
         self.rep_list: list = []               # o: the reports there are (reports.index), looked up every 2 s
@@ -647,13 +645,13 @@ class Screen:
         return n + 4, min(n + 3, 10)
 
     def toggle(self, i: int) -> None:
-        """1-7: zoom this view's i-th box (its number on its border) to the whole screen; its number again restores."""
+        """1-6: zoom this view's i-th box (its number on its border) to the whole screen; its number again restores."""
         H, W = self.s.getmaxyx()
         v = self.view(H, W)
         here = view_boxes(v)
         if i >= len(here):
             where = f"page {self.page}" if v != "merged" else "this screen"
-            self.say(f"{where} has boxes 1-{len(here)}"); return
+            self.say(f"{where} has boxes 1-{len(here)}" if len(here) > 1 else f"{where} has one box"); return
         name = here[i]
         self.zoom = None if self.zoom == name else name
         if self.zoom in SCROLLS:
@@ -1306,7 +1304,7 @@ class Screen:
             self.put(y + h - 2, x + 2, tip[:w - 4], P(col, bold=col != P.grey))
 
     def select_variant(self) -> None:
-        """enter: the highlighted variant is the one the book, equity, band and gate show. Nothing that trades changes."""
+        """enter: the highlighted variant is the one the book, band and gate show. Nothing that trades changes."""
         if not self.shown("variants"):
             self.say("enter selects a variant: " + self.back_to("highlight one in variants, then enter")); return
         cur = self.vrow(self.var_sel)
@@ -1582,29 +1580,6 @@ class Screen:
             out.append([("     none yet", grey)])
         return out
 
-    def equity_panel(self, y, x, h, w) -> None:
-        P, st = self.P, self.st
-        v = self.book_view or ("live" if st.get("mode") == "live" else "paper")
-        b = st.get(v) or {}
-        hourly = bool(b.get("hourly"))
-        curve = [e for _, e in (b.get("curve") or [])]
-        if hourly and b.get("start") is not None:
-            curve = [b["start"]] + curve
-        title = f"{self.vn(self.variant)} on paper" if v == "paper" else "live"
-        self.box(y, x, h, w, f"equity · {title}", self.P.border("equity"), "",
-                 f"{len(curve) - 1} h" if hourly else f"{len(curve)} min")
-        if len(curve) < 2:
-            self.put(y + h // 2, x + 3, "the curve starts after a settled hour" if hourly else
-                     "the curve starts after a couple of minutes", P(self.P.grey)); return
-        lo, hi = min(curve), max(curve)
-        pad = (hi - lo) * 0.1 or 1.0
-        start = b.get("start") or curve[0]
-        gw = w - 2 - 11
-        self.graph(y + 1, x + 1, h - 2, gw, curve, lo - pad, hi + pad,
-                   P.grad("eq_up" if curve[-1] >= start else "eq_dn"), [start], self.P.grey)
-        self.put(y + 1, x + 1 + gw + 1, money(hi)[:10], P(self.P.grey))
-        self.put(y + h - 2, x + 1 + gw + 1, money(lo)[:10], P(self.P.grey))
-
     def log_panel(self, y, x, h, w) -> None:
         P = self.P
         self.box(y, x, h, w, "log", self.P.border("log"), "", PANEL_KEYS["log"](self))
@@ -1774,7 +1749,7 @@ class Screen:
 
     def footer(self, H: int, W: int) -> None:
         """Row H-2 is the bottom border of the lowest boxes. Zoomed, it carries the hints of the boxes not on
-        screen (so tab, ?, q... never go missing) at its right end; page 2 only its page hint; a flash message
+        screen (so tab, ?, q... never go missing) at its right end, page 2 the log's; a flash message
         goes at its left."""
         P = self.P
         flashing = bool(self.flash) and time.time() - self.flash_at < 8
@@ -1787,9 +1762,9 @@ class Screen:
         else:
             page_seg = ("p", "age ", str(self.page), "/2") if view != "merged" else ()   # ─page 1/2─
         paged = not flashing and bool(page_seg)
-        # page 2 shows only its own hints and the page one: page 1's keys are page 1's (they still work, and h
-        # lists them); a zoomed box hides every other, so then theirs move here
-        orphans = [] if view == "page2" and not z or self.overlay == "reports" else \
+        # page 2 has no log box, so the log's hints (gate ... quit) are here; page 1's other keys are page 1's (they
+        # still work, and h lists them). A zoomed box hides every other, so then theirs move here
+        orphans = [] if self.overlay == "reports" else PANEL_KEYS["log"](self) if view == "page2" and not z else \
             [k for name, fn in PANEL_KEYS.items() if name not in self.rects for k in fn(self)]
         width = lambda segs: sum(sum(map(len, seg)) + 3 for seg in segs) - 1
         for key in ORPHAN_DROP:                       # too many for the row: the least needed go first, tab last

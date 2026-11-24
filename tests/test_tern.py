@@ -1438,20 +1438,17 @@ class Pages(Rig, unittest.TestCase):
             text = self.text()
             for n, name in zip("¹²³⁴⁵", ("spot", "contract", "ladder", "book", "log")):
                 self.assertTrue(n in text and name in text, name)
-            self.assertNotIn("equity ·", text)                                  # page 1 has no equity box
             self.press("6")
             self.assertIsNone(scr.zoom)
             self.assertIn("1-5", scr.flash)
             self.press("p")
             text = self.text()
-            for n, name in zip("¹²³", ("variants", "equity", "log")):
-                self.assertIn(n + name, text)
-            for key, name in zip("123", ("variants", "equity", "log")):
-                self.press(key)
-                self.assertEqual(set(scr.rects), {name})
-                self.press(key)
-            self.press("4")
-            self.assertIn("1-3", scr.flash)
+            self.assertEqual(set(scr.rects), {"variants"})
+            self.assertIn("¹variants", text)
+            for gone in ("equity", "log ", "²"):
+                self.assertNotIn(gone, text)
+            self.press("2")
+            self.assertIn("one box", scr.flash)
             self.assertIsNone(scr.zoom)
 
     def test_zoomed_lists_stay_in_their_box(self):
@@ -1481,7 +1478,7 @@ class Pages(Rig, unittest.TestCase):
             k, scr = self.setup(d)
             self.press("5", "p")                                                # log zoomed
             self.assertEqual((scr.page, scr.zoom), (2, None))
-            self.assertEqual(set(scr.rects), {"variants", "equity", "log"})
+            self.assertEqual(set(scr.rects), {"variants"})
 
     def test_zoom_cleared_when_off_view(self):
         with tempfile.TemporaryDirectory() as d:
@@ -1499,13 +1496,13 @@ class Pages(Rig, unittest.TestCase):
             self.press("p")
             n = len(scr.st.get("variants") or [])
             self.assertEqual(n, 10)
-            for H, W in ((33, 111), (30, 100), (37, 151)):
+            for H, W in ((33, 111), (30, 100), (35, 151)):
                 self.size(H, W)
                 r = self.rects_ok(H, W)
-                self.assertEqual(set(r), {"variants", "equity", "log"}, (H, W))
+                self.assertEqual(set(r), {"variants"}, (H, W))
                 self.assertGreaterEqual(r["variants"][2], n + 3, (H, W))
                 self.assertEqual(r["variants"][3], W)
-                self.assertEqual((r["equity"][3], r["log"][3]), (W, W))
+                self.assertEqual(r["variants"][2], H - 1)
                 for name in ("calm", "band75", "base"):
                     self.assertIn(name, self.text())
 
@@ -1529,14 +1526,14 @@ class Pages(Rig, unittest.TestCase):
             self.size(50, 150)
             self.assertEqual(scr.view(50, 150), "merged")
             r = self.rects_ok(50, 150)
-            self.assertEqual(set(r), {"spot", "contract", "ladder", "book", "variants", "equity", "log"})
+            self.assertEqual(set(r), {"spot", "contract", "ladder", "book", "variants", "log"})
             self.press("p")
             self.assertIn("both pages fit", scr.flash)
             self.press("1", "p")                                                # zoomed: p can't flip, but 1 goes back
             self.assertIn("1 back", scr.flash)
             self.assertNotIn("every box is shown", scr.flash)
             self.press("1")
-            self.press("7")
+            self.press("6")
             self.assertEqual(scr.layout(50, 150), [("log", 0, 0, 49, 150)])
             self.size(33, 111)                                                  # log is on page 1 too: still zoomed
             self.assertEqual(scr.view(33, 111), "page1")
@@ -1557,7 +1554,7 @@ class Pages(Rig, unittest.TestCase):
             self.assertEqual((s.page, s.zoom, len(s.rects)), (1, None, 5))
             s = screen({"page": 2, "hidden": {"page2": ["log", "spot"], "merged": "junk"}, "zoom": "log"})
             s.draw()
-            self.assertEqual((s.page, s.zoom, len(s.rects)), (2, None, 3))      # the zoom is never loaded
+            self.assertEqual((s.page, s.zoom, len(s.rects)), (2, None, 1))      # the zoom is never loaded
             s = screen({"page": 1, "profile": "no2", "watch": "band90"})           # profiles and watching are gone
             s.draw()
             self.assertIsNone(s.variant)
@@ -1605,8 +1602,8 @@ class Pages(Rig, unittest.TestCase):
                 scr.flash = ""; self.sync()
                 row = "".join(scr.s.ch[H - 2])
                 self.assertIn(f"page {page}/2", row)
-                ly, lx, lh, lw = scr.rects["log"]
-                self.assertEqual((ly + lh, lx, lw), (H - 1, 0, W))              # log across the bottom of both pages
+                ly, lx, lh, lw = scr.rects["log" if page == 1 else "variants"]
+                self.assertEqual((ly + lh, lx, lw), (H - 1, 0, W))              # one box across the bottom of both pages
                 self.assertGreater(row.index(f"page {page}/2"), W - 16, row)    # the page hint at its right end
                 self.assertNotIn("page", "".join(scr.s.ch[0]))
                 self.assertNotIn("compare", self.text())
@@ -1630,8 +1627,8 @@ class Pages(Rig, unittest.TestCase):
             self.assertIn("tab next coin", row)                                 # the other boxes' hints moved here
             scr.say("hello"); self.sync()
             self.assertNotIn("3 back", "".join(scr.s.ch[H - 2]))               # a flash takes its place
-            self.size(50, 150); self.press("7"); scr.flash = ""; self.sync()
-            self.assertIn("─7 back─", "".join(scr.s.ch[48]))
+            self.size(50, 150); self.press("6"); scr.flash = ""; self.sync()
+            self.assertIn("─6 back─", "".join(scr.s.ch[48]))
 
     def test_keys_of_the_variants_box_say_where_it_is(self):
         with tempfile.TemporaryDirectory() as d:
@@ -1639,10 +1636,10 @@ class Pages(Rig, unittest.TestCase):
             for key in (10, "D", " ", "N"):
                 self.press(key)
                 self.assertIn("page 2", scr.flash, key)
-            self.press("p", "2")                                                # equity zoomed: no variants box
+            self.size(50, 150); self.press("6")                                 # one big screen, log zoomed: no variants box
             for key in (10, "D", " ", "N"):
                 self.press(key)
-                self.assertIn("2 un-zooms", scr.flash, key)
+                self.assertIn("6 un-zooms", scr.flash, key)
             self.assertEqual(self.cmds(), [])
 
     def test_status_line_fits_every_width(self):
@@ -1708,6 +1705,8 @@ class Pages(Rig, unittest.TestCase):
                 scr.flash = ""; self.size(H, W)
                 row = "".join(scr.s.ch[H - 2])
                 self.assertIn("page 2/2", row, (W, row))
+                for log in ("gate", "settings", "reports", "help", "quit"):     # the log box is page 1's, its keys are here
+                    self.assertIn(log, row, (W, row))
                 for page1 in ("tab next coin", "chart", "view", "Live", "Restart", "theme"):   # page 1's, not repeated
                     self.assertNotIn(page1, row, (W, row))
 
@@ -2528,7 +2527,6 @@ class OneList(Rig, unittest.TestCase):
             self.press("p"); scr.var_sel = "wide"; self.press(10)
             self.assertEqual([x["t"] for x in scr.st["paper"]["pos"]], [self.T])
             self.assertEqual((scr.st["paper"]["start"], scr.st["gate"]["open"], scr.strat()["band_lo"]), (300, 1, 0.55))
-            self.assertIn("equity · wide on paper", self.text())
             self.assertIn(" wide ", "".join(scr.s.ch[39]))                     # the status line
             self.assertIn("● +wide", self.text())
             self.press("p")
@@ -3023,19 +3021,19 @@ class Web(unittest.TestCase):
             self.assertEqual(os.listdir(os.path.join(d, "cmd")), [])          # no command reached the engine
             self.assertFalse(os.path.exists(os.path.join(d, "dash.json")))     # the screen's prefs are its own
             self.assertIn("view only", "".join(t for t, _ in f["rows"][38]))
-            for k in ("t", "c", "Tab", "BackTab", "3"):
+            for k in ("t", "c", "Tab", "BackTab", "1"):
                 f = hub.handle({"sid": sid, "w": 120, "h": 40, "key": k})
             self.assertEqual(f["prefs"]["variant"], "band90")                  # ↓ then enter: selected, for this viewer
             self.assertNotEqual(f["prefs"]["theme"], "classic")
             self.assertEqual(f["prefs"]["chart"], "1h")
             self.assertNotIn("hidden", f["prefs"])
             self.assertNotIn("zoom", f["prefs"])
-            self.assertEqual(hub.sessions[sid][0].zoom, "log")                   # page 2's 3: zoomed in this tab only
+            self.assertEqual(hub.sessions[sid][0].zoom, "variants")              # page 2's 1: zoomed in this tab only
             hub.sessions[sid][0].flash = ""
             f = hub.handle({"sid": sid, "w": 120, "h": 40, "key": "ArrowUp"})
             row = "".join(t for t, _ in f["rows"][38])
-            f = hub.handle({"sid": sid, "w": 120, "h": 40, "click": {"y": 38, "x": row.index("3 back")}})
-            self.assertIsNone(hub.sessions[sid][0].zoom)                         # clicking "3 back" restores
+            f = hub.handle({"sid": sid, "w": 120, "h": 40, "click": {"y": 38, "x": row.index("1 back")}})
+            self.assertIsNone(hub.sessions[sid][0].zoom)                         # clicking "1 back" restores
             self.assertEqual(len(f["rows"]), 40)
 
     def test_web_pages_prefs(self):
