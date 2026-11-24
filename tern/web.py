@@ -48,9 +48,9 @@ VIEW_KEYS = set("1234567pjktTcvgeoh?") | {"Enter", "ArrowUp", "ArrowDown", "Arro
                                        "Tab", "BackTab"}
 CONTROL_KEYS = {"q": "quit", "Q": "quit", "S": "engine start/stop", "s": "saving a report", "R": "starting a variant over", "L": "live",
                 "r": "making a variant", "N": "renaming", " ": "turning a variant on or off",
-                "n": "making a variant", "E": "making a variant", "D": "deleting"}
+                "n": "making a variant", "D": "deleting"}
 # border hints whose key changes something: not drawn on the web (⏎ selects a variant: it only views)
-CONTROL_HINTS = {"r", "L", "R", "s", "S", "q", "space", "n", "D", "N", "E"}
+CONTROL_HINTS = {"r", "L", "R", "s", "S", "q", "space", "n", "D", "N"}
 # what a hint on a border sends when clicked
 HINT_KEY = {"tab": "Tab", "any key": "Escape", "esc": "Escape", "↑↓": None, "←→": None, "⏎": "Enter"}
 

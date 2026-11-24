@@ -303,7 +303,7 @@ HELP = [
                  "contract and gate show it. Selecting changes nothing that trades.\n"
                  "A variant holds everything about how it trades: its rule, contracts a strike, most an hour and paper start. "
                  "It never buys more than the cash it has left. Once saved it never changes. Make your own, marked +: (n) opens "
-                 "base's settings as a draft, (E) the highlighted one's, and (s) there saves a new variant with an empty "
+                 "the highlighted one's settings as a draft, and (s) there saves your changes as a new variant with an empty "
                  "record; the one it came from and its record stay. (space) turns one off or on, (D) deletes one, (N) renames "
                  "it, (R) starts the selected one over: its record so far is kept in the reports. At most {max_own} of your "
                  "own; a deleted one's record stays on file.\n"
@@ -383,15 +383,14 @@ HELP_KEYS = [
                ("t T", "next / previous of {themes} color themes")])],
     [("variants", [("enter", "select the highlighted one (page 2): the book,"),
                 ("", "equity, band and gate show it"),
-                ("n", "new one, from base's settings, as a draft:"),
-                ("", "s saves it, esc discards"),
-                ("E", "the same from the highlighted one's settings;"),
-                ("", "that one and its record stay as they are"),
+                ("n", "new one, from the highlighted one's settings:"),
+                ("", "change them, s saves it, esc discards; that"),
+                ("", "one and its record stay as they are"),
                 ("space", "turn it on / off"),
                 ("D", "delete it, if it is one you made"),
                 ("N", "rename it: its record keeps its own name"),
                 ("R", "start the selected one over (asks y)"),
-                ("r", "E on the selected one, this coin flipped")]),
+                ("r", "n on the selected one, this coin flipped")]),
      ("trade", [("L", "live: on with the selected variant, off, or"),
                 ("", "moved to it (type \"live\")"),
                 ("g", "gate, variants and go-live checklist"),
@@ -402,7 +401,7 @@ HELP_KEYS = [
      ("settings", [("↑↓", "pick a setting"),
                    ("←→  - +", "step it down / up, or flip it"),
                    ("enter 0-9", "type a value, enter saves"),
-                   ("s", "in a variant (n, E): save as a new variant"),
+                   ("s", "in a variant (n): save as a new variant"),
                    ("esc", "close; in a variant: throw changes away")]),
      ("in here", [("↑↓ PgUp PgDn", "scroll this help or the gate"),
                   ("Home End", "top / bottom"),
@@ -514,8 +513,7 @@ class Screen:
         self.overlay: str | None = None        # "help", "gate" or "settings" while one is open
         self.set_sel = 0                       # the settings row the cursor is on
         self.set_buf: str | None = None        # the value being typed in the settings box, or None
-        self.edit_var: str | None = None       # n, E: the variant the box's draft starts from (None: the settings box, e)
-        self.edit_new = False                  # ... opened with n: a new one, from base's settings
+        self.edit_var: str | None = None       # n: the variant the box's draft starts from (None: the settings box, e)
         self.draft: dict = {}                  # E: field -> value changed there and not saved
         self.set_back: int | None = None       # the settings row to go back to after E
         self.var_new: dict | None = None       # a draft was sent to be saved: cid, and its variant and draft
@@ -1204,7 +1202,7 @@ class Screen:
         P, st = self.P, self.st
         vs = st.get("variants") or []
         G = st.get("gate_cfg") or {}
-        self.box(y, x, h, w, "variants", self.P.border("ladder"), "", [("⏎", " select"), ("n", "ew"), ("E", "dit"), ("space", " on/off"), ("", "re", "N", "ame"), ("D", "elete"), "↑↓"])
+        self.box(y, x, h, w, "variants", self.P.border("ladder"), "", [("⏎", " select"), ("n", "ew"), ("space", " on/off"), ("", "re", "N", "ame"), ("D", "elete"), "↑↓"])
         if not vs:
             self.put(y + 2, x + 3, "waiting for the engine…", P(self.P.grey)); return
         names = [v["name"] for v in vs]
@@ -1297,7 +1295,7 @@ class Screen:
             if not cur.get("on", True):
                 tip, col = f"{name} is off: no new entries, open ones settle · space turns it on", YELLOW
             elif cur.get("cash") is not None and cur["cash"] < (cur.get("rule") or {}).get("band_lo", 0) and not cur.get("open"):
-                tip, col = f"{name} has {money(cur['cash'])} left: it buys nothing · E makes one with a new paper start, R starts it over", YELLOW
+                tip, col = f"{name} has {money(cur['cash'])} left: it buys nothing · n makes one with a new paper start, R starts it over", YELLOW
             elif live:
                 tip, col = f"L live trades {name}" + (" · selected" if sel_ else ""), RED
             elif sel_:
@@ -1322,7 +1320,7 @@ class Screen:
         self.save_prefs(); self.apply_selected()
         self.say(f"{self.vn(self.variant)} selected: the book shows it" + (f" · live still trades {self.vn(live)}" if live and live != self.variant else ""))
 
-    # ---- the variants: n, E, D, space
+    # ---- the variants: n, D, space
     def variant_key(self, ch: int) -> None:
         """D or space with the variants box on screen, on the highlighted variant."""
         cur = self.vrow(self.var_sel)
@@ -1350,14 +1348,13 @@ class Screen:
             self.modal = {"type": "vdelete", "title": f"delete {name}", "color": RED, "name": cur["name"],
                           "lines": [f"Delete {name}? It stops running. {kept}", "", "y deletes · any other key keeps it"]}
 
-    def new_variant(self, edit: bool) -> None:
-        """E: a draft of the highlighted variant's settings (the selected one's where the box is not on screen).
-        n: a draft of base's."""
-        name = "base" if not edit else self.var_sel if self.shown("variants") and self.vrow(self.var_sel) else self.variant
+    def new_variant(self) -> None:
+        """n: a draft of the highlighted variant's settings (the selected one's where the box is not on screen)."""
+        name = self.var_sel if self.shown("variants") and self.vrow(self.var_sel) else self.variant
         if self.vrow(name) is None:
             self.say("no variants from the engine yet"); return
         if not self.older_engine():
-            self.open_settings(name, new=not edit)
+            self.open_settings(name)
 
     def live_key(self) -> None:
         """L: live on with the selected variant, off, or (armed with another) moved to the selected one."""
@@ -1402,10 +1399,10 @@ class Screen:
                                 "Its record so far is kept in the reports under a deleted variant's name.", "",
                                 "y starts it over · any other key keeps it"]}
 
-    def open_settings(self, variant: str | None = None, new: bool = False) -> None:
-        """e: the settings box (the desk's and the screen's). n, E: the same box on a variant's settings, as a draft."""
+    def open_settings(self, variant: str | None = None) -> None:
+        """e: the settings box (the desk's and the screen's). n: the same box on a variant's settings, as a draft."""
         self.overlay, self.set_buf, self.edit_var, self.draft = "settings", None, variant, {}
-        self.edit_new, self.set_sub = new, 0
+        self.set_sub = 0
         if variant is not None:
             self.set_back, self.set_sel = self.set_sel, 0
 
@@ -1425,7 +1422,7 @@ class Screen:
                 for r in varmod.RULE_SETTINGS if r.name in self.draft]
 
     def save_draft(self) -> None:
-        """s in the box n and E open: asks for a name, then the draft becomes a new variant."""
+        """s in the box n opens: asks for a name, then the draft becomes a new variant."""
         if self.var_new:
             self.say("the last save has not been answered yet"); return
         if self.older_engine():
@@ -1434,7 +1431,7 @@ class Screen:
             self.say("nothing is changed yet: there is nothing to save"); return
         self.modal = {"type": "vname", "title": "save as a new variant", "color": CYAN, "buf": "", "max": varmod.NAME_MAX,
                       "cmd": {"op": "variant_new", "from": self.edit_var, "rule": dict(self.draft)},
-                      "lines": ["A new variant: base's settings with" if self.edit_new else f"A new variant: {self.vn(self.edit_var)} with",
+                      "lines": [f"A new variant: {self.vn(self.edit_var)} with",
                                 *("  " + t for t in self.draft_lines()), "",
                                 f"It starts with an empty record. {self.vn(self.edit_var)} and its record stay as they are.",
                                 f"name, up to {varmod.NAME_MAX} characters (enter alone picks one, esc goes back):", "> "]}
@@ -1448,7 +1445,7 @@ class Screen:
         return True
 
     def rule_coin(self) -> None:
-        """r: E on the selected variant, with the coin on screen flipped in the draft."""
+        """r: n on the selected variant, with the coin on screen flipped in the draft."""
         name = self.variant
         have = ((self.vrow(name) or {}).get("rule") or {}).get("series")
         if name is None or have is None:
@@ -2167,7 +2164,7 @@ class Screen:
 
     # ------------------------------------------------------------ settings (e)
     def set_rows(self) -> list:
-        """The box's rows. n, E: a variant's. e: the desk's, the screen's."""
+        """The box's rows. n: a variant's. e: the desk's, the screen's."""
         if self.edit_var:
             return list(varmod.RULE_SETTINGS)
         return cfgmod.SETTINGS + SCREEN_SETTINGS
@@ -2266,7 +2263,7 @@ class Screen:
                 self.edit_var and any("on" not in v for v in self.raw.get("variants") or []):
             out += [[("The engine running is older than this screen: restart it (S, S) to change these.", P(YELLOW, bold=True))]]
         elif self.edit_var:
-            out += [[("Nothing is saved until s: that makes a new variant" + ("." if self.edit_new else f"; {self.vn(self.edit_var)} stays as it is."), P(P.grey))]]
+            out += [[(f"Nothing is saved until s: that makes a new variant; {self.vn(self.edit_var)} stays as it is.", P(P.grey))]]
         elif armed:
             out += [[("Live is armed: raising a live limit or lowering a gate asks you to type \"live\".", P(YELLOW, bold=True))]]
         return out
@@ -2278,8 +2275,7 @@ class Screen:
             return []
         n = len(self.draft)
         own = (self.vrow(self.edit_var) or {}).get("own")
-        note = "  base's settings to start from" if self.edit_new else "  built in" if not own else ""
-        return [("  " + ("new variant" if self.edit_new else self.vn(self.edit_var)), P(P.c("variant"), bold=True)), (note, P(P.grey)),
+        return [("  from " + self.vn(self.edit_var), P(P.c("variant"), bold=True)), ("  built in" if not own else "", P(P.grey)),
                 (f"  {n} change{'s' if n > 1 else ''}, not saved" if n else "", P(YELLOW))]
 
     def set_choices(self, row) -> list:
@@ -2448,7 +2444,7 @@ class Screen:
         self.footer(H, W)
         if self.overlay == "settings":
             lines = self.settings_lines()
-            self.draw_overlay(lines, ("new variant" if self.edit_new else f"variant {self.vn(self.edit_var)}") if self.edit_var else "settings", self.P.border("contract"), pin=len(lines) - self.set_foot,
+            self.draw_overlay(lines, "new variant" if self.edit_var else "settings", self.P.border("contract"), pin=len(lines) - self.set_foot,
                               follow=self.set_line, hints=[("↑↓", " pick"), ("←→", " step"), ("enter", " type")] +
                               ([("s", "ave as new"), ("esc", " discard")] if self.edit_var else [("esc", " close")]))
         elif self.overlay:
@@ -2569,8 +2565,8 @@ class Screen:
             self.move_focus(-1 if ch == curses.KEY_LEFT else 1)
         elif ch in (10, 13, curses.KEY_ENTER):
             self.select_variant()
-        elif ch in (ord("n"), ord("E")):
-            self.new_variant(edit=ch == ord("E"))
+        elif ch == ord("n"):
+            self.new_variant()
         elif ch in (ord("D"), ord(" ")):
             if self.shown("variants"):
                 self.variant_key(ch)

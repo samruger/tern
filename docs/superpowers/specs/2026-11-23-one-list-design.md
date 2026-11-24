@@ -17,8 +17,9 @@ profiles on the screen only: two lists stay underneath; (c) the user's pick: one
 - **Live:** `L` arms live with the selected variant (config live.variant; type "live"), past its own gate as before.
   Selecting another does not move live. `L` with the live one selected turns live off; with another selected it asks
   to move live there (type "live") or x turns it off. Live never falls back to another variant.
-- **`n`** opens a draft of base's settings, **`E`** a draft of the highlighted one's; `s` names it and saves a new
-  variant with an empty record. A saved variant never changes. `r` is E on the selected one with the coin flipped.
+- **`n`** opens a draft of the highlighted one's settings; `s` names it and saves a new variant with an empty record.
+  A saved variant never changes. `r` is n on the selected one with the coin flipped. (There was an `E` too, for an
+  hour; the user: "its the same thing as new".)
 - **`space`** turns a variant on or off (off: no new entries, open ones settle). Turning the live one on while armed
   asks "live"; off stops live's entries.
 - **`D`** deletes (not built-ins, not the one live trades while armed), **`N`** renames.
