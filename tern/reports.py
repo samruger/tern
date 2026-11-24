@@ -1,15 +1,13 @@
 """The reports: what `tern report` prints and the screen's reports box (o) shows.
 
-Live reports are worked out from the records each time: profile 1's variants, every profile's book side by side,
-one profile by settings period, the deleted profiles. Saved ones are the runtime folder's report-*.txt, shown as
+Live reports are worked out from the records each time: the variants side by side, and by settings period. Saved ones are the runtime folder's report-*.txt, shown as
 written; save() makes one (s on the screen, tern report --save, the weekly timer). Reading a report changes
-nothing: no record, setting or profile folder is written.
+nothing: no record or setting is written.
 """
 
 from __future__ import annotations
 
 import datetime as dt
-import json
 import os
 import re
 import threading
@@ -17,7 +15,7 @@ import time
 from dataclasses import dataclass
 
 from . import config as cfgmod
-from . import profiles as profmod
+from . import names as namesmod
 from .shadow import DESC, ORDER, RETIRED, Shadow, desc_of, table
 from .variants import describe
 
@@ -34,14 +32,15 @@ def _config(runtime: str) -> cfgmod.Config:
 # ---------------------------------------------------------------- the live ones
 
 def desk(runtime: str) -> list[str]:
-    """Profile 1's variants side by side: built in, its own, deleted and retired."""
+    """The variants side by side: built in, your own, deleted and retired."""
     sh = Shadow(runtime)
-    use = _config(runtime).strategy.variant
+    cfg = _config(runtime)
+    live = cfg.live.variant if cfg.live.enabled else None
     lost = sorted(sh.own.used() - set(shadow_names(sh)))      # records of variants variants.json no longer has
     w = max(len(n) for n in shadow_names(sh) + lost)
     out = table(sh.summary(), w)
     own = {n: (f"({sh.own.title(n)}) " if sh.own.title(n) != n else "") + desc_of(n, sh.own) for n in sh.own.active()}
-    out += [""] + [f"{n}: {d}" + ("  ← in use" if n == use else "") for n, d in {**DESC, **own}.items()]
+    out += [""] + [f"{n}: {d}" + (" · off" if n in sh.own.off else "") + ("  ← live" if n == live else "") for n, d in {**DESC, **own}.items()]
     gone = [r for r in sh.summary(sh.own.deleted()) if r["entries"] or r["open"]] if sh.own.deleted() else []
     if gone:
         out += ["", "deleted, kept for the record:"] + table(gone, w)[1:]
@@ -53,59 +52,15 @@ def desk(runtime: str) -> list[str]:
     return out + ["", "t is by hour and shows after 10 hours."]
 
 
-def side_by_side(runtime: str, room: int | None = None) -> list[str]:
-    """Every profile's book: its picked variant's record."""
+def periods(runtime: str) -> list[str]:
+    """The variants, one table per settings period."""
     cfg = _config(runtime)
-    rows = [(profmod.Names(runtime).profile, cfg.strategy.variant,
-             profmod.SettingsLog(os.path.join(runtime, "settings-log.jsonl")).sv, Shadow(runtime, cfg.taker_fee))]
-    rows += [(p.name + ("" if p.enabled else " (off)"), p.variant, p.log.sv, p.shadow)
-             for p in profmod.load_all(runtime, cfg.taker_fee)]
-    return _books(rows, room) + ["", "each profile's book is its picked variant's record:",
-                                 "look at entries and t (by hour, shows after 10 hours) as well as P&L."]
-
-
-def deleted(runtime: str, room: int | None = None) -> list[str]:
-    """The deleted profiles' books, from the folders kept in profiles-deleted/."""
-    fee = _config(runtime).taker_fee
-    root = os.path.join(runtime, profmod.DELETED_DIR)
-    gone, out = [], []
-    for n in sorted(os.listdir(root)) if os.path.isdir(root) else []:
-        try:
-            gone.append(profmod.Profile.load(os.path.join(root, n), fee))
-        except Exception as ex:
-            out.append(f"{n}: unreadable ({ex})")
-    if not gone:
-        return out + ["no deleted profiles"]
-    return out + [f"deleted profiles, kept in {root}:"] + \
-        _books([(f"{p.name} ({p.id})", p.variant, p.log.sv, p.shadow) for p in gone], room)
-
-
-def find(runtime: str, name: str) -> str:
-    """The id of the profile called that, by name or id ("1" is the desk). LookupError names the known ones."""
-    want, one = name.strip().lower(), profmod.Names(runtime).profile    # profile 1's name (N on the screen renames it)
-    if want in ("1", "profile 1", one.lower()):
-        return "1"
-    loaded = profmod.load_all(runtime, _config(runtime).taker_fee)
-    p = next((p for p in loaded if want in (p.id, p.name.lower())), None)
-    if p is None:
-        raise LookupError(f"no profile {name!r}; known: {one} (1)" + "".join(f", {p.name} ({p.id})" for p in loaded))
-    return p.id
-
-
-def of_profile(runtime: str, pid: str) -> list[str]:
-    """One profile's variants, one table per settings period. pid "1" is the desk."""
-    cfg = _config(runtime)
-    if pid == "1":
-        log = profmod.SettingsLog(os.path.join(runtime, "settings-log.jsonl"))
-        return [f"{profmod.Names(runtime).profile} (profile 1, the desk): book trades {cfg.strategy.variant}, settings {log.sv}"] + \
-            _periods(Shadow(runtime, cfg.taker_fee), log.lines(), log.sv)
-    p = profmod.Profile.load(os.path.join(runtime, profmod.PROFILES_DIR, pid), cfg.taker_fee)
-    return [f"{p.name} ({p.id}): {'on' if p.enabled else 'off'}, book trades {p.variant}, settings {p.log.sv}"] + \
-        _periods(p.shadow, p.log.lines(), p.log.sv)
+    log = namesmod.SettingsLog(os.path.join(runtime, "settings-log.jsonl"))
+    return [f"settings {log.sv}"] + _periods(Shadow(runtime, cfg.taker_fee), log.lines(), log.sv)
 
 
 def _periods(sh, lines: list[dict], sv_now: int) -> list[str]:
-    """A profile's variants, one table per settings period, each headed with when it ran and what changed."""
+    """One table of the variants per settings period, each headed with when it ran and what changed."""
     day = lambda ts: dt.datetime.fromtimestamp(ts).strftime("%m-%d %H:%M")
     starts: dict[int, float] = {}
     why: dict[int, list[str]] = {}
@@ -113,9 +68,9 @@ def _periods(sh, lines: list[dict], sv_now: int) -> list[str]:
         sv = ln.get("sv")
         if isinstance(sv, int):
             starts.setdefault(sv, ln.get("ts") or 0)
-            if ln.get("key") in profmod.RECORD_KEYS:
-                why.setdefault(sv, []).append(f"{profmod.label(ln['key'])} {profmod.show(ln['key'], ln.get('from'))}"
-                                              f" → {profmod.show(ln['key'], ln.get('to'))}")
+            if ln.get("key") in namesmod.RECORD_KEYS:
+                why.setdefault(sv, []).append(f"{namesmod.label(ln['key'])} {namesmod.show(ln['key'], ln.get('from'))}"
+                                              f" → {namesmod.show(ln['key'], ln.get('to'))}")
             elif ln.get("key") == "note":            # a change of tern's own that makes records differently from here
                 why.setdefault(sv, []).append(str(ln.get("to")))
     versions = sorted({v for n in shadow_names(sh) for v in sh.versions(n)} | {sv_now})
@@ -138,57 +93,31 @@ def _periods(sh, lines: list[dict], sv_now: int) -> list[str]:
 
 
 def _own_lines(sh, rows: list[dict]) -> list[str]:
-    """The profile's own variants: each one's rule, and whether it was deleted."""
+    """Your own variants: each one's settings, what it was made from, and whether it was deleted."""
     have = {r["name"] for r in rows}
     own = [(k, v) for k, v in sh.own.all.items() if not v["deleted"] or k in have]
-    return ["", "its own variants:"] + [
+    return ["", "your own variants:"] + [
         f"  {k}" + (f" ({v['title']})" if v["title"] != k else "") + f": {describe(v['rule'])}" +
-        (f", from {v['from']}" if v["from"] else "") + (" · deleted" if v["deleted"] else "") for k, v in own] if own else []
+        (f", from {v['from']}" if v["from"] else "") + (f", was in {v['was']}" if v["was"] else "") +
+        (" · deleted" if v["deleted"] else "") for k, v in own] if own else []
 
 
 def shadow_names(sh) -> list[str]:
     return list(ORDER) + list(RETIRED) + list(sh.own.all)
 
 
-def _books(rows: list[tuple], room: int | None = None) -> list[str]:
-    """(name, variant, settings, records) rows under a header; with room, long names are cut so a line fits in it."""
-    b = max([8] + [len(r[1]) for r in rows])
-    w = max([7] + [len(r[0]) for r in rows])
-    rest = 2 + b + sum(1 + n for n in (3, 5, 7, 9, 10, 6))
-    if room is not None:
-        w = min(w, max(8, room - rest))
-    out = [f"{'profile':<{w}}  {'book':<{b}} {'set':>3} {'hours':>5} {'entries':>7} {'P&L':>9} {'¢/contract':>10} {'t':>6}"]
-    for name, variant, sv, sh in rows:
-        r = sh.summary([variant])[0]
-        pc = f"{r['per_contract'] * 100:+.2f}" if r["per_contract"] is not None else "-"
-        t = f"{r['t']:+.2f}" if r["t"] is not None else "-"
-        name = name if len(name) <= w else name[:w - 1] + "…"
-        out.append(f"{name:<{w}}  {variant:<{b}} {sv:>3} {r['hours']:>5} {r['entries']:>7} {r['pnl']:>+9.2f} {pc:>10} {t:>6}")
-    return out
-
-
 # ---------------------------------------------------------------- what there is to read
 
 @dataclass
 class Entry:
-    id: str                 # desk, profiles, profile:<id>, deleted or saved:<file>
+    id: str                 # desk, periods or saved:<file>
     label: str              # what the list calls it
     saved: bool = False
 
 
 def index(runtime: str) -> list[Entry]:
     """Every report there is: the live ones, then the saved ones, newest first."""
-    out = [Entry("desk", "variants"), Entry("profiles", "profiles"), Entry("profile:1", profmod.Names(runtime).profile)]
-    found = []
-    for pid in profmod._ids(runtime):
-        try:
-            with open(os.path.join(runtime, profmod.PROFILES_DIR, pid, "profile.json")) as fh:
-                d = json.load(fh)
-            found.append((float(d.get("created") or 0), pid, str(d["name"])[:profmod.NAME_MAX]))
-        except (OSError, ValueError, TypeError, KeyError, AttributeError):
-            continue
-    out += [Entry(f"profile:{pid}", name) for _, pid, name in sorted(found)]
-    out.append(Entry("deleted", "deleted"))
+    out = [Entry("desk", "variants"), Entry("periods", "by period")]
     try:
         names = os.listdir(runtime)
     except OSError:
@@ -199,9 +128,7 @@ def index(runtime: str) -> list[Entry]:
 
 def command(rid: str) -> str:
     """What prints a live report."""
-    kind, _, arg = rid.partition(":")
-    return "tern report" + (f" --profile {arg}" if kind == "profile" else
-                            {"profiles": " --profiles", "deleted": " --deleted"}.get(rid, ""))
+    return "tern report" + (" --periods" if rid == "periods" else "")
 
 
 def save(runtime: str, rid: str, now: float | None = None) -> str:
@@ -217,7 +144,7 @@ def save_text(runtime: str, label: str, source: str, text: list[str], now: float
     at = dt.datetime.fromtimestamp(time.time() if now is None else now)
     taken: set[str] = set()
     while True:
-        tail = profmod.slug(label, taken)
+        tail = namesmod.slug(label, taken)
         name = f"report-{at:%Y-%m-%d-%H%M}-{tail}.txt"
         path = os.path.join(runtime, name)
         try:
@@ -234,17 +161,13 @@ def save_text(runtime: str, label: str, source: str, text: list[str], now: float
         return name
 
 
-def lines(runtime: str, rid: str, room: int | None = None) -> list[str]:
+def lines(runtime: str, rid: str) -> list[str]:
     """A report's lines. LookupError for an id there is no such report of."""
     kind, _, arg = rid.partition(":")
     if rid == "desk":
         return desk(runtime)
-    if rid == "profiles":
-        return side_by_side(runtime, room)
-    if rid == "deleted":
-        return deleted(runtime, room)
-    if kind == "profile" and (arg == "1" or arg in profmod._ids(runtime)):
-        return of_profile(runtime, arg)
+    if rid == "periods":
+        return periods(runtime)
     if kind == "saved" and SAVED.match(arg):
         with open(os.path.join(runtime, arg), encoding="utf-8", errors="replace") as fh:
             text = fh.read(SAVED_MAX)
@@ -252,22 +175,13 @@ def lines(runtime: str, rid: str, room: int | None = None) -> list[str]:
     raise LookupError(f"no report {rid!r}")
 
 
-FILES = ("config.json", "profile.json", "names.json", "variants.json", "settings-log.jsonl", "shadow.json", "shadow-settled.jsonl")
+FILES = ("config.json", "names.json", "variants.json", "settings-log.jsonl", "shadow.json", "shadow-settled.jsonl")
 
 
 def _stamp(runtime: str, rid: str) -> tuple:
     """Changes when a file the report is made from does."""
     kind, _, arg = rid.partition(":")
-    root = os.path.join(runtime, profmod.DELETED_DIR if rid == "deleted" else profmod.PROFILES_DIR)
-    if kind == "saved":
-        paths = [os.path.join(runtime, arg)]
-    else:
-        try:
-            each = [os.path.join(root, n) for n in sorted(os.listdir(root))] if rid in ("profiles", "deleted") else []
-        except OSError:
-            each = []
-        dirs = [] if rid == "deleted" else [runtime] if kind != "profile" or arg == "1" else [os.path.join(root, arg)]
-        paths = [os.path.join(d, f) for d in dirs + each for f in FILES] + [os.path.join(runtime, "config.json")]
+    paths = [os.path.join(runtime, arg)] if kind == "saved" else [os.path.join(runtime, f) for f in FILES]
     out = []
     for p in paths:
         try:
@@ -296,9 +210,9 @@ class Feed:
         self.looked: dict[tuple, float] = {}
         self.busy: set[tuple] = set()
 
-    def get(self, runtime: str, rid: str, room: int | None = None) -> Report | None:
+    def get(self, runtime: str, rid: str) -> Report | None:
         """The report as last worked out (None: not yet)."""
-        key = (runtime, rid, room if rid in ("profiles", "deleted") else None)
+        key = (runtime, rid)
         with self.lock:
             old = self.have.get(key)
             if key in self.busy or old and time.time() - self.looked.get(key, 0) < self.check:

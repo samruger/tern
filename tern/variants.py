@@ -1,11 +1,11 @@
-"""Your own variants: complete rules made on the screen, kept per profile (profile 1 is the desk).
+"""Your own variants: complete rules made on the screen.
 
 A variant here is everything about how it trades: band, slots, spread, coins, the two optional caps, contracts a
-strike, most an hour and its paper start. It borrows nothing from the profile. shadow.TABLE's variants are built
-in. No variant ever changes once it is saved: E on the screen opens one as a draft, and saving that draft makes a
+strike, most an hour and its paper start. shadow.TABLE's variants are built in and take theirs from config.json. No variant ever changes once it is saved: E on the screen opens one as a draft, and saving that draft makes a
 new variant with an empty record (engine._variant_new), so a record is always one rule's.
 
-They are in variants.json beside the profile's records. A variant that bought something and was then deleted
+They are in variants.json beside the records, with the variants that are turned off and the restarts (R: entries
+from before one belong to a deleted variant that keeps them). A variant that bought something and was then deleted
 stays listed there as deleted: its open entries still settle and its key is never used again.
 """
 
@@ -21,7 +21,7 @@ import time
 from .config import SERIES, Setting
 
 FILE = "variants.json"
-MAX_OWN = 12                                     # of your own, in each profile
+MAX_OWN = 24                                     # of your own
 NAME_MAX = 12                                    # a variant's key and display name
 KEY = re.compile(r"[a-z][a-z0-9-]{0,11}")
 SLOT_CHOICES = (30, 25, 20, 15, 10, 5)           # minutes before the close a rule may enter at
@@ -46,9 +46,9 @@ RULE_SETTINGS = [
     Setting("rule", "max_hour_cost", "most an hour", 5, 2_000, 5,
             what="$ it may put into one coin's hour, on paper and live"),
     Setting("rule", "paper_capital", "paper start", 100, 1_000_000, 100, group="PAPER",
-            what="the cash it starts with; it never buys more than it has left (profile 1's paper book: from a reset, R)"),
+            what="the cash it starts with; it never buys more than it has left"),
 ]
-SIZES = ("contracts", "max_hour_cost", "paper_capital")   # what variants saved before 2026-11-23 evening took from their profile
+SIZES = ("contracts", "max_hour_cost", "paper_capital")   # what variants saved before 2026-11-23 evening took from config.json
 RULE = {r.name: r for r in RULE_SETTINGS}
 FIELDS = tuple(RULE)
 
@@ -163,18 +163,21 @@ def _loaded(key, d, sizes: dict) -> dict | None:
     title, made = clean(d.get("title")), d.get("made")
     return {"rule": d["rule"], "title": title if 0 < len(title) <= NAME_MAX else key,
             "from": d["from"] if isinstance(d.get("from"), str) else "",
+            "was": d["was"] if isinstance(d.get("was"), str) else "",
             "made": made if isinstance(made, (int, float)) else 0, "deleted": d.get("deleted", False)}
 
 
 class VariantSet:
-    """A profile's own variants. reserved: the names shadow.py holds (built in and retired). sizes: its profile's
-    contracts, most an hour and paper start, for variants saved before they held their own; guessed: the profile's
-    config.json could not be read, so sizes are the defaults and are never saved as those variants' own."""
+    """The variants made on the screen. reserved: the names shadow.py holds (built in and retired). sizes: config.json's
+    contracts, most an hour and paper start, for variants saved before they held their own; guessed: config.json
+    could not be read, so sizes are the defaults and are never saved as those variants' own."""
 
     def __init__(self, dir: str, reserved=(), sizes: dict | None = None, guessed: bool = False):
         self.path = os.path.join(dir, FILE)
         self.reserved = tuple(reserved)
-        self.all: dict[str, dict] = {}           # key -> {rule, title, from, made, deleted}
+        self.all: dict[str, dict] = {}           # key -> {rule, title, from, made, deleted, was (the profile it came from)}
+        self.off: set[str] = set()               # turned off (space), built in or own: no new entries
+        self.restarts: list[dict] = []           # {v, key, before}: what v bought before then is key's
         self.changes = 0                         # goes up with every change: the engine's summaries cache on it
         self.by: dict[str, str] = {}             # variant -> the id of the command that made it, since the start
         self.used = lambda: set()                # keys that have records (Shadow sets it): never given to another
@@ -183,20 +186,27 @@ class VariantSet:
         self.damaged = False                     # something in the file would not load: save() keeps a copy of it
         try:
             with open(self.path) as fh:
-                items = json.load(fh)["variants"]
+                whole = json.load(fh)
+            items = whole["variants"]
             sizes = {**{"contracts": 5.0, "max_hour_cost": 60.0, "paper_capital": 1000.0}, **(sizes or {})}
             got = {k: _loaded(k, v, sizes) for k, v in items.items() if k not in self.reserved}
             self.all = {k: v for k, v in got.items() if v is not None}
             self.unsized = {k: fs for k in self.all if (fs := [f for f in SIZES if f not in items[k]["rule"]])}
             self.damaged = len(self.all) != len(items)
+            off = whole.get("off")
+            self.off = {n for n in off if isinstance(n, str)} if isinstance(off, list) else set()
+            for r in whole.get("restarts") if isinstance(whole.get("restarts"), list) else []:
+                if isinstance(r, dict) and isinstance(r.get("v"), str) and r.get("key") in self.all and \
+                        isinstance(r.get("before"), (int, float)):
+                    self.restarts.append({"v": r["v"], "key": r["key"], "before": r["before"]})
         except FileNotFoundError:
             pass
         except (OSError, ValueError, KeyError, AttributeError, TypeError):
             self.damaged = True
 
     def keep_filled(self, sizes: dict | None = None) -> None:
-        """The engine's, once: sizes filled in from the profile are the variants' own from now on. sizes: the
-        profile's, when its config.json can be read again after a start when it could not."""
+        """The engine's, once: sizes filled in from config.json are the variants' own from now on. sizes: config.json's,
+        when it can be read again after a start when it could not."""
         if sizes is not None and self.guessed:
             for k, fs in self.unsized.items():
                 if k in self.all:
@@ -220,7 +230,7 @@ class VariantSet:
         else:
             self.unsized = {}
         with open(self.path + ".tmp", "w") as fh:
-            json.dump({"variants": out}, fh, indent=1)
+            json.dump({"variants": out, "off": sorted(self.off), "restarts": self.restarts}, fh, indent=1)
         os.replace(self.path + ".tmp", self.path)
         self.changes += 1
 
@@ -262,7 +272,7 @@ class VariantSet:
     def add(self, rule: dict, name: str = "", parent: str = "", taken=(), deleted: bool = False) -> str:
         """A new variant; returns its key. Without a name it is called after its parent: band80-2."""
         if not deleted and len(self.active()) >= MAX_OWN:
-            raise ValueError(f"at most {MAX_OWN} variants of your own in a profile: delete one first (D)")
+            raise ValueError(f"at most {MAX_OWN} variants of your own: delete one first (D)")
         bad = why_bad(rule)
         if bad:
             raise ValueError(f"{parent or 'that rule'} can't be used as it is: {bad}")
@@ -279,7 +289,19 @@ class VariantSet:
                 i += 1
             key = name = cand
         self.all[key] = {"rule": copy.deepcopy(rule), "title": name, "from": parent, "made": round(time.time(), 3),
-                         "deleted": deleted}
+                         "deleted": deleted, "was": ""}
+        self.save()
+        return key
+
+    def turn(self, name: str, on: bool) -> None:
+        (self.off.discard if on else self.off.add)(name)
+        self.save()
+
+    def restart(self, name: str, rule: dict, now: float) -> str:
+        """R: what name has bought so far goes to a deleted variant of its own; returns that one's key."""
+        key = self._key(f"{name[:NAME_MAX - 4]}-old")
+        self.all[key] = {"rule": copy.deepcopy(rule), "title": key, "from": name, "made": round(now, 3), "deleted": True, "was": ""}
+        self.restarts.append({"v": name, "key": key, "before": now})
         self.save()
         return key
 
@@ -292,6 +314,7 @@ class VariantSet:
 
     def delete(self, key: str, used: bool) -> None:
         """used: it has bought something, so its rule is kept for its record; otherwise nothing is left of it."""
+        self.off.discard(key)
         if used:
             self.all[key]["deleted"] = True
         else:

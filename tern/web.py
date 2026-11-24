@@ -3,11 +3,9 @@
 The browser does not draw its own copy of the dash. Each browser tab gets a real dash.Screen
 drawing into a virtual terminal here; the cells go to the page, which paints them like foot does.
 So the web view always looks and behaves like the screen, minus the keys that change anything:
-no quit, engine stop or start, paper reset, live, rule coins or picking a variant. The settings
-box (e) opens and its cursor moves, but only its log filter row changes (for that viewer). Reports (o)
-can be read but not saved. The
-profiles box (page 2) can show any profile; making, renaming, turning on/off or deleting one, its settings,
-and making, changing, renaming or deleting a variant, stay with the terminal. It sends
+no quit, engine stop or start, or live, and no making, renaming, turning on/off, deleting or restarting a
+variant. Selecting one (enter) only views it, for that viewer. The settings box (e) opens and its cursor moves,
+but only its log filter row changes (for that viewer). Reports (o) can be read but not saved. It sends
 no command files and never writes the screen's own view.json or dash.json. Its viewers' coins
 and strikes go to view-web.json, so the engine also sends those strikes' contract history.
 """
@@ -46,16 +44,15 @@ NAMED = {"ArrowUp": curses.KEY_UP, "ArrowDown": curses.KEY_DOWN, "ArrowLeft": cu
          "Home": curses.KEY_HOME, "End": curses.KEY_END, "Tab": 9, "BackTab": curses.KEY_BTAB,
          "Enter": 10, "Escape": 27, "Backspace": 127}
 # keys that only change what this viewer sees: they reach the screen; everything else stops here
-VIEW_KEYS = set("12345678pjktTcvwgeoh?") | {"ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "PageUp", "PageDown",
+VIEW_KEYS = set("1234567pjktTcvgeoh?") | {"Enter", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "PageUp", "PageDown",
                                        "Tab", "BackTab"}
-CONTROL_KEYS = {"q": "quit", "Q": "quit", "S": "engine start/stop", "s": "saving a report", "R": "paper reset", "L": "live",
-                "r": "changing a variant", "Enter": "picking a variant", "N": "renaming",
-                "n": "making a profile", "E": "changing a variant", "D": "deleting"}
-# border hints whose key changes something: not drawn on the web (the profiles box keeps ⏎: it only views)
-CONTROL_HINTS = {"r", "L", "R", "s", "S", "q", "⏎", "space", "n", "d", "D", "N", "E"}
+CONTROL_KEYS = {"q": "quit", "Q": "quit", "S": "engine start/stop", "s": "saving a report", "R": "starting a variant over", "L": "live",
+                "r": "making a variant", "N": "renaming", " ": "turning a variant on or off",
+                "n": "making a variant", "E": "making a variant", "D": "deleting"}
+# border hints whose key changes something: not drawn on the web (⏎ selects a variant: it only views)
+CONTROL_HINTS = {"r", "L", "R", "s", "S", "q", "space", "n", "D", "N", "E"}
 # what a hint on a border sends when clicked
 HINT_KEY = {"tab": "Tab", "any key": "Escape", "esc": "Escape", "↑↓": None, "←→": None, "⏎": "Enter"}
-PROFILE_ONLY = "view only: profiles are made, changed and deleted from the screen in the terminal"
 
 SESSION_IDLE = 120.0     # seconds without a request before a browser tab's screen is dropped
 VIEW_REFRESH = 10.0      # view-web.json is rewritten at least this often while anyone watches
@@ -141,12 +138,10 @@ def clean_prefs(d) -> dict:
             out[k] = d[k]
     if isinstance(d.get("theme"), str) and d["theme"] in dash.themes.THEMES:
         out["theme"] = d["theme"]
-    if "watch" in d and (d["watch"] is None or isinstance(d["watch"], str)):
-        out["watch"] = d["watch"]
+    if "variant" in d and (d["variant"] is None or isinstance(d["variant"], str) and len(d["variant"]) <= 64):
+        out["variant"] = d["variant"]           # one since deleted falls back to live's on the next read
     if d.get("log_filter") in dash.LOG_FILTERS:
         out["log_filter"] = d["log_filter"]
-    if "profile" in d and (d["profile"] is None or isinstance(d["profile"], str) and len(d["profile"]) <= 64):
-        out["profile"] = d["profile"]           # one since deleted falls back to profile 1 on the next read
     return out
 
 
@@ -173,8 +168,8 @@ class WebScreen(dash.Screen):
             self.series, self.sel = d["series"], None
         if "chart" in d:
             self.chart = d["chart"]
-        if "watch" in d:
-            self.watch = d["watch"]
+        if "variant" in d:
+            self.variant = d["variant"]
         if "page" in d:
             self.page = d["page"]
             self.focus = "ladder" if self.page == 1 else "variants"
@@ -182,14 +177,11 @@ class WebScreen(dash.Screen):
             self.P.set_theme(d["theme"])
         if "log_filter" in d:
             self.log_filter, self.log_anchor = d["log_filter"], None
-        if "profile" in d:
-            self.profile = d["profile"]
 
     def current_prefs(self) -> dict:
         return {"page": self.page,
                 "series": self.series, "chart": self.chart, "theme": self.P.name,
-                "watch": self.watch, "log_filter": self.log_filter,
-                "profile": self.profile}
+                "variant": self.variant, "log_filter": self.log_filter}
 
     def save_prefs(self) -> None:                # kept by the browser (localStorage), not in dash.json
         self.prefs = self.current_prefs()
@@ -204,8 +196,7 @@ class WebScreen(dash.Screen):
     def send_setting(self, row, value) -> None:  # the settings box shows, but only its log row changes here
         if row.key == "screen.log":              # just this viewer's log box, kept with its other prefs
             return super().send_setting(row, value)
-        self.say(PROFILE_ONLY if self.profile and row.key not in dash.DESK_KEYS else
-                 "view only: settings are changed from the screen in the terminal")
+        self.say("view only: settings are changed from the screen in the terminal")
 
     def save_report(self) -> None:
         self.say("view only: reports are saved from the screen in the terminal")
@@ -226,7 +217,7 @@ class WebScreen(dash.Screen):
     def read(self) -> None:
         self.alive, self.alive_at = self.hub.alive(), time.time()
         self.raw = self.hub.status()
-        self.apply_profile()                     # a profile this viewer shows, as the terminal screen does
+        self.apply_selected()                    # the variant this viewer selected, as the terminal screen does
 
     # ------------------------------------------------------------ drawing, with click targets
     def draw(self) -> None:
@@ -235,8 +226,7 @@ class WebScreen(dash.Screen):
 
     def box(self, y, x, h, w, title, color, key="", right=()) -> None:
         segs = [right] if isinstance(right, str) else list(right)
-        keep = {"⏎"} if self.drawing == "profiles" else set()
-        segs = [s for s in segs if isinstance(s, str) or not set(s[0::2]) & (CONTROL_HINTS - keep)]   # any key piece
+        segs = [s for s in segs if isinstance(s, str) or not set(s[0::2]) & CONTROL_HINTS]   # any key piece
         key = key or self.panel_key
         if key in dash.SUPER:                    # the box number: a click zooms / restores it, as 1-8 do
             self.hits.append((y, x + 3, x + 3 + len(key), str(dash.SUPER.index(key) + 1)))
@@ -275,14 +265,6 @@ class WebScreen(dash.Screen):
             rows = max(1, min(len(names), h - 3))
             self.rowmap["variants"] = {y + 2 + j: n for j, n in enumerate(names[self.var_top:self.var_top + rows])}
 
-    def profiles_panel(self, y, x, h, w) -> None:
-        super().profiles_panel(y, x, h, w)
-        ids = [p["id"] for p in self.prof_rows()]
-        if ids and self.prof_sel in ids:
-            room = max(1, h - 6)
-            top = max(0, ids.index(self.prof_sel) - room + 1)
-            self.rowmap["profiles"] = {y + 2 + j: pid for j, pid in enumerate(ids[top:top + room])}
-
     # ------------------------------------------------------------ input from the page
     def press(self, name: str) -> None:
         code = NAMED.get(name, ord(name) if len(name) == 1 else None)
@@ -290,11 +272,7 @@ class WebScreen(dash.Screen):
             return
         if self.overlay:                         # help / gate: scroll keys scroll, any other key closes
             self.key(code); return
-        if name == "Enter" and self.focus == "profiles" and self.in_profiles():
-            self.key(code)                       # viewing a profile changes nothing: allowed
-        elif self.in_profiles() and name in (" ", "n", "d", "D"):
-            self.say(PROFILE_ONLY)
-        elif name in VIEW_KEYS:
+        if name in VIEW_KEYS:
             self.key(code)
         elif name in CONTROL_KEYS:
             self.say(f"view only: {CONTROL_KEYS[name]} is done from the screen in the terminal")
@@ -326,8 +304,6 @@ class WebScreen(dash.Screen):
                 self.focus = name
                 if name == "ladder":
                     self.sel = rows[cy]; self.write_view()
-                elif name == "profiles":
-                    self.prof_sel = rows[cy]
                 else:
                     self.var_sel = rows[cy]
                 return
@@ -405,7 +381,7 @@ class Hub:
             scrs = [s[0] for s in self.sessions.values()]
         series = sorted({s.series for s in scrs})
         tickers = sorted({s.sel for s in scrs if s.sel})
-        view = {"series": series, "tickers": tickers, "profiles": sorted({s.profile for s in scrs if s.profile})}
+        view = {"series": series, "tickers": tickers}
         if not scrs or (view == self.view_sent and time.time() - self.view_at < VIEW_REFRESH and not force):
             return
         self.view_sent, self.view_at = view, time.time()

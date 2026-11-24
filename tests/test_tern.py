@@ -114,14 +114,15 @@ class State(unittest.TestCase):
             k.events["KXBTCD"] = {"event": "E-1", "close": now + 600, "markets": [{"ticker": "E-1-T1"}], "fetched": now}
             k.ev_close["E-1"] = now + 600
             k.meta = {"E-1-T1": {}, "OLD-T1": {}, "HELD-T1": {"close": now - 60}, "OWED-T1": {}}
-            k.paper.trade("HELD-T1", 1, 0.5, 0.0, {}, "x")
-            k.auto = [{"ts": now, "ticker": "OWED-T1", "side": "yes", "n": 1, "cost": 0.5, "fee": 0, "slot": 10, "pnl": None}]
-            k.slots = {"paper|E-1": {25}, "paper|GONE": {25}}
-            k.hour_cost = {"paper|E-1": 1.0, "paper|GONE": 1.0}
+            k.live.trade("HELD-T1", 1, 0.5, 0.0, {}, "x")
+            k.shadow.rows = [{"v": "base", "ts": now, "event": "OWED", "close": now, "ticker": "OWED-T1", "side": "yes", "n": 1,
+                              "cost": 0.5, "fee": 0, "slot": 10, "pnl": None}]
+            k.slots = {"live|E-1": {25}, "live|GONE": {25}}
+            k.hour_cost = {"live|E-1": 1.0, "live|GONE": 1.0}
             k._save_state()
             self.assertEqual(set(k.meta), {"E-1-T1", "HELD-T1", "OWED-T1"})
-            self.assertEqual(set(k.slots), {"paper|E-1"})
-            self.assertEqual(set(k.hour_cost), {"paper|E-1"})
+            self.assertEqual(set(k.slots), {"live|E-1"})
+            self.assertEqual(set(k.hour_cost), {"live|E-1"})
             p = os.path.join(d, "state.json")
             self.assertTrue(os.path.exists(p + ".bak"))
             os.remove(p)
@@ -135,70 +136,68 @@ class State(unittest.TestCase):
             now = time.time()
             k.meta = {"A-T1": {"close": now - 60}, "A-T2": {"close": now + 600}}   # T2 is still open
             k.pub.market = lambda t: {"result": "yes", "status": "finalized"}
-            k.paper.trade("A-T1", 2, 0.5, 0.01, k.meta["A-T1"], "auto")
-            k.paper.trade("A-T2", 2, 0.5, 0.01, k.meta["A-T2"], "auto")
-            k.auto = [{"ts": now, "ticker": t, "side": "yes", "n": 2, "cost": 0.5, "fee": 0.01, "slot": 10, "pnl": None}
-                      for t in ("A-T1", "A-T2")]
-            k.paper.mark_curve(1000.0, now)
+            k.live.trade("A-T1", 2, 0.5, 0.01, k.meta["A-T1"], "auto")
+            k.live.trade("A-T2", 2, 0.5, 0.01, k.meta["A-T2"], "auto")
+            k.live.mark_curve(1000.0, now)
             k._settle(); k._save_state()
             st = json.load(open(os.path.join(d, "state.json")))
-            self.assertNotIn("trades", st["paper"]); self.assertNotIn("curve", st["paper"])
-            self.assertEqual([a["ticker"] for a in st["auto"]], ["A-T2"])      # only the open entry
-            self.assertEqual(set(st["meta"]), {"A-T2"})                        # and only meta still owed
+            self.assertNotIn("trades", st["live"]); self.assertNotIn("curve", st["live"])
+            self.assertEqual(set(st["meta"]), {"A-T2"})                        # only meta still owed
             lines = lambda n: open(os.path.join(d, n)).read().splitlines()
-            self.assertEqual(len(lines("paper-trades.jsonl")), 3)              # two fills and a settlement
-            self.assertEqual(len(lines("paper-curve.jsonl")), 1)
-            self.assertEqual(len(lines("rule-entries.jsonl")), 1)
+            self.assertEqual(len(lines("live-trades.jsonl")), 3)               # two fills and a settlement
+            self.assertEqual(len(lines("live-curve.jsonl")), 1)
             k._save_state()
-            self.assertEqual(len(lines("paper-trades.jsonl")), 3)              # nothing new: nothing appended
+            self.assertEqual(len(lines("live-trades.jsonl")), 3)               # nothing new: nothing appended
             k2 = self.desk(d)                                                  # a restart reads it all back
-            self.assertEqual([t["kind"] for t in k2.paper.trades], ["fill", "fill", "settle"])
-            self.assertEqual(k2.paper.curve, k.paper.curve)
-            self.assertEqual([(a["ticker"], a["pnl"] is None) for a in k2.auto], [("A-T1", False), ("A-T2", True)])
-            self.assertAlmostEqual(k2.gate()["pnl"], k.gate()["pnl"])
-            self.assertEqual(k2.paper.new_trades, [])                          # read back, not queued again
-            # the engine died after writing the entry's file and before saving state: it is not counted twice
-            st["auto"].append(dict(k2.auto[0], pnl=None))
-            json.dump(st, open(os.path.join(d, "state.json"), "w"))
-            self.assertEqual(self.desk(d).gate()["entries"], 1)
-            k2._command({"op": "reset_paper"}); k2._save_state()
-            self.assertFalse(os.path.exists(os.path.join(d, "paper-trades.jsonl")))
-            self.assertEqual(self.desk(d).auto, [])
+            self.assertEqual([t["kind"] for t in k2.live.trades], ["fill", "fill", "settle"])
+            self.assertEqual(k2.live.curve, k.live.curve)
+            self.assertEqual(k2.live.new_trades, [])                           # read back, not queued again
 
     def test_a_state_file_from_before_the_split_seeds_the_history_files(self):
         import json
         with tempfile.TemporaryDirectory() as d:
             trade = {"ts": 5.0, "ticker": "A-T1", "delta": 1, "price": 0.5, "fee": 0.0, "realized": 0.0, "tag": "auto", "kind": "fill"}
-            row = {"ts": 5.0, "ticker": "A-T1", "side": "yes", "n": 1, "cost": 0.5, "fee": 0.0, "slot": 10}
-            old = {"paper": {"name": "paper", "cash": 990.0, "start": 1000.0, "pos": {}, "realized": -10.0, "fees": 0.0,
-                             "trades": [trade], "curve": [[60, 1000.0], [120, 990.0]]},
-                   "auto": [dict(row, pnl=0.5), dict(row, ts=6.0, pnl=None)]}
+            old = {"live": {"name": "live", "cash": 990.0, "start": 1000.0, "pos": {}, "realized": -10.0, "fees": 0.0,
+                            "trades": [trade], "curve": [[60, 1000.0], [120, 990.0]]}}
             json.dump(old, open(os.path.join(d, "state.json"), "w"))
             k = self.desk(d)
-            self.assertEqual(k.paper.trades, [trade]); self.assertEqual(len(k.paper.curve), 2)
-            self.assertEqual([a["pnl"] for a in k.auto], [0.5, None])
+            self.assertEqual(k.live.trades, [trade]); self.assertEqual(len(k.live.curve), 2)
             k._save_state()
             self.assertLess(os.path.getsize(os.path.join(d, "state.json")), 600)
             k2 = self.desk(d)                                                  # and nothing is seeded twice
-            self.assertEqual(k2.paper.trades, [trade]); self.assertEqual([a["pnl"] for a in k2.auto], [0.5, None])
-            self.assertAlmostEqual(k2.paper.cash, 990.0)
+            self.assertEqual(k2.live.trades, [trade])
+            self.assertAlmostEqual(k2.live.cash, 990.0)
+
+    def test_the_paper_book_of_before_is_kept_in_a_file(self):
+        import json
+        with tempfile.TemporaryDirectory() as d:
+            paper = {"name": "paper", "cash": 990.0, "start": 1000.0, "pos": {"A-T1": {"q": 2, "avg": 0.5}}, "realized": -10.0, "fees": 0.0}
+            json.dump({"paper": paper, "auto": [{"ticker": "A-T1", "pnl": None}]}, open(os.path.join(d, "state.json"), "w"))
+            k = self.desk(d); k._save_state()
+            with open(os.path.join(d, "paper-book.json")) as fh:
+                kept = json.load(fh)
+            self.assertEqual((kept["paper"], kept["open"]), (paper, [{"ticker": "A-T1", "pnl": None}]))
+            self.assertNotIn("paper", json.load(open(os.path.join(d, "state.json"))))
+            self.desk(d)._save_state()
+            with open(os.path.join(d, "paper-book.json")) as fh:
+                self.assertEqual(json.load(fh), kept)
 
     def test_damaged_state_falls_back_to_backup_and_is_kept(self):
         with tempfile.TemporaryDirectory() as d:
             k = self.desk(d)
-            k.paper.trade("A-T1", 2, 0.5, 0.0, {}, "x")
+            k.live.trade("A-T1", 2, 0.5, 0.0, {}, "x")
             k._save_state()
             p = os.path.join(d, "state.json")
             open(p, "w").write('{"paper": {"na')               # cut off mid-write
             k2 = self.desk(d)
-            self.assertAlmostEqual(k2.paper.pos["A-T1"]["q"], 2)
+            self.assertAlmostEqual(k2.live.pos["A-T1"]["q"], 2)
             self.assertTrue(any(".damaged-" in f for f in os.listdir(d)))
 
     def test_gate_days_count_hours_traded(self):
         with tempfile.TemporaryDirectory() as d:
             k = self.desk(d)
             k.shadow.agg = {"base": {f"KXBTCD-H{h}": [0.1, 3, 3, 3, 0] for h in range(12)}}
-            self.assertIn("0.5 days", k.gate()["checks"][0]["detail"])   # 12 hours, however long ago they started
+            self.assertIn("0.5 days", k.checks("base")["checks"][0]["detail"])   # 12 hours, however long ago they started
 
     def test_unreadable_config_keeps_the_one_in_use(self):
         from tern import config
@@ -229,12 +228,12 @@ class Shutdown(unittest.TestCase):
             def step():
                 os.kill(os.getpid(), signal.SIGTERM)          # a stop lands mid-step
                 os.kill(os.getpid(), signal.SIGINT)
-                k.paper.trade("A-T1", 2, 0.5, 0.0, {}, "x")   # the rest of the step still runs
+                k.live.trade("A-T1", 2, 0.5, 0.0, {}, "x")   # the rest of the step still runs
                 seen.append(1)
             k.step = step
             k.run()
             self.assertEqual(seen, [1])                       # finished once, no second step
-            self.assertAlmostEqual(self.desk(d).paper.pos["A-T1"]["q"], 2)
+            self.assertAlmostEqual(self.desk(d).live.pos["A-T1"]["q"], 2)
             self.assertEqual(signal.getsignal(signal.SIGTERM), signal.SIG_IGN)   # a second stop cannot cut the saves
 
     def test_one_failed_save_does_not_skip_the_others(self):
@@ -292,7 +291,7 @@ class Commands(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             k = self.desk(d)
             self.assertIn("unknown command", k._command({"op": "order", "ticker": self.T, "action": "buy_yes", "n": 5}))
-            self.assertFalse(k.paper.pos or k.live.pos)
+            self.assertFalse(k.shadow.rows or k.live.pos)
 
     def test_old_command_files_are_ignored(self):
         import json, time
@@ -327,27 +326,7 @@ class Commands(unittest.TestCase):
             k.step()                                          # no KeyError, no network
             self.assertTrue(any("unknown series KXFAKED" in m for _, _, m in k.logs))
 
-    def test_reset_paper_clears_the_hour_budget(self):
-        with tempfile.TemporaryDirectory() as d:
-            k = self.desk(d)
-            k.hour_cost = {"paper|KXBTCD-E1": 60.0, "live|KXBTCD-E1": 10.0}
-            k._command({"op": "reset_paper"})
-            self.assertEqual(k.hour_cost, {"live|KXBTCD-E1": 10.0})
 
-
-    def test_the_variant_in_use_is_the_one_paper_trades(self):
-        with tempfile.TemporaryDirectory() as d:
-            k = self.desk(d, bid="0.80", ask="0.81")
-            self.assertIn("unknown variant", k._command({"op": "variant", "name": "stop20"}))
-            self.assertIn("base → band90", k._command({"op": "variant", "name": "band90"}))
-            from tern import config
-            self.assertEqual(config.load(d).strategy.variant, "band90")
-            k._auto()
-            self.assertFalse(k.paper.pos)                      # 80c is under band90's 90c floor
-            k2 = self.desk(d, bid="0.80", ask="0.81")
-            k2._command({"op": "variant", "name": "base"})
-            k2._auto()
-            self.assertIn(self.T, k2.paper.pos)
 
     def test_settings_change_only_listed_fields_within_bounds(self):
         with tempfile.TemporaryDirectory() as d:
@@ -463,27 +442,34 @@ class Commands(unittest.TestCase):
     def test_cap1_skips_a_strike_already_held_this_hour(self):
         with tempfile.TemporaryDirectory() as d:
             k = self.desk(d, bid="0.80", ask="0.81")
-            k.cfg.strategy.variant = "cap1"
-            k.taken = {"paper|KXBTCD-E1": {self.T: 1}}
-            k._auto()
-            self.assertFalse(k.paper.pos)
-            k.cfg.strategy.variant = "nonsense"                # unknown in config.json: falls back to base
+            sent = []
+            k._exec = lambda book, t, delta, *a: sent.append(t) or {"delta": delta, "fee": 0.0}
+            k.ev_close["KXBTCD-E1"] = __import__("time").time() + 600
+            k.taken = {"live|KXBTCD-E1": {self.T: 1}}
+            k._auto_book(k.live, k.cfg.strategy, "cap1", __import__("time").time(), k.shadow.own)
+            self.assertEqual(sent, [])
             k.slots = {}
-            k._auto()
-            self.assertIn(self.T, k.paper.pos)
-            self.assertEqual(k.taken["paper|KXBTCD-E1"][self.T], 2)
+            k._auto_book(k.live, k.cfg.strategy, "base", __import__("time").time(), k.shadow.own)
+            self.assertEqual((sent, k.taken["live|KXBTCD-E1"][self.T]), ([self.T], 2))
 
     def test_gate_judges_the_variant_on_its_own_record(self):
         with tempfile.TemporaryDirectory() as d:
             k = self.desk(d)
             k.shadow.agg = {"base": {f"KXBTCD-H{h}": [1.0, 5, 2, 2, 0] for h in range(24 * 15)},
                             "cap1": {f"KXBTCD-H{h}": [1.0, 5, 2, 2, 0] for h in range(24)}}
-            self.assertTrue(k.gate()["passed"])
-            k._command({"op": "variant", "name": "cap1"})
+            k.mode = "live"
+            g = k.gate()                                       # no variant picked: never passes
+            self.assertFalse(g["passed"] or g["ok"] or k._live_rule_on(g))
+            k._command({"op": "live", "on": True, "variant": "base"})
+            self.assertTrue(k.gate()["passed"] and k._live_rule_on(k.gate()))
+            k._command({"op": "live", "on": True, "variant": "cap1"})
             g = k.gate()
             self.assertFalse(g["passed"]); self.assertEqual(g["variant"], "cap1")
-            k.mode = "live"
-            self.assertFalse(k._live_rule_on(g))               # switching never skips the gate
+            self.assertFalse(k._live_rule_on(g))               # moving live never skips the gate
+            k.cfg.live.auto_needs_gate = False
+            self.assertTrue(k._live_rule_on(k.gate()))
+            k._command({"op": "variant_on", "variant": "cap1", "on": False})
+            self.assertFalse(k._live_rule_on(k.gate()))        # off: not even without the gate
 
 
 class Robust(unittest.TestCase):
@@ -618,14 +604,13 @@ class Robust(unittest.TestCase):
             k.events["KXBTCD"] = {"event": "E1", "title": "", "close": now + 1200, "fetched": now,
                                   "markets": [mk("E1-A", 1, "0.93", "0.94"), mk("E1-B", 2, "0.75", "0.76")]}
             S = k.cfg.strategy
-            S.minutes = [20]; S.contracts = 10
-            from tern.strategy import signals
-            sig = signals(k.events["KXBTCD"]["markets"], S.band_lo, S.band_hi, S.max_spread)
-            first = sig[0]["price"] if sig[0]["delta_sign"] > 0 else 1 - sig[0]["price"]
-            k.hour_cost["paper|E1"] = S.max_hour_cost - 0.8 if first > 0.8 else S.max_hour_cost - first + 0.01
-            k._auto()
-            bought = {a["ticker"] for a in k.auto}
-            self.assertTrue(bought, "a cheaper favorite after an unaffordable one is still bought")
+            S.minutes = [20]; k.cfg.live.contracts = 10.0
+            sent = []
+            k._exec = lambda book, t, delta, *a: sent.append(t) or {"delta": delta, "fee": 0.0}
+            k.ev_close["E1"] = now + 1200
+            k.hour_cost["live|E1"] = S.max_hour_cost - 0.8
+            k._auto_book(k.live, S, "base", now, k.shadow.own)
+            self.assertEqual(sent, ["E1-B"], "a cheaper favorite after an unaffordable one is still bought")
 
 
 class Live(unittest.TestCase):
@@ -643,6 +628,7 @@ class Live(unittest.TestCase):
         k.ev_close["KXBTCD-E1"] = now + 1200
         k.meta[self.T] = {"event": "KXBTCD-E1", "strike": 100.0, "close": now + 1200, "series": "KXBTCD"}
         k.mode = "live"; k.api = api; k.balance = 500.0
+        k.cfg.live.variant = "base"
         return k
 
     def api(self, **kw):
@@ -683,62 +669,88 @@ class Live(unittest.TestCase):
             k._auto()
             self.assertEqual(got, [2.0])
             self.assertAlmostEqual(k.live.pos[self.T]["q"], 2)
-            self.assertAlmostEqual(k.paper.pos[self.T]["q"], 5)        # paper keeps strategy.contracts
+            k._shadow()
+            self.assertEqual(next(r["n"] for r in k.shadow.rows if r["v"] == "base"), 5)   # paper keeps the variant's own
 
-    def live_profile_desk(self, d):
-        """Profile 1's band (85-95¢) misses the 81¢ favorite; profile 2's (75-95¢) takes it."""
-        from tern import profiles
+    def live_api(self):
         got = []
         class Api:
             def order(self, t, side, n, price, cid):
                 got.append(n)
-                return {"order_id": "o1", "fill_count": str(n), "average_fill_price": "0.82", "average_fee_paid": "0"}
-        k = self.desk(d, Api())
-        p = profiles.create(k.runtime, "wide", k.cfg, k.cfg.taker_fee)
-        k.cfg.strategy.band_lo = 0.85
-        k._profiles_reload(force=True)
-        return k, next(x for x in k.profiles if x.id == p.id), got
+                return {"order_id": "o1", "fill_count": str(n), "average_fill_price": str(price), "average_fee_paid": "0"}
+        return got, Api()
 
-    def test_live_trades_the_live_profiles_rule(self):
+    def test_live_trades_only_its_variant_and_only_past_its_gate(self):
         from tern import config
         with tempfile.TemporaryDirectory() as d:
-            k, p, got = self.live_profile_desk(d)
-            self.assertEqual(k.live_target()["id"], "1")                       # profile 1 until d says otherwise
-            self.assertIn("no profile", k._command({"op": "live_profile", "profile": "nope"}))
-            self.assertIn("live profile profile 1 → wide (base)", k._command({"op": "live_profile", "profile": p.id}))
-            self.assertEqual(config.load(d).live.profile, p.id)
-            self.assertIn("already", k._command({"op": "live_profile", "profile": p.id}))
+            got, api = self.live_api()
+            k = self.desk(d, api)                                              # 80-82c: base's band, not band90's
+            k._command({"op": "variant_new", "from": "band90", "name": "wide", "rule": {"band_lo": 0.6, "max_spread": 0.05}})
+            k.cfg.live.enabled = True
+            for bad in (None, "nope", 5):
+                self.assertIn("live not changed", k._command({"op": "live", "on": True, "variant": bad}))
+            self.assertIn("live not changed", k._command({"op": "live", "on": True}))   # a screen from before: no variant named
+            self.assertEqual(k.cfg.live.variant, "base")
+            self.assertIn("live moved from base to wide", k._command({"op": "live", "on": True, "variant": "wide"}))
+            self.assertEqual((config.load(d).live.variant, k.live_target()["variant"]), ("wide", "wide"))
+            self.assertIn("already trades wide", k._command({"op": "live", "on": True, "variant": "wide"}))
             g = k.gate()
-            self.assertEqual((g["profile"], g["variant"], g["passed"]), (p.id, "base", False))
-            self.assertIn("wide's base", g["checks"][0]["name"])               # its own record, named as such
+            self.assertEqual((g["variant"], g["passed"], g["ok"]), ("wide", False, True))
             k._auto()
             self.assertEqual(got, [])                                          # its record hasn't passed the gate
             k.cfg.live.auto_needs_gate = False
-            k.slots.clear()
-            k._auto()
-            self.assertEqual(got, [5.0])                                       # live: the wide profile's band
-            self.assertNotIn(self.T, k.paper.pos)                              # paper: profile 1's, which missed it
-            self.assertTrue(any("live:" in m and "wide · base" in m for _, _, m in k.logs))
-            rows = {r["id"]: r["live"] for r in k._profile_rows([], set())}
-            self.assertEqual(rows, {"1": False, p.id: True})
+            k.slots.clear(); k._auto()
+            self.assertEqual(got, [5.0])
+            self.assertTrue(any(m.startswith("live: 20m slot") and "(wide)" in m for _, _, m in k.logs))
+            self.assertEqual([v["name"] for v in self.status(k)["variants"] if v["live"]], ["wide"])
+            k.slots.clear(); k.cfg.live.variant = "band90"; k._auto()
+            self.assertEqual(got, [5.0])                                       # band90 does not buy at 81c
 
-    def test_live_profile_off_or_gone_enters_nothing(self):
-        import shutil as sh
+    def status(self, k):
+        import json
+        k.seeded.add(self.T); k._status()
+        with open(os.path.join(k.fast, "status.json")) as fh:
+            return json.load(fh)
+
+    def test_live_off_turns_it_off_and_arming_names_the_variant(self):
         with tempfile.TemporaryDirectory() as d:
-            k, p, got = self.live_profile_desk(d)
+            k = self.desk(d, self.api())
+            k.cfg.live.enabled = False
+            self.assertIn("live armed with band90", k._command({"op": "live", "on": True, "variant": "band90"}))
+            self.assertEqual((k.cfg.live.enabled, k.cfg.live.variant), (True, "band90"))
+            self.assertIn("live off", k._command({"op": "live", "on": False}))
+            self.assertEqual((k.cfg.live.enabled, k.mode), (False, "paper"))
+
+    def test_the_first_start_keeps_what_live_would_have_traded(self):
+        import json
+        from tern import config
+        for old, want in (({"strategy": {"variant": "late"}, "live": {"profile": "1"}}, "late"),
+                          ({"strategy": {"variant": "late"}}, "late"), ({"strategy": {"variant": "late"}, "live": {"profile": "p2"}}, ""),
+                          ({"strategy": {"variant": "late"}, "live": {"variant": "cap1"}}, "cap1"), ({}, "")):
+            self.assertEqual(config.Config.from_dict(old).live.variant, want, old)
+
+    def test_live_variant_off_or_gone_enters_nothing(self):
+        with tempfile.TemporaryDirectory() as d:
+            got, api = self.live_api()
+            k = self.desk(d, api)
             k.cfg.live.auto_needs_gate = False                                 # even without the gate
-            k._command({"op": "live_profile", "profile": p.id})
-            self.assertIn("live enters nothing while it is off", k._command({"op": "profile_enable", "profile": p.id, "on": False}))
+            k._command({"op": "variant_new", "from": "band80", "name": "wide", "rule": {"band_lo": 0.6}})
+            k.cfg.live.enabled = True
+            k._command({"op": "live", "on": True, "variant": "wide"})
+            self.assertIn("live enters nothing while it is off", k._command({"op": "variant_on", "variant": "wide", "on": False}))
             g = k.gate()
             self.assertFalse(g["passed"]); self.assertIn("is off", g["checks"][0]["name"])
             k._auto()
             self.assertEqual(got, [])
-            self.assertIn("make another one live first", k._command({"op": "profile_delete", "profile": p.id}))
-            sh.rmtree(p.dir); k._profiles_reload(force=True)                   # gone some other way
-            self.assertIn("is gone", k.gate()["checks"][0]["name"])
+            for op in ("variant_delete", "variant_restart"):
+                self.assertIn("what live trades", k._command({"op": op, "variant": "wide"}))
+            del k.shadow.own.all["wide"]                                       # gone some other way
+            self.assertIn("not there any more", k.gate()["checks"][0]["name"])
             k.slots.clear(); k._auto()
-            self.assertEqual(got, [])                                          # never falls back to profile 1 alone
-            self.assertIn("wide → profile 1", k._command({"op": "live_profile", "profile": "1"}).replace(p.id, "wide"))
+            k.cfg.live.variant = ""
+            self.assertIn("no variant is picked", k.gate()["checks"][0]["name"])
+            k.slots.clear(); k._auto()
+            self.assertEqual(got, [])                                          # never falls back to another alone
 
     def test_reply_fields_are_read_as_documented(self):
         with tempfile.TemporaryDirectory() as d:
@@ -789,8 +801,12 @@ class Live(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             k = self.desk(d, self.api())
             k.day = {"date": __import__("time").strftime("%Y-%m-%d"), "pnl": 100.0}
-            k._command({"op": "live", "on": True})
+            k._command({"op": "live", "on": True, "variant": "band90"})
             self.assertEqual(k.day, {})
+            k.day = {"date": "x", "pnl": 1.0}
+            k._command({"op": "live", "on": True, "variant": "base"})
+            self.assertEqual(k.day, {"date": "x", "pnl": 1.0})   # moving it does not start the day over
+            k.day = {}
             k.cfg.live.enabled = True
             k._daily_loss()                                   # anchors at the current P&L, no KILL
             self.assertTrue(k.cfg.live.enabled)
@@ -799,20 +815,18 @@ class Live(unittest.TestCase):
         import time
         with tempfile.TemporaryDirectory() as d:
             k = self.desk(d, self.api())
-            k.paper.trade(self.T, 10, 0.80, 0.05, k.meta[self.T], "auto")
-            cash = k.paper.cash
-            k.paper.pos[self.T]["close"] = time.time() - 100
-            k.auto = [{"ts": 0, "ticker": self.T, "side": "yes", "n": 10, "cost": 0.8, "fee": 0.05, "slot": 20, "pnl": None}]
+            k.live.trade(self.T, 10, 0.80, 0.05, k.meta[self.T], "auto")
+            cash = k.live.cash
+            k.live.pos[self.T]["close"] = time.time() - 100
             k.pub.market = lambda t: {"status": "finalized", "result": "void"}
             k._settle()
-            self.assertNotIn(self.T, k.paper.pos)
-            self.assertAlmostEqual(k.paper.cash, cash + 8.0)
-            self.assertEqual(k.auto[0]["pnl"], -0.05)
-            k.paper.trade(self.T, 10, 0.80, 0.0, k.meta[self.T], "auto")
-            k.paper.pos[self.T]["close"] = time.time() - 100; k.last.clear()
+            self.assertNotIn(self.T, k.live.pos)
+            self.assertAlmostEqual(k.live.cash, cash + 8.0)
+            k.live.trade(self.T, 10, 0.80, 0.0, k.meta[self.T], "auto")
+            k.live.pos[self.T]["close"] = time.time() - 100; k.last.clear()
             k.pub.market = lambda t: {"status": "closed", "result": ""}   # not decided yet: left alone
             k._settle()
-            self.assertIn(self.T, k.paper.pos)
+            self.assertIn(self.T, k.live.pos)
 
     def test_failed_save_is_retried_at_once(self):
         from tern import engine
@@ -851,7 +865,6 @@ class Live(unittest.TestCase):
             k.meta["KXBTCD-E1-T90"] = dict(k.meta[self.T], strike=90.0)
             k.cfg.live.auto_needs_gate = False
             k.cfg.strategy.minutes = [20]
-            k.slots["paper|KXBTCD-E1"] = {20}
             type(api).sent = 0
             k._auto()
             self.assertEqual(type(api).sent, 1)                          # two favorites, one order
@@ -872,7 +885,6 @@ class Live(unittest.TestCase):
                 k._exec(k.live, self.T, 5, 0.82, 50, "auto")
             k.cfg.live.auto_needs_gate = False
             k.cfg.strategy.minutes = [20]
-            k.slots["paper|KXBTCD-E1"] = {20}
             type(api).sent = 0
             k._auto()
             self.assertEqual(type(api).sent, 1)
@@ -914,7 +926,7 @@ class Live(unittest.TestCase):
             asked = []
             k.pub.market = lambda t: asked.append(t) or {}
             for i in range(8):
-                k.paper.pos[f"A{i}"] = {"q": 1.0, "avg": 0.5, "close": time.time() - 100}
+                k.live.pos[f"A{i}"] = {"q": 1.0, "avg": 0.5, "close": time.time() - 100}
             k._settle(); k._settle()
             self.assertEqual(len(asked), 8); self.assertEqual(len(set(asked)), 8)
 
@@ -951,15 +963,15 @@ class Live(unittest.TestCase):
             k.events["KXBTCD"] = {"event": "E1", "title": "", "close": now + 1200, "fetched": now, "markets": [
                 {"ticker": "E1-A", "floor_strike": 1, "yes_bid_dollars": "0.90", "yes_ask_dollars": "0.91",
                  "yes_bid_size_fp": "50", "yes_ask_size_fp": "3.50"}]}
-            k.cfg.strategy.minutes = [20]
-            k._auto()
-            self.assertEqual([a["n"] for a in k.auto], [3.0])              # 3.5 on offer: 3, as the shadow record takes
+            k.cfg.strategy.series = ["E1"]                                 # (the event's own name, in this test)
+            k.shadow.step("E1", now + 1200, k.events["KXBTCD"]["markets"], k.cfg.strategy, now, paper=1000)
+            self.assertEqual({r["n"] for r in k.shadow.rows}, {3.0})       # 3.5 on offer: 3
 
     def test_gate_hours_are_not_doubled_by_a_second_series(self):
         with tempfile.TemporaryDirectory() as d:
             k = self.desk(d, self.api())
             k.shadow.agg = {"base": {f"{s}-H{h}": [0.1, 1, 1, 1, 0] for h in range(12) for s in ("KXBTCD", "KXETHD")}}
-            self.assertIn("0.5 days", k.gate()["checks"][0]["detail"])
+            self.assertIn("0.5 days", k.checks("base")["checks"][0]["detail"])
 
 
 class Shadows(unittest.TestCase):
@@ -1118,8 +1130,8 @@ class Shadows(unittest.TestCase):
         self.assertIn("{variants}", prose); self.assertIn("{retired}", prose)
         for name in list(shadow.VARIANTS) + list(shadow.RETIRED):
             self.assertNotIn(f"  {name} ", prose)
-        s = dash.Screen.__new__(dash.Screen)                               # help_lines needs only these three
-        s.st, s.raw, s.P = {}, {}, type("P", (), {"__call__": lambda *a, **k: 0, "c": lambda *a: 0, "grey": 0})()
+        s = dash.Screen.__new__(dash.Screen)                               # help_lines needs only these
+        s.st, s.raw, s.variant, s.P = {}, {}, None, type("P", (), {"__call__": lambda *a, **k: 0, "c": lambda *a: 0, "grey": 0})()
         text = "\n".join(l if isinstance(l, str) else "".join(t for t, _ in l) for l in s.help_lines(120))
         for name, desc in list(shadow.DESC.items()) + list(shadow.RETIRED.items()):
             self.assertIn(f"{name:<8} {desc}", text)
@@ -1209,177 +1221,8 @@ class Shadows(unittest.TestCase):
                                      "400,600,75001.5,74999.99,0.5,0.52,50,40", "460,540,,74999.99,0.5,0.52,50,40"])
 
 
-class Profiles(unittest.TestCase):
-    """Profiles: whole copies of the desk on paper, each running every variant under its own settings."""
-
-    def m(self, t, bid, ask, k):
-        return {"ticker": t, "yes_bid_dollars": str(bid), "yes_ask_dollars": str(ask),
-                "yes_bid_size_fp": "50", "yes_ask_size_fp": "40", "floor_strike": k, "status": "active"}
-
-    def make(self, d, name="Profile 2", **strat):
-        from tern import profiles
-        from tern.config import Config, Strategy
-        return profiles.create(d, name, Config(strategy=Strategy(**strat)), 0.07)
-
-    def test_create_copies_settings_and_starts_empty(self):
-        with tempfile.TemporaryDirectory() as d:
-            p = self.make(d, band_lo=0.8)
-            self.assertEqual(p.id, "profile-2")
-            self.assertEqual(p.name, "Profile 2")
-            self.assertEqual(p.cfg.strategy.band_lo, 0.8)
-            self.assertEqual(p.log.sv, 1)
-            self.assertEqual(p.shadow.rows, [])
-            self.assertTrue(p.enabled)
-            for f in ("profile.json", "config.json", "settings-log.jsonl"):
-                self.assertTrue(os.path.exists(os.path.join(d, "profiles", "profile-2", f)), f)
-
-    def test_slug_is_safe_and_unique(self):
-        from tern.profiles import slug
-        self.assertEqual(slug("../x/", set()), "x")
-        self.assertEqual(slug("", set()), "profile")
-        self.assertEqual(slug("!!!", set()), "profile")
-        self.assertEqual(slug("A b", {"a-b"}), "a-b-2")
-        self.assertEqual(slug("A b", {"a-b", "a-b-2"}), "a-b-3")
-
-    def test_set_bumps_sv_only_for_record_fields(self):
-        import json
-        with tempfile.TemporaryDirectory() as d:
-            p = self.make(d)
-            self.assertEqual(p.set("strategy.band_lo", 0.82), (0.75, 0.82))
-            self.assertEqual(p.log.sv, 2)
-            p.set("strategy.variant", "late")
-            self.assertEqual(p.log.sv, 2)
-            self.assertEqual(len(p.log.lines()), 3)                           # created, band low, variant
-            with self.assertRaises(ValueError):
-                p.set("strategy.band_lo", 0.99)                               # not below band high (0.95)
-            with self.assertRaises(ValueError):
-                p.set("strategy.band_hi", 0.80)                               # not above band low (0.82)
-            with self.assertRaises(ValueError):
-                p.set("strategy.variant", "nope")
-            with self.assertRaises(ValueError):
-                p.set("live.capital_usd", 50)                                 # no live settings on a profile
-            with open(os.path.join(p.dir, "config.json")) as fh:
-                self.assertEqual(json.load(fh)["strategy"]["band_lo"], 0.82)
-
-    def test_slots_and_coins_need_one_on(self):
-        with tempfile.TemporaryDirectory() as d:
-            p = self.make(d)
-            for key, bad in (("strategy.minutes", []), ("strategy.series", []), ("strategy.minutes", [12]),
-                             ("strategy.series", ["KXFAKED"])):
-                with self.assertRaises(ValueError):
-                    p.set(key, bad)
-            p.set("strategy.minutes", [15, 10])
-            self.assertEqual(p.cfg.strategy.minutes, [15, 10])
-
-    def test_hand_edit_is_logged_and_bad_edit_kept_out(self):
-        import json
-        with tempfile.TemporaryDirectory() as d:
-            p = self.make(d)
-            path = os.path.join(p.dir, "config.json")
-            with open(path) as fh:
-                c = json.load(fh)
-            c["strategy"]["band_hi"] = 0.92
-            with open(path, "w") as fh:
-                json.dump(c, fh)
-            self.assertEqual(p.reload_cfg(), [("strategy.band_hi", 0.95, 0.92)])
-            self.assertEqual(p.log.sv, 2)
-            with open(path, "w") as fh:
-                fh.write("{not json")
-            self.assertEqual(p.reload_cfg(), [])
-            self.assertEqual(p.cfg.strategy.band_hi, 0.92)
-
-    def test_disabled_profile_takes_no_entries(self):
-        with tempfile.TemporaryDirectory() as d:
-            p = self.make(d, series=["E"])
-            p.enabled = False
-            p.step("E", 1000.0, [self.m("E-T1", 0.92, 0.93, 1)], 1000.0 - 25 * 60 + 1, None)
-            self.assertEqual(p.shadow.rows, [])
-            p.enabled = True
-            p.step("E", 1000.0, [self.m("E-T1", 0.92, 0.93, 1)], 1000.0 - 25 * 60 + 2, None)
-            self.assertEqual({r["sv"] for r in p.shadow.rows}, {1})
-
-    def test_restart_keeps_slots(self):
-        from tern.profiles import Profile
-        with tempfile.TemporaryDirectory() as d:
-            p = self.make(d, series=["E"])
-            ms = [self.m("E-T1", 0.92, 0.93, 1)]
-            p.step("E", 1000.0, ms, 1000.0 - 25 * 60 + 1, None)
-            n = len(p.shadow.rows)
-            p.shadow.save()
-            again = Profile.load(p.dir, 0.07)
-            again.step("E", 1000.0, ms, 1000.0 - 25 * 60 + 5, None)
-            self.assertEqual(len(again.shadow.rows), n)
-
-    def test_unreadable_folder_is_skipped(self):
-        from tern import profiles
-        with tempfile.TemporaryDirectory() as d:
-            self.make(d)
-            bad = os.path.join(d, "profiles", "bad")
-            os.makedirs(bad)
-            with open(os.path.join(bad, "profile.json"), "w") as fh:
-                fh.write("{bad")
-            self.assertEqual([p.id for p in profiles.load_all(d, 0.07)], ["profile-2"])
-            self.assertIn("bad", profiles.load_errors)
-
-    def test_max_profiles(self):
-        from tern import profiles
-        with tempfile.TemporaryDirectory() as d:
-            for i in range(profiles.MAX_PROFILES):
-                self.make(d, f"p{i}")
-            with self.assertRaises(ValueError):
-                self.make(d, "one too many")
-
-    def test_report_profiles(self):
-        import contextlib, io, json
-        from unittest import mock
-        from tern import __main__ as cli, config as cfgmod
-        with tempfile.TemporaryDirectory() as d, mock.patch.object(cfgmod, "RUNTIME", d):
-            p = self.make(d, series=["E"])
-            row = lambda sv, pnl: json.dumps({"v": "base", "ts": 1.0, "event": f"E-{sv}", "close": 2.0 + sv, "ticker": f"E-{sv}-T1",
-                                              "side": "yes", "n": 5, "cost": 0.9, "fee": 0.02, "slot": 25, "pnl": pnl, "sv": sv})
-            p.set("strategy.band_lo", 0.82)
-            with open(os.path.join(p.dir, "shadow-settled.jsonl"), "w") as fh:
-                fh.write(row(1, 0.48) + "\n" + row(2, -4.52) + "\n")
-            def run(*argv):
-                out = io.StringIO()
-                with contextlib.redirect_stdout(out):
-                    code = cli.main(["report", *argv])
-                return code, out.getvalue()
-            code, out = run("--profile", "Profile 2")
-            self.assertEqual(code, 0)
-            self.assertIn("settings 1", out)
-            self.assertIn("settings 2", out)
-            self.assertIn("band low 75¢ → 82¢", out)
-            self.assertIn("+0.48", out)
-            self.assertIn("-4.52", out)
-            code, out = run("--profiles")
-            self.assertEqual(code, 0)
-            self.assertIn("profile 1", out)
-            self.assertIn("Profile 2", out)
-            code, out = run("--profile", "nope")
-            self.assertEqual(code, 2)
-            self.assertIn("Profile 2", out)                                    # the known ones
-            from tern import profiles
-            profiles.delete(d, p.id)
-            code, out = run("--deleted")
-            self.assertEqual(code, 0)
-            self.assertIn("Profile 2", out)
-
-    def test_delete_moves_folder(self):
-        from tern import profiles
-        with tempfile.TemporaryDirectory() as d:
-            p = self.make(d)
-            to = profiles.delete(d, p.id)
-            self.assertTrue(os.path.isdir(to))
-            self.assertEqual(os.path.dirname(to), os.path.join(d, "profiles-deleted"))
-            self.assertFalse(os.path.exists(p.dir))
-            for bad in ("../..", "", "nope"):
-                with self.assertRaises(ValueError):
-                    profiles.delete(d, bad)
-
-
-class EngineProfiles(unittest.TestCase):
-    """The engine runs every enabled profile beside profile 1, on the same snapshot, each isolated."""
+class Rig:
+    """An engine on a runtime folder of its own, and a screen on its status, for the classes below."""
     T = "KXBTCD-E1-T100"
 
     def desk(self, d, bid="0.80", ask="0.81", close=600.0):
@@ -1393,309 +1236,27 @@ class EngineProfiles(unittest.TestCase):
         k.meta[self.T] = {"event": "KXBTCD-E1", "strike": 100.0, "close": now + close, "series": "KXBTCD"}
         return k
 
-    def profile(self, k, name="profile 2", **strat):
-        from tern import profiles
-        p = profiles.create(k.runtime, name, k.cfg, k.cfg.taker_fee)
-        for key, v in strat.items():
-            p.set("strategy." + key, v)
-        k._profiles_reload(force=True)
-        return next(x for x in k.profiles if x.id == p.id)
-
-    def test_profile_trades_same_snapshot_with_its_own_settings(self):
-        with tempfile.TemporaryDirectory() as d:
-            k = self.desk(d, bid="0.58", ask="0.60")
-            p = self.profile(k, band_lo=0.55, band_hi=0.65)
-            k._shadow()
-            mine = [r for r in p.shadow.rows if r["v"] == "base"]
-            self.assertEqual(len(mine), 1)
-            self.assertEqual(mine[0]["sv"], p.log.sv)
-            self.assertEqual([r for r in k.shadow.rows if r["v"] == "base"], [])   # 59c is outside 75-95
-
-    def test_profile1_records_untouched_by_profiles(self):
-        def run(d, with_profile):
-            k = self.desk(d)
-            if with_profile:
-                self.profile(k, band_lo=0.55, band_hi=0.65)
-            k._shadow(); k._auto()
-            return k, sorted((r["v"], r["ticker"], r["slot"], r["n"], r["cost"]) for r in k.shadow.rows)
-        with tempfile.TemporaryDirectory() as a, tempfile.TemporaryDirectory() as b:
-            ka, ra = run(a, False)
-            kb, rb = run(b, True)
-            self.assertTrue(ra)
-            self.assertEqual(ra, rb)
-            self.assertEqual(ka.paper.pos.keys(), kb.paper.pos.keys())
-            self.assertEqual(set(os.listdir(b)) - set(os.listdir(a)), {"profiles"})
-
-    def test_broken_profile_does_not_stop_the_step(self):
-        with tempfile.TemporaryDirectory() as d:
-            k = self.desk(d)
-            p = self.profile(k)
-            def boom(*a, **kw):
-                raise RuntimeError("boom")
-            p.step = boom
-            k._shadow(); k._shadow(); k._auto()
-            self.assertTrue(k.shadow.rows)                                     # profile 1 still recorded
-            self.assertTrue(k.paper.pos)                                       # and its paper book traded
-            errs = [m for _, lvl, m in [(x[0], x[1], x[2]) for x in k.logs] if "profile 2" in m and "boom" in m]
-            self.assertEqual(len(errs), 1)                                     # logged once, not every step
-
-    def test_settle_reaches_every_profile(self):
-        import time
-        with tempfile.TemporaryDirectory() as d:
-            k = self.desk(d)
-            p = self.profile(k)
-            k._shadow()
-            self.assertTrue(p.shadow.rows)
-            k.shadow.rows = []                                                 # profile 1 has nothing left to settle
-            k.closed["KXBTCD-E1"] = {"series": "KXBTCD", "close": time.time() - 120}
-            k.pub.event_markets = lambda e: [{"ticker": self.T, "result": "", "status": "active"}]
-            k._shadow()
-            self.assertIn("KXBTCD-E1", k.closed)                              # profile 2 still needs it
-            k.closed["KXBTCD-E1"]["tried"] = 0
-            k.pub.event_markets = lambda e: [{"ticker": self.T, "result": "yes", "status": "finalized", "floor_strike": 100.0}]
-            k._shadow()
-            self.assertEqual(p.shadow.rows, [])
-            self.assertEqual(p.shadow.summary(["base"])[0]["entries"], 1)
-            self.assertNotIn("KXBTCD-E1", k.closed)
-
-    def test_profile_coins_join_the_fetch(self):
-        from unittest import mock
-        from tern import shadow
-        with tempfile.TemporaryDirectory() as d, mock.patch.object(shadow, "all_coins", lambda S, own=None: list(S.series)):
-            k = self.desk(d)                                                   # (multi makes every coin wanted today)
-            self.assertNotIn("KXETHD", k._wanted())
-            p = self.profile(k, series=["KXETHD"])
-            self.assertIn("KXETHD", k._wanted())
-            p.set("enabled", False)
-            self.assertNotIn("KXETHD", k._wanted())                           # a profile that is off fetches nothing
-
-    def test_profile1_settings_are_logged(self):
-        import json
-        with tempfile.TemporaryDirectory() as d:
-            k = self.desk(d)
-            self.assertEqual(k.slog.sv, 1)
-            k._command({"op": "set", "key": "live.capital_usd", "value": 50})
-            self.assertEqual(k.slog.sv, 1)                                     # not a record field: logged only
-            k._command({"op": "variant_new", "from": "base", "rule": {"series": ["KXBTCD", "KXETHD"]}})
-            self.assertEqual(k.slog.sv, 1)                                     # a new variant, not a settings period
-            self.assertEqual((k.cfg.strategy.variant, k.cfg.strategy.series), ("base", ["KXBTCD"]))
-            path = os.path.join(d, "config.json")
-            with open(path) as fh:
-                c = json.load(fh)
-            c["strategy"]["band_lo"] = 0.80                                    # a hand edit
-            with open(path, "w") as fh:
-                json.dump(c, fh)
-            k._reload_cfg(force=True)
-            self.assertEqual(k.slog.sv, 2)
-            self.assertEqual([x["key"] for x in k.slog.lines()],
-                             ["live.capital_usd", "variant", "rule.series", "strategy.band_lo"])
-            k._shadow()
-            self.assertEqual({r.get("sv") for r in k.shadow.rows}, {2})
-
-
-class ProfileReviewFixes(unittest.TestCase):
-    """Findings from the final review: a broken profile must never stop or mislead profile 1 or itself."""
-    T, desk, profile = EngineProfiles.T, EngineProfiles.desk, EngineProfiles.profile
-
-    def test_unreadable_profile_config_is_skipped_not_defaulted(self):
-        from tern import profiles
-        with tempfile.TemporaryDirectory() as d:
-            k = self.desk(d)
-            p = self.profile(k, band_lo=0.82, band_hi=0.90)
-            with open(os.path.join(p.dir, "config.json"), "w") as fh:
-                fh.write("{oops")
-            self.assertEqual(profiles.load_all(d, 0.07), [])                   # skipped on a restart, not run on defaults
-            self.assertIn(p.id, profiles.load_errors)
-
-    def test_bad_view_profile_does_not_stop_the_step(self):
-        import json
-        with tempfile.TemporaryDirectory() as d:
-            k = self.desk(d)
-            self.profile(k)
-            with open(os.path.join(k.fast, "view.json"), "w") as fh:
-                json.dump({"series": "KXBTCD", "ticker": None, "profile": []}, fh)
-            k._read_view()
-            self.assertNotIn("profile", k.view)
-            with open(os.path.join(k.fast, "view-web.json"), "w") as fh:
-                json.dump({"series": [], "tickers": [], "profiles": [[], {}]}, fh)
-            k._read_view()
-            self.assertEqual(k.web["profiles"], [])
-
-    def test_bad_profile_rows_do_not_stop_the_engine(self):
-        import json
-        from tern.engine import Desk
-        with tempfile.TemporaryDirectory() as d:
-            k = self.desk(d)
-            p = self.profile(k)
-            with open(os.path.join(p.dir, "shadow.json"), "w") as fh:
-                json.dump({"rows": [{"v": "base"}], "slots": {}}, fh)
-            k2 = Desk(d)                                                       # starts
-            self.assertEqual(next(x for x in k2.profiles if x.id == p.id).shadow.rows, [])
-            k2.events = k.events; k2.meta = k.meta
-            k2._shadow(); k2._status()
-
-    def test_status_does_not_redo_profile_summaries_every_step(self):
-        from unittest import mock
-        with tempfile.TemporaryDirectory() as d:
-            k = self.desk(d)
-            a = self.profile(k, "a")
-            k._status()
-            with mock.patch.object(a.shadow, "summary", wraps=a.shadow.summary) as spy:
-                k._status(); k._status()
-                self.assertEqual(spy.call_count, 0)                            # nothing changed: cached
-                k._shadow()                                                    # a new entry: recomputed once
-                k._status(); k._status()
-                self.assertEqual(spy.call_count, 1)
-            import json
-            with open(os.path.join(k.fast, "status.json")) as fh:
-                st = json.load(fh)
-            row = next(r for r in st["profiles"] if r["id"] == "a")
-            self.assertTrue(all("curve" not in v for v in row["variants"]))   # no one is viewing it
-
-
-class ProfileCommands(unittest.TestCase):
-    """The screen's profile commands, and what status.json tells it."""
-    T, desk, profile = EngineProfiles.T, EngineProfiles.desk, EngineProfiles.profile
+    def new(self, k, frm="base", name="", **rule):
+        """Save frm's settings with changes as a new variant (s in E's box)."""
+        return k._command({"op": "variant_new", "from": frm, "name": name, "rule": rule or {"cap": 6}})
 
     def status(self, k):
         import json
-        k._status()
+        k.seeded.add(self.T); k._status()
         with open(os.path.join(k.fast, "status.json")) as fh:
             return json.load(fh)
 
-    def view(self, k, **v):
-        import json
-        with open(os.path.join(k.fast, "view.json"), "w") as fh:
-            json.dump({"series": "KXBTCD", "ticker": None, **v}, fh)
-        k._read_view()
-
-    def test_profile_commands(self):
-        with tempfile.TemporaryDirectory() as d:
-            k = self.desk(d)
-            msg = k._command({"op": "profile_new", "name": "try 80"})
-            self.assertIn("try 80", msg)
-            p = next(x for x in k.profiles if x.name == "try 80")
-            self.assertIn("off", k._command({"op": "profile_enable", "profile": p.id, "on": False}))
-            self.assertFalse(p.enabled)
-            self.assertEqual(p.log.sv, 1)                                      # on/off is not a settings period
-            before = repr(p.cfg)
-            for key, v in (("strategy.band_lo", 0.82), ("strategy.contracts", 9), ("strategy.max_hour_cost", 9),
-                           ("paper_capital", 500), ("rule.contracts", 9), ("nope", 1), (None, 1)):
-                self.assertIn("not a profile setting", k._command({"op": "profile_set", "profile": p.id, "key": key, "value": v}))
-            self.assertEqual((repr(p.cfg), p.shadow.own.all), (before, {}))    # how it trades is its variants'
-            for c in ({"op": "profile_set", "profile": "1", "key": "strategy.band_lo", "value": 0.8},
-                      {"op": "profile_enable", "profile": "1", "on": False}, {"op": "profile_delete", "profile": "1"}):
-                self.assertIn("profile 1", k._command(c))
-            self.assertEqual(k.cfg.strategy.band_lo, 0.75)                     # profile 1 untouched
-            self.assertIn("no profile", k._command({"op": "profile_set", "profile": "nope", "key": "enabled", "value": True}))
-            msg = k._command({"op": "profile_delete", "profile": p.id})
-            self.assertIn("profiles-deleted", msg)
-            self.assertEqual(k.profiles, [])
-            self.assertTrue(os.listdir(os.path.join(d, "profiles-deleted")))
-
-    def test_pviews_only_for_viewed_profiles(self):
-        with tempfile.TemporaryDirectory() as d:
-            k = self.desk(d)
-            a = self.profile(k, "a", band_lo=0.80)
-            self.profile(k, "b")
-            self.view(k, profile=a.id)
-            st = self.status(k)
-            self.assertEqual([p["id"] for p in st["profiles"]], ["1", "a", "b"])
-            self.assertEqual(st["profiles"][0]["name"], "profile 1")
-            self.assertEqual(st["profiles"][1]["rule"]["band_lo"], 0.80)               # the profiles box's rule line
-            self.assertEqual(st["profiles"][0]["rule"]["band_lo"], 0.75)
-            self.assertEqual(list(st["pviews"]), ["a"])
-            pv = st["pviews"]["a"]
-            self.assertNotIn("rule.band_lo", pv["settings"])                           # a rule is in its variant's row
-            base = next(v for v in st["profiles"][1]["variants"] if v["name"] == "base")
-            self.assertEqual(base["rule"]["band_lo"], 0.80)
-            self.assertIn("base", pv["views"])
-            self.assertEqual(pv["strategy"]["band_lo"], 0.80)
-            self.assertEqual(pv["views"]["base"]["start"], a.cfg.paper_capital)
-            self.assertIn("checks", pv["gate"])
-
-    def test_deleted_viewed_profile_falls_back(self):
-        with tempfile.TemporaryDirectory() as d:
-            k = self.desk(d)
-            a = self.profile(k, "a")
-            self.view(k, profile=a.id)
-            self.assertEqual(k.view["profile"], a.id)
-            k._command({"op": "profile_delete", "profile": a.id})
-            self.view(k, profile=a.id)
-            self.assertIsNone(k.view.get("profile"))
-            self.assertEqual(self.status(k)["pviews"], {})
-
-
-class Renames(unittest.TestCase):
-    """N: profiles and variants get new names; a variant's record keeps its own."""
-    T, desk, profile = EngineProfiles.T, EngineProfiles.desk, EngineProfiles.profile
-    status = ProfileCommands.status
-
-    def test_rename_profiles(self):
-        from tern import profiles
-        with tempfile.TemporaryDirectory() as d:
-            k = self.desk(d)
-            p = self.profile(k, "profile 2")
-            self.assertIn("profile 2 is now wide band", k._command({"op": "rename", "profile": p.id, "name": "  wide   band "}))
-            self.assertIn("profile 1 is now the desk", k._command({"op": "rename", "profile": "1", "name": "the desk"}))
-            self.assertIn("not renamed", k._command({"op": "rename", "profile": p.id, "name": "  "}))
-            self.assertIn("not renamed", k._command({"op": "rename", "profile": p.id, "name": "x" * 41}))
-            self.assertIn("no profile", k._command({"op": "rename", "profile": "nope", "name": "x"}))
-            names = {r["id"]: r["name"] for r in self.status(k)["profiles"]}
-            self.assertEqual(names, {"1": "the desk", p.id: "wide band"})
-            self.assertEqual(profiles.Profile.load(p.dir, 0.07).name, "wide band")   # kept on disk, same folder
-            self.assertEqual(p.id, "profile-2")
-            self.assertEqual(p.log.sv, 1)                                      # a name is not a settings change
-            self.assertEqual([l["key"] for l in p.log.lines()][-1], "name")
-            k2 = self.desk(d)                                                  # a restart keeps profile 1's name
-            self.assertEqual(k2.names.profile, "the desk")
-            self.assertIn("the desk is now profile 1", k2._command({"op": "rename", "profile": "1", "name": ""}))
-
-    def test_rename_variant_is_display_only(self):
-        with tempfile.TemporaryDirectory() as d:
-            k = self.desk(d)
-            self.assertIn("band90 is now high", k._command({"op": "rename", "variant": "band90", "name": "high"}))
-            self.assertIn("unknown variant", k._command({"op": "rename", "variant": "stop20", "name": "x"}))
-            self.assertIn("already base's name", k._command({"op": "rename", "variant": "late", "name": "BASE"}))
-            self.assertIn("already band90's name", k._command({"op": "rename", "variant": "late", "name": "High"}))
-            self.assertIn("at most 12", k._command({"op": "rename", "variant": "late", "name": "x" * 13}))
-            self.assertIn("base → high", k._command({"op": "variant", "name": "band90"}))
-            self.assertIn("high → base", k._command({"op": "variant", "name": "base"}))
-            st = self.status(k)
-            self.assertEqual(st["variant_names"], {"band90": "high"})
-            self.assertIn("band90", [v["name"] for v in st["variants"]])     # the record keeps its key
-            from tern import config
-            k._command({"op": "variant", "name": "band90"})
-            self.assertEqual(config.load(d).strategy.variant, "band90")      # config.json keeps the key too
-            self.assertEqual(self.desk(d).names.variant("band90"), "high")    # kept across a restart
-            self.assertIn("is now band90 again", k._command({"op": "rename", "variant": "band90", "name": ""}))
-            self.assertEqual(self.status(k)["variant_names"], {})
-
-    def test_bad_names_file_is_ignored(self):
-        with tempfile.TemporaryDirectory() as d:
-            with open(os.path.join(d, "names.json"), "w") as fh:
-                fh.write('{"profile": 5, "variants": {"nope": "x", "base": "  ", "late": "slow"}}')
-            k = self.desk(d)
-            self.assertEqual((k.names.profile, k.names.variants), ("profile 1", {"late": "slow"}))
-
-
-class ScreenProfiles(unittest.TestCase):
-    """The terminal screen's profiles box, viewing a profile, and its settings, against a real engine's status."""
-    T, desk, profile = EngineProfiles.T, EngineProfiles.desk, EngineProfiles.profile
-
-    def setup(self, d):
+    def setup(self, d, h=40, w=120):
         import curses
         from unittest import mock
         from tern import dash, web
         k = self.desk(d, bid="0.58", ask="0.60")
         k.seeded.add(self.T)                                                   # no network for its history
-        p = self.profile(k, "profile 2", band_lo=0.55, band_hi=0.65)
-        k._shadow()
         with mock.patch.object(dash, "Pal", web.WebPal):
-            scr = dash.Screen(web.VTerm(40, 120), d)
-        self.k, self.p, self.scr, self.curses = k, p, scr, curses
+            scr = dash.Screen(web.VTerm(h, w), d)
+        self.k, self.scr, self.curses = k, scr, curses
         self.sync()
-        return k, p, scr
+        return k, scr
 
     def sync(self):
         self.k._read_view(); self.k._status(); self.scr.read(); self.scr.draw()
@@ -1717,59 +1278,92 @@ class ScreenProfiles(unittest.TestCase):
             os.remove(os.path.join(self.scr.cmd_dir, n))
         return out
 
-    def view2(self):
-        c = self.curses
-        self.press("p")
-        self.assertEqual(self.scr.page, 2)
-        self.scr.focus = "profiles"
-        self.press(c.KEY_DOWN, 10)
+    def run_cmds(self):
+        out = self.cmds()
+        for c in out:
+            self.k.results[c["id"]] = self.k._command(c)
+        self.sync()
+        return out
 
-    def test_profiles_box_and_view(self):
-        with tempfile.TemporaryDirectory() as d:
-            k, p, scr = self.setup(d)
+    def open(self, name="band80"):
+        """E on a variant, page 2."""
+        if self.scr.page == 1:
             self.press("p")
-            self.scr.focus = "profiles"
-            self.assertIn("profiles", self.text())
-            self.assertIn("profile 1", self.text())
-            self.assertIn("profile 2", self.text())
-            self.press(self.curses.KEY_DOWN, 10)
-            self.assertEqual(scr.profile, p.id)
-            self.assertEqual(k.view.get("profile"), p.id)                     # view.json told the engine
-            self.assertEqual(scr.st["profile_name"], "profile 2")
-            self.assertEqual([x["t"] for x in scr.st["paper"]["pos"]], [self.T])   # its base record as a book
-            self.assertEqual(scr.st["strategy"]["band_lo"], 0.55)
-            self.assertIn("profile 2", "".join(scr.s.ch[39]))                  # the status line says so
-            self.press(10)                                                     # enter on profile 1's row? no: still on 2
-            self.press(self.curses.KEY_UP, 10)
-            self.assertIsNone(scr.profile)
-            self.assertNotIn("profile_name", scr.st)
+        self.scr.var_sel = name
+        self.cmds()
+        self.press("E")
 
-    def test_N_renames_the_focused_profile_or_variant(self):
+    def row(self, key):
+        self.scr.set_sel = [r.name for r in self.scr.set_rows()].index(key)
+
+
+class Renames(Rig, unittest.TestCase):
+    """N: variants get new names; a record keeps its own."""
+
+    def test_rename_variant_is_display_only(self):
         with tempfile.TemporaryDirectory() as d:
-            k, p, scr = self.setup(d)
-            self.press("p"); self.cmds()
-            scr.focus = "ladder"
-            self.press("N")
-            self.assertIn("N renames", scr.flash)
-            scr.focus = "profiles"
-            self.press(self.curses.KEY_DOWN, "N")
-            self.assertIn("rename profile 2", self.text())
-            self.press(21, *"wide", 10)                                       # ctrl+u, then a new name
-            [c] = self.cmds()
-            self.assertEqual((c["op"], c["profile"], c["name"]), ("rename", p.id, "wide"))
-            k._command(c); self.sync()
-            self.assertIn("wide", self.text())
-            scr.focus = "variants"
-            scr.var_sel = "band90"
-            self.press("N", *"hi", 10)                                        # typed after the old name
-            [c] = self.cmds()
-            self.assertEqual((c["op"], c["variant"], c["name"]), ("rename", "band90", "band90hi"))
-            k._command(c); self.sync()
-            self.assertIn("│   band90hi     0 ", self.text())                 # the row, its columns moved along
-            self.press("N", 27)
-            self.assertEqual(self.cmds(), [])                                  # esc sends nothing
+            k = self.desk(d)
+            self.assertIn("band90 is now high", k._command({"op": "rename", "variant": "band90", "name": "high"}))
+            self.assertIn("unknown variant", k._command({"op": "rename", "variant": "stop20", "name": "x"}))
+            self.assertIn("already base's name", k._command({"op": "rename", "variant": "late", "name": "BASE"}))
+            self.assertIn("already band90's name", k._command({"op": "rename", "variant": "late", "name": "High"}))
+            self.assertIn("at most 12", k._command({"op": "rename", "variant": "late", "name": "x" * 13}))
+            st = self.status(k)
+            self.assertEqual(st["variant_names"], {"band90": "high"})
+            self.assertIn("band90", [v["name"] for v in st["variants"]])     # the record keeps its key
+            from tern import config
+            self.assertIn("live armed with high", k._command({"op": "live", "on": True, "variant": "band90"}))
+            self.assertEqual(config.load(d).live.variant, "band90")          # config.json keeps the key too
+            self.assertEqual(self.desk(d).names.variant("band90"), "high")    # kept across a restart
+            self.assertIn("is now band90 again", k._command({"op": "rename", "variant": "band90", "name": ""}))
+            self.assertEqual(self.status(k)["variant_names"], {})
 
-    def test_settings_box_scrolls_on_a_short_screen_and_shows_the_web_service(self):
+    def test_bad_names_file_is_ignored(self):
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, "names.json"), "w") as fh:
+                fh.write('{"profile": 5, "variants": {"nope": "x", "base": "  ", "late": "slow"}}')
+            k = self.desk(d)
+            self.assertEqual(k.names.variants, {"late": "slow"})
+
+
+class SettingsBox(Rig, unittest.TestCase):
+    """e: the desk's settings and the screen's, and nothing of a variant's."""
+
+    def test_it_holds_the_desks_settings_only(self):
+        from tern import config as cfgmod
+        with tempfile.TemporaryDirectory() as d:
+            k, scr = self.setup(d)
+            self.press("e")
+            rows = [r.key for r in scr.set_rows()]
+            self.assertEqual(rows, [r.key for r in cfgmod.SETTINGS] + ["screen.log"])
+            self.assertFalse([x for x in rows if x.startswith(("rule.", "strategy.")) or x == "paper_capital"])
+            self.assertNotIn("older than this screen", self.text())
+            self.assertIsNone(scr.set_sent.get("web.port"))
+            scr.set_sel = rows.index("web.port"); self.press(self.curses.KEY_RIGHT)
+            [c] = self.cmds()
+            self.assertEqual((c["op"], c["key"], c["value"]), ("set", "web.port", 8788))
+
+    def test_raising_a_live_limit_asks_while_armed(self):
+        with tempfile.TemporaryDirectory() as d:
+            k, scr = self.setup(d)
+            k.cfg.live.enabled = True; k.cfg.live.variant = "base"; self.sync()
+            scr.variant = "band90"; self.sync(); self.cmds()                   # whichever variant is selected
+            self.press("e")
+            rows = [r.key for r in scr.set_rows()]
+            for key, ch in (("live.capital_usd", self.curses.KEY_RIGHT), ("gate.min_entries", self.curses.KEY_LEFT)):
+                scr.set_sel = rows.index(key)
+                self.press(ch)
+                self.assertEqual(scr.modal["type"], "setlive", key)
+                self.press(27)
+            self.assertEqual(self.cmds(), [])
+            scr.set_sel = rows.index("live.capital_usd")
+            self.press(self.curses.KEY_LEFT)                                   # lowering it does not
+            self.assertEqual([(c["op"], c["key"], c["value"]) for c in self.cmds()], [("set", "live.capital_usd", 95)])
+            scr.set_sel = rows.index("live.capital_usd")
+            self.press(self.curses.KEY_RIGHT, *"live", 10)
+            self.assertEqual([c["op"] for c in self.cmds()], ["set"])
+
+    def test_it_scrolls_on_a_short_screen_and_shows_the_web_service(self):
         from unittest import mock
         from tern import dash, web
         with tempfile.TemporaryDirectory() as d, mock.patch.object(webctl, "systemctl", lambda *a: (0, "active")):
@@ -1784,163 +1378,28 @@ class ScreenProfiles(unittest.TestCase):
             self.assertIn("sudo ufw allow PORT/tcp", text())               # its description, pinned below
             scr.set_sel = 0; scr.draw()
             self.assertIn("▸ most at risk at once", text())
-            self.assertIn("LIVE", text())
             self.assertNotIn("web screen now", text())
-            scr.set_sel = [r.key for r in scr.set_rows()].index("web.port")
-            scr.key(__import__("curses").KEY_RIGHT)
-            [c] = [json.load(open(os.path.join(scr.cmd_dir, n))) for n in os.listdir(scr.cmd_dir)]
-            self.assertEqual((c["op"], c["key"], c["value"]), ("set", "web.port", 8788))
 
-    def test_d_picks_the_live_profile_and_asks_while_armed(self):
+    def test_no_change_before_the_engine_has_said_anything(self):
+        from unittest import mock
+        from tern import dash, web
         with tempfile.TemporaryDirectory() as d:
-            k, p, scr = self.setup(d)
-            self.press("p"); self.cmds()
-            scr.focus = "profiles"
-            self.press(self.curses.KEY_DOWN, "d")
-            [c] = self.cmds()
-            self.assertEqual(c["op"], "live_profile"); self.assertEqual(c["profile"], p.id)   # not armed: no question
-            k._command(c); self.sync()
-            row = next(l for l in self.text().splitlines() if "profile 2" in l and " on " in l and "live trades" not in l)
-            self.assertRegex(row, r"^│ [● ]L profile 2")                       # L marks the live profile
-            k.cfg.live.enabled = True; self.sync()                             # armed
-            self.press(self.curses.KEY_UP, "d")
-            self.assertIn("SWITCH LIVE PROFILE", self.text())
-            self.assertEqual(self.cmds(), [])
-            self.press(*"live", 10)
-            [c] = self.cmds()
-            self.assertEqual((c["op"], c["profile"]), ("live_profile", "1"))
-            k._command({"op": "live_profile", "profile": p.id}); self.sync()
-            self.press(self.curses.KEY_DOWN, 10)                               # view the live profile
-            self.assertEqual(scr.profile, p.id); self.cmds()
-            scr.focus, scr.var_sel = "variants", "band90"
-            self.press(10)                                                     # another variant for it: asks first
-            self.assertIn("LIVE PROFILE", self.text())
-            self.press(27)
-            self.assertEqual(self.cmds(), [])
-            self.press(10, *"live", 10)
-            [c] = self.cmds()
-            self.assertEqual((c["op"], c["profile"], c["value"]), ("profile_set", p.id, "band90"))
-
-    def test_a_profiles_settings_are_the_profiles_and_the_desks(self):
-        with tempfile.TemporaryDirectory() as d:
-            k, p, scr = self.setup(d)
-            self.press("e")
-            desk = [r.key for r in scr.set_rows()]
-            self.press(27); self.view2(); self.cmds()
-            self.press("e")
-            rows = [r.key for r in scr.set_rows()]
-            self.assertEqual(rows, ["enabled"] + desk)                         # the same desk rows under every profile
-            self.assertFalse([x for x in rows if x.startswith(("rule.", "strategy.")) or x == "paper_capital"])
-            self.assertIn("PROFILE  profile 2", self.text())
-            self.assertIn("LIVE  every profile's", self.text())
-            self.press(" ")
-            [c] = self.cmds()
-            self.assertEqual((c["op"], c["profile"], c["key"], c["value"]), ("profile_set", p.id, "enabled", False))
-
-    def test_a_live_limit_raised_under_another_profile_asks_while_armed(self):
-        with tempfile.TemporaryDirectory() as d:
-            k, p, scr = self.setup(d)
-            k.cfg.live.enabled = True; self.sync()
-            self.view2(); self.cmds()
-            self.assertFalse(scr.st["live_enabled"])                           # (the view of a profile says paper)
-            self.press("e")
-            rows = [r.key for r in scr.set_rows()]
-            for key, ch in (("live.capital_usd", self.curses.KEY_RIGHT), ("gate.min_entries", self.curses.KEY_LEFT)):
-                scr.set_sel = rows.index(key)
-                self.press(ch)
-                self.assertEqual(scr.modal["type"], "setlive", key)
-                self.press(27)
-            self.assertEqual(self.cmds(), [])
-            scr.set_sel = rows.index("live.capital_usd")
-            self.press(self.curses.KEY_LEFT)                                   # lowering it does not
-            self.assertEqual([(c["op"], c["key"], c["value"]) for c in self.cmds()], [("set", "live.capital_usd", 95)])
-
-    def test_desk_settings_show_under_a_profile_and_change_the_desk(self):
-        from tern import config as cfgmod
-        with tempfile.TemporaryDirectory() as d:
-            k, p, scr = self.setup(d)
-            self.view2(); self.cmds()
-            self.press("e")
-            rows = [r.key for r in scr.set_rows()]
-            for key in ("alerts", "web.enabled", "web.port", "web.network"):
-                self.assertEqual(rows.count(key), 1, key)
-                self.assertEqual(scr.set_value(key), cfgmod.get_setting(k.cfg, key))   # the desk's value
-            self.assertEqual(scr.set_value("live.capital_usd"), k.cfg.live.capital_usd)
-            self.assertEqual(rows[-1], "screen.log")
-            scr.set_sel = rows.index("web.port"); scr.draw()
-            self.assertIn("web screen now", self.text())
-            self.assertNotIn("older than this screen", self.text())
-            self.press(self.curses.KEY_RIGHT)
-            [c] = self.cmds()
-            self.assertEqual((c["op"], c["key"], c["value"]), ("set", "web.port", 8788))   # not profile_set
-            scr.set_sel = rows.index("alerts")
-            self.press(self.curses.KEY_RIGHT)
-            [c] = self.cmds()
-            self.assertEqual((c["op"], c["key"], c["value"]), ("set", "alerts", not k.cfg.alerts))
-
-    def test_profile_box_keys(self):
-        with tempfile.TemporaryDirectory() as d:
-            k, p, scr = self.setup(d)
-            self.press("p"); self.scr.focus = "profiles"; self.press(self.curses.KEY_DOWN); self.cmds()
-            self.press(" ")
-            self.assertEqual([(x["op"], x["profile"], x["on"]) for x in self.cmds()], [("profile_enable", p.id, False)])
-            self.press("n", "t", "r", "y", 10)
-            self.assertEqual([(x["op"], x["name"]) for x in self.cmds()], [("profile_new", "try")])
-            self.press("D", "n", "o", 10)
-            self.assertEqual(self.cmds(), [])                                  # not typed exactly: kept
-            self.press("D", *"delete", 10)
-            self.assertEqual([(x["op"], x["profile"]) for x in self.cmds()], [("profile_delete", p.id)])
-            self.press(self.curses.KEY_UP, "D", *"delete", 10)
-            self.assertEqual(self.cmds(), [])                                  # profile 1 has no delete
-
-    def test_no_setting_change_before_the_profile_settings_arrive(self):
-        with tempfile.TemporaryDirectory() as d:
-            k, p, scr = self.setup(d)
-            self.press("p"); self.scr.focus = "profiles"; self.press(self.curses.KEY_DOWN)
-            scr.key(10)                                                        # view it; the engine hasn't answered yet
-            self.assertTrue(scr.st.get("profile_wait"))
-            self.cmds()
-            scr.key(ord("r"))
-            self.assertIsNone(scr.overlay)
-            self.assertIn("no value", scr.flash)
+            with mock.patch.object(dash, "Pal", web.WebPal):
+                scr = dash.Screen(web.VTerm(40, 120), d)
+            scr.draw()
+            for key in "rnEDRL N":
+                scr.key(ord(key)); scr.draw()
+                self.assertIsNone(scr.overlay, key); self.assertIsNone(scr.modal, key)
             scr.key(ord("e"))
-            scr.set_sel = [r.key for r in scr.set_rows()].index("enabled")
-            scr.key(ord(" ")); scr.key(27)
-            scr.focus, scr.var_sel = "variants", "base"
-            scr.key(ord("E")); scr.draw()
             rows = [r.key for r in scr.set_rows()]
-            for key, ch in (("rule.minutes", ord(" ")), ("rule.series", ord(" ")), ("rule.cap", self.curses.KEY_RIGHT),
-                            ("rule.band_lo", self.curses.KEY_RIGHT), ("rule.contracts", self.curses.KEY_RIGHT)):
-                scr.set_sel = rows.index(key)
-                scr.key(ch)
-            scr.key(ord("s"))
-            self.assertEqual((self.cmds(), scr.draft, scr.modal), ([], {}, None))
-
-    def test_live_keys_refuse_on_profiles(self):
-        with tempfile.TemporaryDirectory() as d:
-            k, p, scr = self.setup(d)
-            self.view2(); self.cmds()
-            for key in ("L", "R"):
-                self.press(key)
-                self.assertIsNone(scr.modal)
-                self.assertIn("paper only", scr.flash)
-            self.assertEqual(self.cmds(), [])
-
-    def test_viewed_profile_gone_falls_back(self):
-        with tempfile.TemporaryDirectory() as d:
-            k, p, scr = self.setup(d)
-            self.view2()
-            k._command({"op": "profile_delete", "profile": p.id})
-            self.sync()
-            self.assertIsNone(scr.profile)
-            self.assertIn("profile 1", scr.flash)
+            for key, ch in (("alerts", ord(" ")), ("live.contracts", 261)):
+                scr.set_sel = rows.index(key); scr.key(ch)
+            scr.draw()
+            self.assertEqual(os.listdir(scr.cmd_dir), [])
 
 
-class Pages(unittest.TestCase):
+class Pages(Rig, unittest.TestCase):
     """Two fixed pages (p flips them) fitted to the screen, merged when it is big; a box's number zooms it."""
-    T, desk, profile = EngineProfiles.T, EngineProfiles.desk, EngineProfiles.profile
-    setup, sync, text, press, cmds = (ScreenProfiles.setup, ScreenProfiles.sync, ScreenProfiles.text,
-                                      ScreenProfiles.press, ScreenProfiles.cmds)
 
     def size(self, H, W):
         self.scr.s.resize(H, W); self.sync()
@@ -1958,7 +1417,7 @@ class Pages(unittest.TestCase):
 
     def test_number_zooms_and_same_number_restores(self):
         with tempfile.TemporaryDirectory() as d:
-            k, p, scr = self.setup(d)
+            k, scr = self.setup(d)
             H, W = scr.s.getmaxyx()
             scr.focus = "book"
             self.press("3")
@@ -1975,7 +1434,7 @@ class Pages(unittest.TestCase):
 
     def test_numbers_follow_each_page(self):
         with tempfile.TemporaryDirectory() as d:
-            k, p, scr = self.setup(d)
+            k, scr = self.setup(d)
             text = self.text()
             for n, name in zip("¹²³⁴⁵", ("spot", "contract", "ladder", "book", "log")):
                 self.assertTrue(n in text and name in text, name)
@@ -1985,46 +1444,48 @@ class Pages(unittest.TestCase):
             self.assertIn("1-5", scr.flash)
             self.press("p")
             text = self.text()
-            for n, name in zip("¹²³⁴", ("variants", "profiles", "equity", "log")):
+            for n, name in zip("¹²³", ("variants", "equity", "log")):
                 self.assertIn(n + name, text)
-            for key, name in zip("1234", ("variants", "profiles", "equity", "log")):
+            for key, name in zip("123", ("variants", "equity", "log")):
                 self.press(key)
                 self.assertEqual(set(scr.rects), {name})
                 self.press(key)
-            self.press("5")
-            self.assertIn("1-4", scr.flash)
+            self.press("4")
+            self.assertIn("1-3", scr.flash)
             self.assertIsNone(scr.zoom)
 
     def test_zoomed_lists_stay_in_their_box(self):
         with tempfile.TemporaryDirectory() as d:
-            k, p, scr = self.setup(d)
-            self.profile(k, "profile 3"); k._shadow()
+            k, scr = self.setup(d)
+            for _ in range(20):                                                 # more variants than a small screen has rows
+                self.new(k)
             self.press("p")
             for H, W in ((30, 100), (33, 111)):
                 self.size(H, W)
-                for key in "12":
-                    self.press(key)
+                self.rects_ok(H, W)
+                for sel in ("base", "base-21"):                                 # the list scrolls to the highlighted one
+                    scr.var_sel = sel; self.press("1")
                     self.rects_ok(H, W)
-                    self.assertIn("base", self.text())
-                    self.press(key)
+                    self.assertIn(f" {sel} " if sel == "base" else f"+{sel}", self.text())
+                    self.press("1")
 
     def test_focus_keys_while_zoomed_on_a_chart(self):
         with tempfile.TemporaryDirectory() as d:
-            k, p, scr = self.setup(d)
+            k, scr = self.setup(d)
             self.press("1", 261)                                                # spot zoomed, then →
             self.assertIn("1 back", scr.flash)
             self.assertNotIn("brings one back", scr.flash)
 
     def test_p_while_zoomed_restores_and_flips(self):
         with tempfile.TemporaryDirectory() as d:
-            k, p, scr = self.setup(d)
+            k, scr = self.setup(d)
             self.press("5", "p")                                                # log zoomed
             self.assertEqual((scr.page, scr.zoom), (2, None))
-            self.assertEqual(set(scr.rects), {"variants", "profiles", "equity", "log"})
+            self.assertEqual(set(scr.rects), {"variants", "equity", "log"})
 
     def test_zoom_cleared_when_off_view(self):
         with tempfile.TemporaryDirectory() as d:
-            k, p, scr = self.setup(d)
+            k, scr = self.setup(d)
             self.size(50, 150)
             self.press("5")                                                     # merged: 5 is variants
             self.assertEqual(set(scr.rects), {"variants"})
@@ -2034,26 +1495,23 @@ class Pages(unittest.TestCase):
 
     def test_page2_fits_small_screens(self):
         with tempfile.TemporaryDirectory() as d:
-            k, p, scr = self.setup(d)
-            self.profile(k, "profile 3"); k._shadow()
+            k, scr = self.setup(d)
             self.press("p")
             n = len(scr.st.get("variants") or [])
             self.assertEqual(n, 10)
             for H, W in ((33, 111), (30, 100), (37, 151)):
                 self.size(H, W)
                 r = self.rects_ok(H, W)
-                self.assertEqual(set(r), {"variants", "profiles", "equity", "log"}, (H, W))
+                self.assertEqual(set(r), {"variants", "equity", "log"}, (H, W))
                 self.assertGreaterEqual(r["variants"][2], n + 3, (H, W))
                 self.assertEqual(r["variants"][3], W)
-                self.assertGreaterEqual(r["profiles"][2], 3 + 6, (H, W))
-                self.assertEqual(r["profiles"][0], r["equity"][0], (H, W))           # side by side, not stacked
-                self.assertGreaterEqual(r["profiles"][3], 70, (H, W))               # every column of the profiles table
+                self.assertEqual((r["equity"][3], r["log"][3]), (W, W))
                 for name in ("calm", "band75", "base"):
                     self.assertIn(name, self.text())
 
     def test_page1_layout_at_small_size(self):
         with tempfile.TemporaryDirectory() as d:
-            k, p, scr = self.setup(d)
+            k, scr = self.setup(d)
             for H, W in ((33, 111), (30, 100)):
                 self.size(H, W)
                 r = self.rects_ok(H, W)
@@ -2067,18 +1525,18 @@ class Pages(unittest.TestCase):
 
     def test_merged_when_big(self):
         with tempfile.TemporaryDirectory() as d:
-            k, p, scr = self.setup(d)
+            k, scr = self.setup(d)
             self.size(50, 150)
             self.assertEqual(scr.view(50, 150), "merged")
             r = self.rects_ok(50, 150)
-            self.assertEqual(set(r), {"spot", "contract", "ladder", "book", "variants", "profiles", "equity", "log"})
+            self.assertEqual(set(r), {"spot", "contract", "ladder", "book", "variants", "equity", "log"})
             self.press("p")
             self.assertIn("both pages fit", scr.flash)
             self.press("1", "p")                                                # zoomed: p can't flip, but 1 goes back
             self.assertIn("1 back", scr.flash)
             self.assertNotIn("every box is shown", scr.flash)
             self.press("1")
-            self.press("8")
+            self.press("7")
             self.assertEqual(scr.layout(50, 150), [("log", 0, 0, 49, 150)])
             self.size(33, 111)                                                  # log is on page 1 too: still zoomed
             self.assertEqual(scr.view(33, 111), "page1")
@@ -2099,7 +1557,10 @@ class Pages(unittest.TestCase):
             self.assertEqual((s.page, s.zoom, len(s.rects)), (1, None, 5))
             s = screen({"page": 2, "hidden": {"page2": ["log", "spot"], "merged": "junk"}, "zoom": "log"})
             s.draw()
-            self.assertEqual((s.page, s.zoom, len(s.rects)), (2, None, 4))      # the zoom is never loaded
+            self.assertEqual((s.page, s.zoom, len(s.rects)), (2, None, 3))      # the zoom is never loaded
+            s = screen({"page": 1, "profile": "no2", "watch": "band90"})           # profiles and watching are gone
+            s.draw()
+            self.assertIsNone(s.variant)
             s = screen({"page": 7, "hidden": 5})
             self.assertEqual(s.page, 1)
             s.save_prefs()
@@ -2108,38 +1569,37 @@ class Pages(unittest.TestCase):
             self.assertEqual(saved["page"], 1)
             self.assertNotIn("hidden", saved)
             self.assertNotIn("zoom", saved)
-            self.assertNotIn("slot3", saved)
+            self.assertFalse({"slot3", "profile", "watch"} & set(saved))
 
     def test_no_key_cycles(self):
         with tempfile.TemporaryDirectory() as d:
-            k, p, scr = self.setup(d)
+            k, scr = self.setup(d)
             seen = []
             for _ in range(3):
                 self.press("3")
                 seen.append(sorted(scr.rects))
             self.assertEqual(seen, [["ladder"], sorted(["spot", "contract", "ladder", "book", "log"]), ["ladder"]])
 
-    def test_enter_acts_on_focused_box(self):
+    def test_enter_selects_and_changes_nothing_else(self):
         with tempfile.TemporaryDirectory() as d:
-            k, p, scr = self.setup(d)
+            k, scr = self.setup(d)
+            self.press(10)
+            self.assertIn("page 2", scr.flash)                                 # the list is there
             self.press("p"); self.cmds()
-            scr.focus, scr.var_sel = "variants", "band90"
-            self.press(10)
-            self.assertEqual([(c["op"], c.get("name")) for c in self.cmds()], [("variant", "band90")])
-            self.assertIsNone(scr.profile)
-            scr.focus, scr.prof_sel = "profiles", p.id
-            self.press(10)
-            self.assertEqual(scr.profile, p.id)
+            for focus in ("variants", "log"):
+                scr.focus = focus
+                for name in ("band90", "late"):
+                    scr.var_sel = name
+                    self.press(10)
+                    self.assertEqual((scr.variant, scr.st["strategy"]["variant"]), (name, name))
             self.assertEqual(self.cmds(), [])
-            scr.focus = "log"
             self.press(10)
-            self.assertIn("focus variants or profiles", scr.flash)
-            self.assertEqual(self.cmds(), [])
+            self.assertIn("already selected", scr.flash)
 
     def test_page_hint_on_bottom_border(self):
         import curses
         with tempfile.TemporaryDirectory() as d:
-            k, p, scr = self.setup(d)
+            k, scr = self.setup(d)
             H, W = scr.s.getmaxyx()
             for page in (1, 2):
                 scr.flash = ""; self.sync()
@@ -2160,7 +1620,7 @@ class Pages(unittest.TestCase):
 
     def test_zoom_hint_on_bottom_border(self):
         with tempfile.TemporaryDirectory() as d:
-            k, p, scr = self.setup(d)
+            k, scr = self.setup(d)
             H, W = scr.s.getmaxyx()
             self.press("3"); scr.flash = ""; self.sync()
             row = "".join(scr.s.ch[H - 2])
@@ -2170,29 +1630,30 @@ class Pages(unittest.TestCase):
             self.assertIn("tab next coin", row)                                 # the other boxes' hints moved here
             scr.say("hello"); self.sync()
             self.assertNotIn("3 back", "".join(scr.s.ch[H - 2]))               # a flash takes its place
-            self.size(50, 150); self.press("8"); scr.flash = ""; self.sync()
-            self.assertIn("─8 back─", "".join(scr.s.ch[48]))
+            self.size(50, 150); self.press("7"); scr.flash = ""; self.sync()
+            self.assertIn("─7 back─", "".join(scr.s.ch[48]))
 
-    def test_watch_without_variants_box_says_page2(self):
+    def test_keys_of_the_variants_box_say_where_it_is(self):
         with tempfile.TemporaryDirectory() as d:
-            k, p, scr = self.setup(d)
-            self.press("w")
-            self.assertIn("page 2", scr.flash)
-            self.press("p", "2", "w")                                           # profiles zoomed: no variants box
-            self.assertIn("2 un-zooms", scr.flash)
-            self.press("p", "1", "w")                                           # zoomed on page 1: un-zooming won't help
-            self.assertIn("p for page 2", scr.flash)
-            self.assertNotIn("un-zooms", scr.flash)
+            k, scr = self.setup(d)
+            for key in (10, "D", " ", "N"):
+                self.press(key)
+                self.assertIn("page 2", scr.flash, key)
+            self.press("p", "2")                                                # equity zoomed: no variants box
+            for key in (10, "D", " ", "N"):
+                self.press(key)
+                self.assertIn("2 un-zooms", scr.flash, key)
+            self.assertEqual(self.cmds(), [])
 
     def test_status_line_fits_every_width(self):
         import time
         with tempfile.TemporaryDirectory() as d:
-            k, p, scr = self.setup(d)
+            k, scr = self.setup(d)
             ev = k.events["KXBTCD"]
             ev["close"] = time.time() + 1400; ev["fetched"] = time.time() - 120     # a slot ahead, a stale ladder
-            for prof in (None, p.id):
-                scr.profile, scr.watch = prof, "band90"
-                scr.write_view(); self.sync()
+            for v, armed in (("band90", False), ("base", True)):
+                scr.variant, k.cfg.live.enabled, k.cfg.live.variant = v, armed, "band90"
+                self.sync()
                 for H, W in ((30, 100), (33, 111), (37, 151)):
                     self.size(H, W)
                     row = "".join(scr.s.ch[H - 1])
@@ -2204,7 +1665,7 @@ class Pages(unittest.TestCase):
 
     def test_shadow_log_lines_print_as_columns(self):
         with tempfile.TemporaryDirectory() as d:
-            k, p, scr = self.setup(d)
+            k, scr = self.setup(d)
             k._command({"op": "rename", "variant": "band90", "name": "high favs"})
             line = ("shadow: KXETHD-E1 settled · base +234.14 · band90 +98.04 · cap1 +71.67 · band80 +18.27 · late +28.65"
                     " · tight1 +4.96 · band75 -38.35 · early -38.79 · multi -1,132.43 · calm +47.12")
@@ -2240,32 +1701,15 @@ class Pages(unittest.TestCase):
     def test_page2_bottom_row_has_only_its_own_hints(self):
         from tern import themes
         with tempfile.TemporaryDirectory() as d:
-            k, p, scr = self.setup(d)
+            k, scr = self.setup(d)
             scr.P.set_theme(max(themes.THEMES, key=len))                        # the longest hint the bottom row moves
             self.press("p")
             for H, W in ((30, 100), (33, 111)):
                 scr.flash = ""; self.size(H, W)
                 row = "".join(scr.s.ch[H - 2])
                 self.assertIn("page 2/2", row, (W, row))
-                for page1 in ("tab next coin", "chart", "view", "Live", "Reset", "theme"):   # page 1's, not repeated
+                for page1 in ("tab next coin", "chart", "view", "Live", "Restart", "theme"):   # page 1's, not repeated
                     self.assertNotIn(page1, row, (W, row))
-
-    def test_profile_keys_follow_the_focus(self):
-        with tempfile.TemporaryDirectory() as d:
-            k, p, scr = self.setup(d)
-            self.press("p"); self.cmds()
-            scr.focus, scr.prof_sel = "variants", p.id
-            self.press(" ", "d")
-            self.assertEqual(self.cmds(), [])
-            self.assertIsNone(scr.modal)
-            self.assertIn("profiles box's", scr.flash)
-            self.press("n")
-            self.assertIsNone(scr.modal)                                       # E is how a variant is made
-            self.assertIn("E opens", scr.flash)
-            self.assertEqual(self.cmds(), [])
-            scr.focus = "profiles"
-            self.press(" ")
-            self.assertEqual([c["op"] for c in self.cmds()], ["profile_enable"])
 
     def test_page_must_be_a_plain_number(self):
         import json
@@ -2282,103 +1726,89 @@ class Pages(unittest.TestCase):
                 self.assertNotIn("page", web.clean_prefs({"page": bad}), bad)
 
 
-class OwnVariants(unittest.TestCase):
-    """Variants made on the screen: each profile's own, one set of settings a record, none changes once saved."""
-    T, desk, profile = EngineProfiles.T, EngineProfiles.desk, EngineProfiles.profile
+class OwnVariants(Rig, unittest.TestCase):
+    """Variants made on the screen: one set of settings a record, none changes once saved."""
 
-    def edit(self, k, use=True, frm="base", name="", profile="1", **rule):
-        """Save frm's settings with changes as a new variant (s in E's box), and put it in use (enter)."""
-        msg = k._command({"op": "variant_new", "from": frm, "name": name, "profile": profile, "rule": rule})
-        if use and ": new variant " in msg:
-            key = (k._profile(profile).shadow if profile != "1" else k.shadow).own.active()[-1]
-            k._command({"op": "variant", "name": key} if profile == "1" else
-                       {"op": "profile_set", "profile": profile, "key": "strategy.variant", "value": key})
-        return msg
-
-    def test_saving_a_draft_makes_one_new_variant_and_changes_nothing_that_trades(self):
+    def test_saving_makes_one_new_variant_and_the_old_one_stays(self):
         from tern import shadow
         with tempfile.TemporaryDirectory() as d:
             k = self.desk(d)
-            p = self.profile(k)
-            before = shadow.rule_of("band80", p.cfg, p.shadow.own)
-            msg = self.edit(k, use=False, frm="band80", profile=p.id, band_lo=0.83, contracts=9, max_hour_cost=45, paper_capital=250)
+            k._shadow()
+            before, rec = shadow.rule_of("band80", k.cfg, k.shadow.own), k.shadow.summary(["band80"])
+            self.assertEqual(rec[0]["open"], 1)
+            msg = self.new(k, "band80", band_lo=0.83, contracts=9, max_hour_cost=45, paper_capital=250)
             for want in ("new variant band80-2, from band80", "band low 80¢ → 83¢", "contracts a strike 5 → 9", "most an hour $60 → $45",
-                         "paper start $1,000 → $250", "enter in variants uses it"):
+                         "paper start $1,000 → $250"):
                 self.assertIn(want, msg)
-            self.assertEqual(p.shadow.own.active(), ["band80-2"])
-            self.assertEqual(p.variant, "base")                                # enter is what puts it in use
             want = {**before, "band_lo": 0.83, "contracts": 9.0, "max_hour_cost": 45.0, "paper_capital": 250.0}
-            self.assertEqual(p.shadow.own.rule("band80-2"), want)
-            self.assertEqual(shadow.rule_of("band80", p.cfg, p.shadow.own), before)
-            self.assertEqual(p.log.sv, 1)                                      # no settings period: the record is new
-            self.assertEqual((k.variant(), k.shadow.own.all), ("base", {}))    # profile 1 has no part in it
-            p = self.desk(d).profiles[0]                                       # kept across a restart
-            self.assertEqual((p.variant, p.shadow.own.rule("band80-2")), ("base", want))
+            self.assertEqual((k.shadow.own.active(), k.shadow.own.rule("band80-2")), (["band80-2"], want))
+            self.assertEqual((shadow.rule_of("band80", k.cfg, k.shadow.own), k.shadow.summary(["band80"])), (before, rec))
+            self.assertEqual(k.shadow.summary(["band80-2"])[0]["open"], 0)     # an empty record
+            self.new(k, "band80-2", band_lo=0.84)                              # one of your own is copied too, never changed
+            self.assertEqual((k.shadow.own.rule("band80-2"), k.shadow.own.rule("band80-3")["band_lo"]), (want, 0.84))
+            self.assertEqual((k.slog.sv, k.cfg.live.variant), (1, ""))         # no settings period; live has no part in it
+            self.assertEqual(self.desk(d).shadow.own.active(), ["band80-2", "band80-3"])   # kept across a restart
 
     def test_the_band_may_move_past_where_it_was(self):
         with tempfile.TemporaryDirectory() as d:
             k = self.desk(d)
-            self.edit(k, frm="band75", band_lo=0.85, band_hi=0.90)             # 75-80: each end alone would be refused
+            self.new(k, "band75", band_lo=0.85, band_hi=0.90)             # 75-80: each end alone would be refused
             self.assertEqual([k.shadow.own.rule("band75-2")[f] for f in ("band_lo", "band_hi")], [0.85, 0.90])
 
     def test_each_variant_buys_at_its_own_size_and_hourly_limit(self):
         with tempfile.TemporaryDirectory() as d:
             k = self.desk(d, bid="0.80", ask="0.81")
             for n, hour in ((2, 60), (9, 60), (50, 10)):
-                self.edit(k, use=n == 9, contracts=n, max_hour_cost=hour)
-            k._shadow(); k._auto()
+                self.new(k, contracts=n, max_hour_cost=hour)
+            k._shadow()
             got = {r["v"]: r["n"] for r in k.shadow.rows}
             self.assertEqual([got[v] for v in ("base", "base-2", "base-3", "base-4")], [5, 2, 9, 12])   # $10 buys 12 at 81c
-            self.assertEqual(k.paper.pos[self.T]["q"], 9)                      # the paper book: the one in use
-            self.assertEqual(k._strat("base-2", k.cfg.strategy, k.shadow.own)["contracts"], 2)
+            self.assertTrue(any("25m slot" in m or "10m slot" in m for _, _, m in k.logs if m.startswith("paper:")))
+            self.assertTrue(any("base 1, " in m and "base-4 1" in m and m.endswith(" bought") for _, _, m in k.logs))
 
     def test_paper_start_is_the_variants(self):
-        import json
-        with tempfile.TemporaryDirectory() as d:
-            k = self.desk(d); k.seeded.add(self.T)
-            self.edit(k, paper_capital=250)
-            self.assertEqual(k.paper.start, 1000)                              # waits for R
-            self.assertIn("$250.00", k._command({"op": "reset_paper"}))
-            self.assertEqual((k.paper.start, k.paper.cash), (250, 250))
-            k._status()
-            with open(os.path.join(k.fast, "status.json")) as fh:
-                st = json.load(fh)
-            self.assertEqual([st["views"][v]["start"] for v in ("base", "base-2")], [1000, 250])
-            self.assertEqual(st["profiles"][0]["rule"]["paper_capital"], 250)
-
-    def test_variants_saved_before_sizes_get_their_profiles_once(self):
-        import json
         with tempfile.TemporaryDirectory() as d:
             k = self.desk(d)
-            p = self.profile(k, contracts=19, max_hour_cost=100)
-            p.set("paper_capital", 100)
-            self.edit(k, use=False, profile=p.id, band_lo=0.80); self.edit(k, use=False, profile=p.id, band_lo=0.81)
-            p.shadow.own.delete("base-3", used=True)
-            path = os.path.join(p.dir, "variants.json")
+            self.new(k, paper_capital=250)
+            st = self.status(k)
+            self.assertEqual([st["views"][v]["start"] for v in ("base", "base-2")], [1000, 250])
+            self.assertEqual([v["cash"] for v in st["variants"] if v["name"] in ("base", "base-2")], [1000, 250])
+
+    def test_variants_saved_before_sizes_get_the_configs_once(self):
+        import json
+        from tern import config, shadow
+        with tempfile.TemporaryDirectory() as d:
+            k = self.desk(d)
+            self.new(k, band_lo=0.80); self.new(k, band_lo=0.81)
+            k.shadow.own.delete("base-3", used=True)
+            path = os.path.join(d, "variants.json")
             with open(path) as fh:
                 old = json.load(fh)
             for v in old["variants"].values():
                 for f in ("contracts", "max_hour_cost", "paper_capital"):
                     del v["rule"][f]
+            del old["off"], old["restarts"]                                    # (there were none of those yet)
             with open(path, "w") as fh:
                 json.dump(old, fh)
-            from tern import shadow
-            own = shadow.own_set(p.dir)                                        # a report reads it: writes nothing
+            cfg = config.Config(paper_capital=100); cfg.strategy.contracts, cfg.strategy.max_hour_cost = 19.0, 100.0
+            config.save(cfg, d)
+            own = shadow.own_set(d)                                            # a report reads it: writes nothing
             with open(path) as fh:
                 self.assertEqual(json.load(fh), old)
             self.assertEqual((own.active(), own.deleted(), own.damaged), (["base-2"], ["base-3"], False))
-            p = self.desk(d).profiles[0]                                       # the engine keeps them
-            p.set("strategy.contracts", 3)                                     # (a later change of the profile's is not theirs)
+            self.desk(d)                                                       # the engine keeps them
+            cfg.strategy.contracts = 3.0; config.save(cfg, d)                  # (a later change of config.json is not theirs)
             for key in ("base-2", "base-3"):
-                rule = self.desk(d).profiles[0].shadow.own.rule(key)
+                rule = self.desk(d).shadow.own.rule(key)
                 self.assertEqual([rule[f] for f in ("contracts", "max_hour_cost", "paper_capital")], [19, 100, 100])
 
     def test_commands_from_an_older_screen_change_nothing(self):
         with tempfile.TemporaryDirectory() as d:
             k = self.desk(d)
-            for op in ("variant_rule", "series"):
-                self.assertIn("unknown command", k._command({"op": op, "key": "band_lo", "value": 0.8, "series": "KXETHD"}))
-            self.assertEqual((k.shadow.own.all, k.variant()), ({}, "base"))
+            for op in ("variant_rule", "series", "variant", "reset_paper", "profile_set", "profile_new", "profile_delete", "live_profile"):
+                msg = k._command({"op": op, "key": "band_lo", "value": 0.8, "series": "KXETHD", "name": "late", "profile": "1"})
+                self.assertIn("unknown command", msg, op)
+            self.assertEqual((k.shadow.own.all, k.cfg.live.variant), ({}, ""))
 
     def test_bad_changes_make_nothing(self):
         with tempfile.TemporaryDirectory() as d:
@@ -2390,52 +1820,47 @@ class OwnVariants(unittest.TestCase):
                          {"contracts": 9, "cap": 9}, [1], "x"):
                 msg = k._command({"op": "variant_new", "from": "base", "rule": rule})
                 self.assertIn("no new variant", msg, rule)
-            self.assertIn("unknown variant", self.edit(k, frm="gone", band_lo=0.8))
-            self.assertIn("no profile", self.edit(k, profile="gone", use=False, band_lo=0.8))
-            self.assertEqual((k.shadow.own.all, k.variant()), ({}, "base"))
+            self.assertIn("unknown variant", self.new(k, "gone", band_lo=0.8))
+            self.assertIn("when there were profiles", k._command({"op": "variant_new", "from": "base", "rule": {"cap": 1}, "profile": "no2"}))
+            self.assertEqual(k.shadow.own.all, {})
 
-    def test_own_variant_buys_by_its_own_rule_and_slots_in_shadow_and_book(self):
+    def test_own_variant_buys_by_its_own_rule_and_slots(self):
         with tempfile.TemporaryDirectory() as d:
             k = self.desk(d, bid="0.58", ask="0.60", close=5 * 60 - 1)         # 59c at 5 minutes: neither is base's
-            self.edit(k, band_lo=0.55, minutes=[5])
-            k._shadow(); k._auto()
+            self.new(k, band_lo=0.55, minutes=[5])
+            k._shadow()
             self.assertEqual({r["v"] for r in k.shadow.rows}, {"base-2"})
             self.assertEqual({r["slot"] for r in k.shadow.rows}, {5})
-            self.assertEqual(list(k.paper.pos), [self.T])
 
     def test_caps_are_the_rules_own(self):
         with tempfile.TemporaryDirectory() as d:
             k = self.desk(d)
-            self.edit(k, cap=1, max_vol=7.6)
-            S = k._strat(k.variant(), k.cfg.strategy, k.shadow.own)
+            self.new(k, cap=1, max_vol=7.6)
+            S = k._strat("base-2", k.cfg.strategy, k.shadow.own)
             self.assertEqual((S["cap"], S["max_vol"]), (1, 7.6))
-            self.edit(k, frm="base-2", cap=0)
+            self.new(k, "base-2", cap=0)
             self.assertEqual((k.shadow.own.rule("base-3")["cap"], k.shadow.own.rule("base-2")["cap"]), (None, 1))
 
     def test_new_rename_delete(self):
         with tempfile.TemporaryDirectory() as d:
             k = self.desk(d)
-            p = self.profile(k)
-            new = lambda name, frm="band80", **kw: k._command({"op": "variant_new", "name": name, "from": frm, "rule": {"cap": 6}, **kw})
-            self.assertIn("new variant My Rule", new("My Rule", profile=p.id))
-            self.assertEqual(p.shadow.own.active(), ["my-rule"])
-            self.assertEqual(p.variant, "base")                                # made, not put in use
-            for bad in ("my rule", "BASE", "stop20", "x" * 13):
-                self.assertIn("no new variant", new(bad, profile=p.id), bad)
-            self.assertIn("new variant my rule", new("my rule"))               # another profile's are its own
-            k._command({"op": "rename", "variant": "band80", "name": "wide"})
-            self.assertIn("no new variant", new("wide"))                       # a built-in one's display name
-            self.assertIn("not renamed", k._command({"op": "rename", "variant": "late", "name": "My rule"}))
-            self.assertIn("is now slow", k._command({"op": "rename", "variant": "my-rule", "name": "slow", "profile": p.id}))
-            self.assertEqual((p.shadow.own.title("my-rule"), k.shadow.own.title("my-rule")), ("slow", "my rule"))
-            dele = lambda v, **kw: k._command({"op": "variant_delete", "variant": v, **kw})
-            self.assertIn("built in", dele("base", profile=p.id))
-            k._command({"op": "profile_set", "profile": p.id, "key": "strategy.variant", "value": "my-rule"})
-            self.assertIn("in use", dele("my-rule", profile=p.id))
-            k._command({"op": "profile_set", "profile": p.id, "key": "strategy.variant", "value": "base"})
-            self.assertIn("deleted", dele("my-rule", profile=p.id))
-            self.assertEqual(p.shadow.own.all, {})                             # it bought nothing: nothing is left
+            self.assertIn("new variant My Rule", self.new(k, "band80", "My Rule"))
             self.assertEqual(k.shadow.own.active(), ["my-rule"])
+            for bad in ("my rule", "BASE", "stop20", "x" * 13):
+                self.assertIn("no new variant", self.new(k, "band80", bad), bad)
+            k._command({"op": "rename", "variant": "band80", "name": "wide"})
+            self.assertIn("no new variant", self.new(k, "band80", "wide"))     # a built-in one's display name
+            self.assertIn("not renamed", k._command({"op": "rename", "variant": "late", "name": "My rule"}))
+            self.assertIn("is now slow", k._command({"op": "rename", "variant": "my-rule", "name": "slow"}))
+            self.assertEqual(k.shadow.own.title("my-rule"), "slow")
+            dele = lambda v: k._command({"op": "variant_delete", "variant": v})
+            self.assertIn("built in", dele("base"))
+            self.assertIn("no variant", dele("gone"))
+            k.cfg.live.enabled, k.cfg.live.variant = True, "my-rule"
+            self.assertIn("what live trades", dele("my-rule"))
+            k.cfg.live.enabled = False
+            self.assertIn("slow deleted", dele("my-rule"))
+            self.assertEqual(k.shadow.own.all, {})                             # it bought nothing: nothing is left
 
     def test_a_deleted_one_settles_stays_on_file_and_never_lends_its_key(self):
         with tempfile.TemporaryDirectory() as d:
@@ -2462,23 +1887,22 @@ class OwnVariants(unittest.TestCase):
                 k._command({"op": "variant_new", "from": "base", "rule": {"cap": 6}})
             self.assertEqual(len(k.shadow.own.active()), variants.MAX_OWN)
             self.assertIn("at most", k._command({"op": "variant_new", "from": "base", "rule": {"cap": 6}}))
-            self.assertIn("at most", self.edit(k, band_lo=0.8))
-            self.assertEqual(k.variant(), "base")
+            self.assertIn("at most", self.new(k, band_lo=0.8))
 
     def test_the_gate_judges_the_new_variants_own_record(self):
         with tempfile.TemporaryDirectory() as d:
             k = self.desk(d)
             k.cfg.gate.min_days, k.cfg.gate.min_entries, k.cfg.gate.min_pnl = 0, 0, -1000
             k.shadow._count({"v": "base", "event": "E-1", "pnl": 5.0, "n": 5, "fee": 0.1, "close": 1})
-            self.assertTrue(k.gate()["passed"])
-            self.edit(k, band_lo=0.80)
-            g = k.gate()
-            self.assertEqual((g["variant"], g["passed"]), ("base-2", False))   # nothing settled yet
+            self.new(k, band_lo=0.80)
+            for v, want in (("base", True), ("base-2", False)):                # nothing settled yet
+                k.cfg.live.variant = v
+                self.assertEqual((k.gate()["variant"], k.gate()["passed"]), (v, want))
 
     def test_unreadable_variants_file_never_lets_live_trade_base(self):
         with tempfile.TemporaryDirectory() as d:
             k = self.desk(d)
-            self.edit(k, band_lo=0.80)
+            self.new(k, band_lo=0.80); k.cfg.live.variant = "base-2"; __import__("tern.config").config.save(k.cfg, d)
             k._shadow(); k.shadow.save()
             self.assertIn("base-2", {r["v"] for r in k.shadow.rows})
             with open(os.path.join(d, "variants.json"), "w") as fh:
@@ -2494,7 +1918,7 @@ class OwnVariants(unittest.TestCase):
         import json
         with tempfile.TemporaryDirectory() as d:
             k = self.desk(d)
-            self.edit(k, band_lo=0.80)
+            self.new(k, band_lo=0.80)
             path = os.path.join(d, "variants.json")
             with open(path) as fh:
                 j = json.load(fh)
@@ -2508,23 +1932,13 @@ class OwnVariants(unittest.TestCase):
             self.assertEqual(k.shadow.own.active(), ["base-2"])
             k._shadow()
 
-    def test_a_new_profile_brings_the_variant_profile_1_trades(self):
-        with tempfile.TemporaryDirectory() as d:
-            k = self.desk(d)
-            self.edit(k, band_lo=0.80)
-            k._command({"op": "variant_new", "name": "other", "from": "base", "rule": {"cap": 6}})
-            p = self.profile(k)
-            self.assertEqual((p.variant, p.shadow.own.active()), ("base-2", ["base-2"]))
-            k._command({"op": "variant", "name": "base"}); k._command({"op": "variant_delete", "variant": "base-2"})
-            self.assertEqual(p.shadow.own.rule("base-2")["band_lo"], 0.80)     # a copy, not shared
-
     def test_report_lists_own_variants(self):
         import contextlib, io
         from unittest import mock
         from tern import __main__ as cli, config as cfgmod
         with tempfile.TemporaryDirectory() as d, mock.patch.object(cfgmod, "RUNTIME", d):
             k = self.desk(d)
-            self.edit(k, band_lo=0.80)
+            self.new(k, band_lo=0.80)
             k._shadow(); k.shadow.settle({self.T: True})
             def run(*argv):
                 out = io.StringIO()
@@ -2532,116 +1946,21 @@ class OwnVariants(unittest.TestCase):
                     self.assertEqual(cli.main(["report", *argv]), 0)
                 return out.getvalue()
             self.assertIn("base-2: 80-95¢", run())
-            self.assertIn("base-2: 80-95¢", run("--profile", "1"))
-            k._command({"op": "variant", "name": "base"})
+            self.assertIn("base-2: 80-95¢", run("--periods"))
+            self.assertNotIn("← live", run())
+            k._command({"op": "live", "on": True, "variant": "base-2"}); k._command({"op": "variant_on", "variant": "late", "on": False})
+            self.assertRegex(run(), r"base-2: .*← live"); self.assertRegex(run(), r"late: .* · off")
+            k._command({"op": "live", "on": False})
             k._command({"op": "variant_delete", "variant": "base-2"})
             self.assertIn("deleted, kept for the record", run())
 
 
-class RuleUpgrade(unittest.TestCase):
-    """A profile whose rule was changed before own variants existed: the rules become variants, records follow."""
-
-    def old(self, d, variant="multi"):
-        """Settings 1 was the standard rule; 2 and 3 widened the spread and added a slot."""
-        import json
-        from tern import profiles
-        from tern.config import Config, Strategy
-        p = profiles.create(d, "old", Config(strategy=Strategy(variant=variant)), 0.07)
-        p.set("strategy.max_spread", 0.09)
-        p.set("strategy.minutes", [30, 25, 20, 15, 10])
-        self.assertEqual(p.log.sv, 3)
-        row = lambda v, sv, t: {"v": v, "ts": 1.0, "event": "KXBTCD-H", "close": 2.0, "ticker": t, "side": "yes", "n": 5,
-                                "cost": 0.9, "fee": 0.02, "slot": 25, "pnl": None, "sv": sv}
-        with open(os.path.join(p.dir, "shadow-settled.jsonl"), "w") as fh:
-            for v, sv, t in (("base", 1, "a"), ("base", 3, "b"), ("multi", 3, "c"), ("late", 3, "d"), ("late", 2, "e"),
-                             ("tight1", 2, "f"), ("stop20", 3, "g")):
-                fh.write(json.dumps({**row(v, sv, t), "pnl": 1.0}) + "\n")
-            fh.write("cut short\n")
-        with open(os.path.join(p.dir, "shadow.json"), "w") as fh:
-            json.dump({"rows": [row("multi", 3, "o1"), row("cap1", 3, "o2")], "slots": {}}, fh)
-        os.remove(os.path.join(p.dir, "variants.json"))
-        return p.dir
-
-    def test_records_follow_their_rules(self):
-        from tern.profiles import Profile
-        with tempfile.TemporaryDirectory() as d:
-            path = self.old(d)
-            p = Profile.load(path, 0.07, upgrade=True)
-            own = p.shadow.own
-            self.assertEqual((p.variant, sorted(own.active())), ("multi-2", ["base-2", "multi-2"]))
-            self.assertEqual((p.cfg.strategy.max_spread, p.cfg.strategy.minutes), (0.02, [25, 20, 15, 10]))
-            self.assertEqual((own.rule("multi-2")["max_spread"], len(own.rule("multi-2")["series"])), (0.09, 6))
-            n = lambda v: sum(a[2] for a in p.shadow.agg.get(v, {}).values())
-            self.assertEqual([n(v) for v in ("base", "base-2", "multi", "multi-2", "stop20")], [1, 1, 0, 1, 1])
-            self.assertEqual(n("late"), 0)                                     # 9c wide spread at either version
-            self.assertEqual(n("tight1"), 1)                                   # 1c whatever the spread was: its own rule
-            self.assertEqual({r["v"] for r in p.shadow.rows}, {"multi-2", next(k for k in own.all if k.startswith("cap1-"))})
-            self.assertEqual(sum(n(v) for v in p.shadow.agg), 7)               # none lost
-            with open(os.path.join(path, "shadow-settled.jsonl")) as fh:
-                self.assertIn("cut short\n", fh.readlines())
-
-    def test_it_happens_once_and_restarts_from_the_files_as_they_were(self):
-        from tern import profiles
-        from tern.profiles import Profile, upgrade_rules
-        with tempfile.TemporaryDirectory() as d:
-            path = self.old(d)
-            first = upgrade_rules(path)
-            self.assertEqual(upgrade_rules(path), [])
-            p = Profile.load(path, 0.07)
-            rules = {k: v["rule"] for k, v in p.shadow.own.all.items()}
-            os.remove(os.path.join(path, "variants.json"))                     # cut short before the last step
-            os.remove(os.path.join(path, profiles.DONE_FILE))
-            open(os.path.join(path, profiles.BUSY_FILE), "w").close()
-            self.assertEqual(upgrade_rules(path), first)
-            again = Profile.load(path, 0.07)
-            self.assertEqual({k: v["rule"] for k, v in again.shadow.own.all.items()}, rules)
-            self.assertEqual(again.shadow.summary(["base-2"]), p.shadow.summary(["base-2"]))
-            self.assertEqual(again.log.lines()[-1]["key"], p.log.lines()[-1]["key"])
-
-    def test_a_standard_profile_is_left_alone(self):
-        from tern import profiles
-        from tern.config import Config
-        with tempfile.TemporaryDirectory() as d:
-            p = profiles.create(d, "std", Config(), 0.07)
-            os.remove(os.path.join(p.dir, "variants.json"))
-            profiles.upgrade_rules(p.dir)
-            self.assertEqual(sorted(os.listdir(p.dir)), ["config.json", "profile.json", "settings-log.jsonl", "variants-upgraded", "variants.json"])
-
-    def test_reading_a_report_never_upgrades(self):
-        from tern import profiles
-        with tempfile.TemporaryDirectory() as d:
-            path = self.old(d)
-            profiles.load_all(d, 0.07)
-            self.assertFalse(os.path.exists(os.path.join(path, "variants.json")))
-
-
-class ScreenVariants(unittest.TestCase):
-    """E and D in the variants box, r, and the draft E opens, on a real engine's status."""
-    T, desk, profile = EngineProfiles.T, EngineProfiles.desk, EngineProfiles.profile
-    setup, sync, text, press, cmds, view2 = (ScreenProfiles.setup, ScreenProfiles.sync, ScreenProfiles.text,
-                                             ScreenProfiles.press, ScreenProfiles.cmds, ScreenProfiles.view2)
-
-    def run_cmds(self):
-        out = self.cmds()
-        for c in out:
-            self.k.results[c["id"]] = self.k._command(c)
-        self.sync()
-        return out
-
-    def open(self, name="band80"):
-        """E on a variant, page 2."""
-        if self.scr.page == 1:
-            self.press("p")
-        self.scr.focus, self.scr.var_sel = "variants", name
-        self.cmds()
-        self.press("E")
-
-    def row(self, key):
-        self.scr.set_sel = [r.name for r in self.scr.set_rows()].index(key)
+class ScreenVariants(Rig, unittest.TestCase):
+    """n, E and D, r, and the draft n and E open, on a real engine's status."""
 
     def test_a_draft_is_saved_once_as_a_new_variant(self):
         with tempfile.TemporaryDirectory() as d:
-            k, p, scr = self.setup(d)
+            k, scr = self.setup(d)
             self.open()
             self.assertEqual([r.group for r in scr.set_rows() if r.group], ["RULE", "SIZE", "PAPER"])
             self.assertIn("RULE  band80  built in", self.text())
@@ -2658,20 +1977,43 @@ class ScreenVariants(unittest.TestCase):
                 self.assertIn(want, self.text())
             self.press(*"mine", 10)
             [c] = self.run_cmds()
-            self.assertEqual((c["op"], c["from"], c["name"], c["profile"]), ("variant_new", "band80", "mine", "1"))
+            self.assertEqual((c["op"], c["from"], c["name"]), ("variant_new", "band80", "mine"))
             rule = k.shadow.own.rule("mine")
             self.assertEqual([rule[f] for f in ("band_lo", "band_hi", "contracts", "max_hour_cost", "series")],
                              [0.82, 0.90, 19, 65, ["KXBTCD", "KXETHD"]])
-            self.assertEqual((k.variant(), k.shadow.own.active()), ("base", ["mine"]))
-            self.assertEqual((scr.overlay, scr.edit_var, scr.draft, scr.var_sel), (None, None, {}, "mine"))
+            self.assertEqual((k.shadow.own.active(), k.shadow.own.rule("mine")["paper_capital"]), (["mine"], 1000))
+            self.assertEqual((scr.overlay, scr.edit_var, scr.draft, scr.var_sel, scr.variant), (None, None, {}, "mine", "base"))
             self.assertIn("+mine", self.text())
-            self.press(10)                                                     # enter uses it
-            [c] = self.run_cmds()
-            self.assertEqual((c["op"], k.variant()), ("variant", "mine"))
+            self.press(10)                                                     # enter selects it
+            self.assertEqual((self.cmds(), scr.variant), ([], "mine"))
+
+    def test_n_starts_from_bases_settings_wherever_the_cursor_is(self):
+        with tempfile.TemporaryDirectory() as d:
+            k, scr = self.setup(d)
+            for page in (1, 2):
+                scr.var_sel = scr.variant = "band90"; self.cmds()
+                self.press("n")
+                self.assertEqual((scr.edit_var, scr.edit_new, scr.draft), ("base", True, {}))
+                self.assertIn("base's settings to start from", self.text())
+                self.assertEqual(scr.set_value("rule.band_lo"), 0.75)
+                self.press("s")
+                self.assertIn("nothing is changed", scr.flash)
+                self.press(self.curses.KEY_RIGHT, "s")
+                self.assertIn("A new variant: base's settings with", self.text())
+                self.press(*f"n{page}", 10); self.run_cmds()
+                self.assertEqual(k.shadow.own.active()[-1], f"n{page}")
+                self.press("p")
+
+    def test_E_on_page_1_is_the_selected_one(self):
+        with tempfile.TemporaryDirectory() as d:
+            k, scr = self.setup(d)
+            scr.variant, scr.var_sel = "late", "band90"; self.sync()
+            self.press("E")
+            self.assertEqual((scr.page, scr.edit_var, scr.edit_new), (1, "late", False))
 
     def test_esc_throws_the_draft_away_and_other_keys_do_not(self):
         with tempfile.TemporaryDirectory() as d:
-            k, p, scr = self.setup(d)
+            k, scr = self.setup(d)
             self.open()
             self.press("s")
             self.assertIsNone(scr.modal); self.assertIn("nothing is changed", scr.flash)
@@ -2690,7 +2032,7 @@ class ScreenVariants(unittest.TestCase):
 
     def test_a_refused_save_keeps_the_draft(self):
         with tempfile.TemporaryDirectory() as d:
-            k, p, scr = self.setup(d)
+            k, scr = self.setup(d)
             self.open()
             self.press(self.curses.KEY_RIGHT, "s", *"late", 10); self.run_cmds()   # a name already taken
             self.assertIn("already a variant's name", scr.flash)
@@ -2700,34 +2042,25 @@ class ScreenVariants(unittest.TestCase):
 
     def test_the_variant_under_the_draft_goes_away(self):
         with tempfile.TemporaryDirectory() as d:
-            k, p, scr = self.setup(d)
-            k._command({"op": "variant_new", "name": "mine", "from": "late", "rule": {"cap": 6}}); self.sync()
+            k, scr = self.setup(d)
+            self.new(k, "late", "mine"); self.sync()
             self.open("mine")
             self.press(self.curses.KEY_RIGHT, "s")
             k._command({"op": "variant_delete", "variant": "mine"}); self.sync()
             self.assertEqual((scr.overlay, scr.edit_var, scr.draft, scr.modal), (None, None, {}, None))
             self.assertIn("gone", scr.flash)
 
-    def test_a_profiles_variant_is_saved_in_that_profile(self):
+    def test_r_opens_the_selected_one_with_the_coin_flipped(self):
         with tempfile.TemporaryDirectory() as d:
-            k, p, scr = self.setup(d)
-            self.view2(); self.open("base")
-            self.row("paper_capital"); self.press(self.curses.KEY_LEFT, "s", 10)
-            [c] = self.run_cmds()
-            self.assertEqual((c["profile"], p.shadow.own.active(), k.shadow.own.all), (p.id, ["base-2"], {}))
-            self.assertEqual(p.shadow.own.rule("base-2")["paper_capital"], 900)
-
-    def test_r_opens_the_one_in_use_with_the_coin_flipped(self):
-        with tempfile.TemporaryDirectory() as d:
-            k, p, scr = self.setup(d)
-            k.cfg.live.enabled = True; self.sync(); self.cmds()                # armed: still nothing to ask, nothing is sent
+            k, scr = self.setup(d)
+            k.cfg.live.enabled, k.cfg.live.variant = True, "base"; self.sync(); self.cmds()   # armed: still nothing is sent
             self.press("r")
             self.assertIn("at least one", scr.flash); self.assertIsNone(scr.overlay)   # BTC is its only coin
             self.press(9, "r")                                                 # ETH
             self.assertEqual((scr.edit_var, scr.draft, scr.modal), ("base", {"series": ["KXBTCD", "KXETHD"]}, None))
             self.assertEqual(self.cmds(), [])
             self.press("s", 10); self.run_cmds()
-            self.assertEqual((k.variant(), k.shadow.own.rule("base-2")["series"]), ("base", ["KXBTCD", "KXETHD"]))
+            self.assertEqual((k.cfg.live.variant, k.shadow.own.rule("base-2")["series"]), ("base", ["KXBTCD", "KXETHD"]))
             for had in ([], ["KXBTCD", "KXFOOD"]):
                 k.cfg.strategy.series = list(had); self.sync()
                 self.press("r")
@@ -2736,7 +2069,7 @@ class ScreenVariants(unittest.TestCase):
 
     def test_delete_asks_and_refuses(self):
         with tempfile.TemporaryDirectory() as d:
-            k, p, scr = self.setup(d)
+            k, scr = self.setup(d)
             k._command({"op": "variant_new", "name": "mine", "from": "late", "rule": {"cap": 6}})
             self.press("p"); scr.focus = "variants"; self.sync(); self.cmds()
             for name, say in (("base", "built in"), ("late", "built in")):
@@ -2749,33 +2082,20 @@ class ScreenVariants(unittest.TestCase):
             self.press("D", "y"); self.run_cmds()
             self.assertEqual(k.shadow.own.active(), [])
 
-    def test_armed_live_asks_when_enter_changes_what_it_trades_and_a_save_does_not(self):
-        with tempfile.TemporaryDirectory() as d:
-            k, p, scr = self.setup(d)
-            k.cfg.live.enabled = True; self.sync()
-            self.open("base")                                                  # what live trades
-            self.row("max_hour_cost"); self.press(self.curses.KEY_RIGHT, "s", *"more", 10)
-            self.run_cmds()
-            self.assertEqual((k.variant(), k.shadow.own.active(), scr.modal), ("base", ["more"], None))
-            self.press(10)                                                     # enter on it
-            self.assertEqual(scr.modal["title"], "SWITCH LIVE VARIANT")
-            self.press(27)
-            self.assertEqual((self.cmds(), k.variant()), ([], "base"))
-
     def test_help_says_the_rule_in_use_and_the_variant_keys(self):
         with tempfile.TemporaryDirectory() as d:
-            k, p, scr = self.setup(d)
+            k, scr = self.setup(d)
             k._command({"op": "variant_new", "from": "base", "name": "mine", "rule": {"band_lo": 0.69, "band_hi": 0.83, "cap": 1,
                                                                                       "contracts": 7, "paper_capital": 300}})
-            k._command({"op": "variant", "name": "mine"}); self.sync()
+            scr.variant = "mine"; self.sync()
             text = " ".join(" ".join(l if isinstance(l, str) else "".join(t for t, _ in l) for l in scr.help_lines(120)).split())
-            for want in ("With mine, the variant in use", "mid is 69-83c", "1 a strike an hour", "the base rule (75-95c",
-                         "7 contracts a strike", "starts at $300", "draft: s saves a new variant", "marked +", "tern report --profile NAME"):
+            for want in ("With mine, the variant selected", "mid is 69-83c", "1 a strike an hour", "the base rule (75-95c",
+                         "7 contracts a strike", "mine starts with $300", "from base's settings, as a draft", "marked +", "tern report --periods"):
                 self.assertIn(want, text)
 
     def test_off_can_be_stepped_and_typed(self):
         with tempfile.TemporaryDirectory() as d:
-            k, p, scr = self.setup(d)
+            k, scr = self.setup(d)
             self.open("base")
             self.row("cap")
             self.press(self.curses.KEY_RIGHT); self.assertEqual(scr.draft, {"cap": 1})
@@ -2795,79 +2115,19 @@ class ScreenVariants(unittest.TestCase):
             self.assertEqual(k.shadow.own.rule("base-2")["max_vol"], 7.6)
 
 
-class VariantReviewFixes(unittest.TestCase):
+class VariantReviewFixes(Rig, unittest.TestCase):
     """Findings from the 2026-11-23 code review of the own-variants work."""
-    T, desk, profile = EngineProfiles.T, EngineProfiles.desk, EngineProfiles.profile
-    old = RuleUpgrade.old
-    setup, sync, text, press, cmds, view2 = (ScreenProfiles.setup, ScreenProfiles.sync, ScreenProfiles.text,
-                                             ScreenProfiles.press, ScreenProfiles.cmds, ScreenProfiles.view2)
-    run_cmds = ScreenVariants.run_cmds
 
     ROW = {"v": "base", "ts": 1.0, "event": "KXBTCD-X", "close": 2.0, "ticker": "x", "side": "yes", "n": 5,
            "cost": 0.9, "fee": 0.02, "slot": 25, "pnl": 1.0, "sv": 9}
-
-    # 1
-    def test_losing_variants_json_never_rolls_a_converted_profile_back(self):
-        import json
-        from tern.profiles import Profile
-        with tempfile.TemporaryDirectory() as d:
-            path = self.old(d)
-            Profile.load(path, 0.07, upgrade=True)
-            settled = os.path.join(path, "shadow-settled.jsonl")
-            with open(settled, "a") as fh:
-                fh.write(json.dumps(self.ROW) + "\n")
-            with open(settled) as fh:
-                want = fh.read()
-            with open(os.path.join(path, "config.json")) as fh:
-                cfg = fh.read()
-            for _ in range(2):
-                if os.path.exists(os.path.join(path, "variants.json")):
-                    os.remove(os.path.join(path, "variants.json"))
-                Profile.load(path, 0.07, upgrade=True)
-                with open(settled) as fh:
-                    self.assertEqual(fh.read(), want)
-                with open(os.path.join(path, "config.json")) as fh:
-                    self.assertEqual(fh.read(), cfg)
-
-    def test_one_converted_before_the_marker_existed_is_marked_when_next_loaded(self):
-        import json
-        from tern.profiles import DONE_FILE, Profile
-        with tempfile.TemporaryDirectory() as d:
-            path = self.old(d)
-            Profile.load(path, 0.07, upgrade=True)
-            os.remove(os.path.join(path, DONE_FILE))                           # as the first version left them
-            Profile.load(path, 0.07, upgrade=True)
-            self.assertTrue(os.path.exists(os.path.join(path, DONE_FILE)))
-            settled = os.path.join(path, "shadow-settled.jsonl")
-            with open(settled, "a") as fh:
-                fh.write(json.dumps(self.ROW) + "\n")
-            os.remove(os.path.join(path, "variants.json"))
-            n = sum(1 for _ in open(settled))
-            Profile.load(path, 0.07, upgrade=True)
-            self.assertEqual(sum(1 for _ in open(settled)), n)
-
-    def test_one_converted_by_the_first_version_whose_variants_are_gone_is_left_alone(self):
-        from tern.profiles import DONE_FILE, Profile
-        with tempfile.TemporaryDirectory() as d:
-            path = self.old(d)
-            Profile.load(path, 0.07, upgrade=True)
-            for f in (DONE_FILE, "variants.json"):
-                os.remove(os.path.join(path, f))
-            def files():
-                return {f: open(os.path.join(path, f)).read() for f in sorted(os.listdir(path)) if f != DONE_FILE}
-            before = files()
-            p = Profile.load(path, 0.07, upgrade=True)
-            self.assertEqual(files(), before)                                  # records, settings and the kept files
-            self.assertEqual(p.cfg.strategy.variant, "multi-2")                # not quietly base: live waits for a pick
 
     # 2
     def test_live_never_trades_a_fallback_variant(self):
         with tempfile.TemporaryDirectory() as d:
             for how in ("bad", "list", "gone"):
                 k = self.desk(d)
-                k._command({"op": "variant", "name": "base"})
-                k._command({"op": "variant_new", "from": "base", "rule": {"band_lo": 0.80}})
-                k._command({"op": "variant", "name": k.shadow.own.active()[-1]})
+                self.new(k, band_lo=0.80)
+                k._command({"op": "live", "on": True, "variant": k.shadow.own.active()[-1]})
                 path = os.path.join(d, "variants.json")
                 if how == "gone":
                     os.remove(path)
@@ -2876,21 +2136,12 @@ class VariantReviewFixes(unittest.TestCase):
                         fh.write("{bad" if how == "bad" else "[]")
                 k = self.desk(d)
                 self.assertFalse(k.live_target()["ok"], how)
-                k._command({"op": "variant_new", "name": "n" + how, "from": "band80", "rule": {"cap": 6}})
+                self.new(k, "band80", "n" + how)
                 self.assertFalse(k.live_target()["ok"], how)                   # an unrelated change does not lift it
                 self.assertFalse(self.desk(d).live_target()["ok"], how)        # nor does a restart after it
                 self.assertFalse(k.gate()["passed"])
-                self.assertNotIn("already", k._command({"op": "variant", "name": "base"}))   # picking one does
+                self.assertIn("live moved", k._command({"op": "live", "on": True, "variant": "base"}))   # picking one does
                 self.assertTrue(k.live_target()["ok"], how)
-
-    def test_live_profile_with_an_unknown_variant_is_held_too(self):
-        with tempfile.TemporaryDirectory() as d:
-            k = self.desk(d)
-            p = self.profile(k)
-            k._command({"op": "live_profile", "profile": p.id})
-            self.assertTrue(k.live_target()["ok"])
-            p.cfg.strategy.variant = "gone"
-            self.assertFalse(k.live_target()["ok"])
 
     # 3
     def test_a_lost_variants_key_and_record_are_never_taken_over(self):
@@ -2911,43 +2162,6 @@ class VariantReviewFixes(unittest.TestCase):
             self.assertIn("base-2", {r["v"] for r in k.shadow.rows})           # its open entries still settle
             k.shadow.settle({self.T: True})
             self.assertEqual(k.shadow.summary(["base-2"])[0]["entries"], 1)
-
-    # 4, 6, 8, 10
-    def test_pending_values_do_not_follow_to_another_profile(self):
-        with tempfile.TemporaryDirectory() as d:
-            k, p, scr = self.setup(d)
-            self.view2(); scr.key(ord("e"))
-            rows = [r.key for r in scr.set_rows()]
-            for key in ("enabled", "live.contracts"):
-                scr.set_sel = rows.index(key); scr.key(self.curses.KEY_RIGHT)  # sent, not answered
-            scr.key(27)
-            scr.focus, scr.prof_sel = "profiles", "1"
-            scr.draw(); scr.view_profile()
-            self.assertEqual(list(scr.set_sent), ["live.contracts"])           # the desk's is whichever profile is shown
-
-    # 5
-    def test_a_damaged_shadow_json_does_not_stop_the_conversion(self):
-        import json
-        from tern.profiles import Profile
-        good = {k: v for k, v in {**self.ROW, "v": "multi", "sv": 3, "pnl": None}.items()}
-        for text in ("{cut", "[]", json.dumps({"rows": [{"ts": 1}, 5, good], "slots": {}}), json.dumps({"rows": None})):
-            with tempfile.TemporaryDirectory() as d:
-                path = self.old(d)
-                with open(os.path.join(path, "shadow.json"), "w") as fh:
-                    fh.write(text)
-                try:
-                    p = Profile.load(path, 0.07, upgrade=True)
-                except Exception as ex:
-                    self.fail(f"{text}: {ex!r}")
-                self.assertEqual(p.variant, "multi-2")
-
-    def test_a_strange_settings_log_does_not_stop_the_conversion(self):
-        from tern.profiles import Profile
-        with tempfile.TemporaryDirectory() as d:
-            path = self.old(d)
-            with open(os.path.join(path, "settings-log.jsonl"), "a") as fh:
-                fh.write('{"ts":1,"sv":3,"key":"strategy.minutes","from":null,"to":[25]}\n{"sv":[1],"key":"strategy.series"}\n')
-            Profile.load(path, 0.07, upgrade=True)
 
     # 6
     def test_a_rule_that_would_not_load_again_is_never_saved(self):
@@ -2997,7 +2211,7 @@ class VariantReviewFixes(unittest.TestCase):
     # 9
     def test_toggling_a_slot_keeps_the_ones_the_box_does_not_list(self):
         with tempfile.TemporaryDirectory() as d:
-            k, p, scr = self.setup(d)
+            k, scr = self.setup(d)
             k.cfg.strategy.minutes = [25, 20, 12]; self.sync()
             self.press("p"); scr.focus, scr.var_sel = "variants", "base"; self.cmds()
             self.press("E")
@@ -3008,18 +2222,6 @@ class VariantReviewFixes(unittest.TestCase):
             self.press(" ", "s", 10); self.run_cmds()
             self.assertEqual(k.shadow.own.rule("base-2")["minutes"], [25, 20, 12, 10])
             self.assertIn("no new variant", k._command({"op": "variant_new", "from": "base", "rule": {"minutes": [25, 13]}}))
-
-    # 11
-    def test_a_viewed_profile_with_an_unknown_variant_has_a_working_settings_box(self):
-        with tempfile.TemporaryDirectory() as d:
-            k, p, scr = self.setup(d)
-            p.cfg.strategy.variant = "gone"; self.sync()
-            self.view2(); self.press("e")
-            self.assertNotIn("older than this screen", self.text())
-            self.press(27); scr.focus = "variants"; scr.var_sel = "base"; self.cmds()
-            self.press("E"); self.assertEqual(scr.set_value("rule.band_lo"), 0.55); self.press(27)
-            self.press(10); self.run_cmds()                                    # enter on base is not "already in use"
-            self.assertEqual(p.cfg.strategy.variant, "base")
 
     # 12
     # 13
@@ -3041,21 +2243,10 @@ class VariantReviewFixes(unittest.TestCase):
             row = next(l for l in lines if l.startswith("x1 ") and ":" not in l)
             self.assertEqual(row[at - 1], "1"); self.assertEqual(row[at], " ")
 
-    # 15
-    def test_the_tip_says_when_live_trades_another_profile(self):
-        with tempfile.TemporaryDirectory() as d:
-            k, p, scr = self.setup(d)
-            k._command({"op": "live_profile", "profile": p.id})
-            self.press("p"); scr.focus = "variants"; scr.var_sel = "base"; self.sync()
-            self.assertIn("in use on paper · live trades profile 2's rule", self.text())
 
 
-class VariantSettingsReview(unittest.TestCase):
+class VariantSettingsReview(Rig, unittest.TestCase):
     """Findings from the code review of the draft-and-save work (2026-11-23)."""
-    T, desk, profile = EngineProfiles.T, EngineProfiles.desk, EngineProfiles.profile
-    setup, sync, text, press, cmds, view2 = (ScreenProfiles.setup, ScreenProfiles.sync, ScreenProfiles.text,
-                                             ScreenProfiles.press, ScreenProfiles.cmds, ScreenProfiles.view2)
-    run_cmds, open, row = ScreenVariants.run_cmds, ScreenVariants.open, ScreenVariants.row
 
     def old_file(self, d, *keys, **config):
         """variants.json from before sizes, in d, and config.json with the given strategy values."""
@@ -3078,7 +2269,7 @@ class VariantSettingsReview(unittest.TestCase):
     # 1
     def test_a_number_typed_on_a_row_that_has_none_does_nothing(self):
         with tempfile.TemporaryDirectory() as d:
-            k, p, scr = self.setup(d)
+            k, scr = self.setup(d)
             self.open()
             for key in ("minutes", "series"):
                 self.row(key); self.press("2", "0", 10)                        # (enter turns the choice on or off)
@@ -3092,7 +2283,7 @@ class VariantSettingsReview(unittest.TestCase):
     # 2, 9
     def test_a_save_still_on_its_way_never_closes_another_draft(self):
         with tempfile.TemporaryDirectory() as d:
-            k, p, scr = self.setup(d)
+            k, scr = self.setup(d)
             self.open()
             self.press(self.curses.KEY_RIGHT, "s", *"mine", 10)                # sent, not answered yet
             [c] = self.cmds()
@@ -3106,7 +2297,7 @@ class VariantSettingsReview(unittest.TestCase):
 
     def test_changes_made_after_the_save_stay_open(self):
         with tempfile.TemporaryDirectory() as d:
-            k, p, scr = self.setup(d)
+            k, scr = self.setup(d)
             self.open()
             self.press(self.curses.KEY_RIGHT, "s", *"mine", 10)
             [c] = self.cmds()
@@ -3118,7 +2309,7 @@ class VariantSettingsReview(unittest.TestCase):
         from unittest import mock
         import time
         with tempfile.TemporaryDirectory() as d:
-            k, p, scr = self.setup(d)
+            k, scr = self.setup(d)
             self.open()
             self.press(self.curses.KEY_RIGHT, "s", 10)
             [c] = self.cmds()
@@ -3134,7 +2325,7 @@ class VariantSettingsReview(unittest.TestCase):
         from unittest import mock
         import time
         with tempfile.TemporaryDirectory() as d:
-            k, p, scr = self.setup(d)
+            k, scr = self.setup(d)
             self.open()
             self.press(self.curses.KEY_RIGHT, "s", 10); self.cmds()
             real = time.time
@@ -3144,22 +2335,9 @@ class VariantSettingsReview(unittest.TestCase):
                 self.press("s")
                 self.assertEqual((scr.modal["type"], scr.draft), ("vname", {"band_lo": 0.81}))
 
-    def test_viewing_another_profile_while_one_is_saved_does_not_block_the_next_save(self):
-        with tempfile.TemporaryDirectory() as d:
-            k, p, scr = self.setup(d)
-            self.open()
-            self.press(self.curses.KEY_RIGHT, "s", *"mine", 10)
-            [c] = self.cmds()
-            self.press(27); scr.focus = "profiles"; scr.prof_sel = p.id; self.press(10)
-            self.assertEqual(scr.profile, p.id)
-            k.results[c["id"]] = k._command(c); self.sync()
-            self.assertEqual((k.shadow.own.active(), scr.var_new), (["mine"], None))
-            self.open("base"); self.press(self.curses.KEY_RIGHT, "s")
-            self.assertEqual(scr.modal["type"], "vname")
-
     def test_the_gate_column_says_the_pnl_it_needs(self):
         with tempfile.TemporaryDirectory() as d:
-            k, p, scr = self.setup(d)
+            k, scr = self.setup(d)
             self.press("p")
             for need, say in ((100, "P&L<$100"), (-50, "✓P&L"), (0, "P&L<$0")):
                 k.cfg.gate.min_pnl = need
@@ -3172,21 +2350,23 @@ class VariantSettingsReview(unittest.TestCase):
     # 3
     def test_nothing_is_saved_through_an_engine_older_than_the_screen(self):
         with tempfile.TemporaryDirectory() as d:
-            k, p, scr = self.setup(d)
+            k, scr = self.setup(d)
             self.open()
             self.press(self.curses.KEY_RIGHT)
-            for v in scr.st["variants"]:
-                v["rule"].pop("contracts")
+            for v in scr.raw["variants"]:
+                v.pop("on")
             scr.key(ord("s"))
             self.assertIsNone(scr.modal); self.assertIn("older than this screen", scr.flash)
-            scr.key(27); scr.key(9); scr.key(ord("r"))
-            self.assertIsNone(scr.overlay); self.assertIn("older than this screen", scr.flash)
+            scr.key(27); scr.key(9)
+            for key in "rnELRD ":
+                scr.flash = ""; scr.key(ord(key))
+                self.assertEqual((scr.overlay, scr.modal), (None, None), key); self.assertIn("older than this screen", scr.flash, key)
             self.assertEqual(self.cmds(), [])
 
     # 4
     def test_a_copy_without_a_change_is_refused(self):
         with tempfile.TemporaryDirectory() as d:
-            k, p, scr = self.setup(d)
+            k, scr = self.setup(d)
             k.cfg.strategy.minutes = [10, 15, 20, 25]; self.sync()
             for rule in (None, {}, {"band_lo": 0.75}, {"minutes": [25, 20, 15, 10]}):
                 self.assertIn("no new variant", k._command({"op": "variant_new", "from": "base", "rule": rule}))
@@ -3227,15 +2407,6 @@ class VariantSettingsReview(unittest.TestCase):
             self.old_file(d, "mine", max_hour_cost=float("inf"))
             self.assertEqual(self.desk(d).shadow.own.active(), ["mine"])
 
-    # 7
-    def test_a_draft_never_moves_to_another_profile(self):
-        with tempfile.TemporaryDirectory() as d:
-            k, p, scr = self.setup(d)
-            self.view2(); self.open("base")
-            self.press(self.curses.KEY_RIGHT, "s")
-            k._command({"op": "profile_delete", "profile": p.id}); self.sync()
-            self.assertEqual((scr.profile, scr.overlay, scr.edit_var, scr.draft, scr.modal), (None, None, None, {}, None))
-
     # 8
     def test_one_bad_entry_does_not_keep_the_others_from_their_own_size(self):
         import json
@@ -3257,11 +2428,8 @@ class VariantSettingsReview(unittest.TestCase):
             self.assertEqual(self.desk(d).shadow.own.rule("mine")["contracts"], 5.0)
 
 
-class CashLimit(unittest.TestCase):
-    """No variant, and not the paper book, buys more than the cash it has left."""
-    T, desk, profile = EngineProfiles.T, EngineProfiles.desk, EngineProfiles.profile
-    setup, sync, text, press, cmds, view2 = (ScreenProfiles.setup, ScreenProfiles.sync, ScreenProfiles.text,
-                                             ScreenProfiles.press, ScreenProfiles.cmds, ScreenProfiles.view2)
+class CashLimit(Rig, unittest.TestCase):
+    """No variant buys more than the cash it has left."""
 
     def test_afford(self):
         from tern.book import afford, taker_fee
@@ -3270,9 +2438,6 @@ class CashLimit(unittest.TestCase):
             self.assertLessEqual(n, want)
             self.assertTrue(n == 0 or n * unit + taker_fee(n, unit, 0.07) <= cash + 1e-9, (cash, n))
             self.assertTrue(n == 100 or (n + 1) * unit + taker_fee(n + 1, unit, 0.07) > cash + 1e-9, (cash, n))   # and no fewer
-
-    def new(self, k, pid="1", **rule):
-        k._command({"op": "variant_new", "from": "base", "profile": pid, "rule": rule})
 
     def ms(self, n, ask="0.81"):
         m = {"floor_strike": 100.0, "yes_bid_dollars": f"{float(ask) - 0.01:.2f}", "yes_ask_dollars": ask, "yes_bid_size_fp": "500",
@@ -3320,51 +2485,33 @@ class CashLimit(unittest.TestCase):
             k.shadow.settle({r["ticker"]: True for r in k.shadow.rows})
             self.assertGreater(k.shadow.cash("base-2", 100), 100)
 
-    def test_built_in_variants_use_the_profiles_paper_start(self):
+    def test_built_in_variants_use_the_configs_paper_start(self):
         with tempfile.TemporaryDirectory() as d:
             k = self.desk(d)
-            p = self.profile(k, contracts=100, max_hour_cost=500)
-            p.set("paper_capital", 100)
+            k.cfg.strategy.contracts, k.cfg.strategy.max_hour_cost, k.cfg.paper_capital = 100.0, 500.0, 100.0
             k._shadow()                                                        # through the engine: 100 at 81c is $81, then the quote's 50
-            p.step("KXETHD-H1", 5000.0, [{**m, "ticker": m["ticker"].format("KXETHD-H1")} for m in self.ms(9)], 5000.0 - 25 * 60 + 1, None)
-            for v in p.shadow.order():
-                self.assertLessEqual(self.spent(p.shadow, v), 100, v)
-            self.assertGreater(self.spent(p.shadow, "multi"), 98)
-            self.assertTrue(k.shadow.rows)                                     # profile 1's has its own
+            self.step(k.shadow, k.cfg, "KXETHD-H1", 9)
+            for v in k.shadow.order():
+                self.assertLessEqual(self.spent(k.shadow, v), 100, v)
+            self.assertGreater(self.spent(k.shadow, "multi"), 98)
 
-    def test_the_paper_book_buys_within_its_cash_and_live_is_untouched(self):
+    def test_live_is_not_held_to_a_variants_paper_cash(self):
         with tempfile.TemporaryDirectory() as d:
             k = self.desk(d)
-            self.new(k, contracts=40, max_hour_cost=500)
-            k._command({"op": "variant", "name": "base-2"})
-            k.paper.cash = 10.0
-            k._auto()
-            self.assertEqual(k.paper.pos[self.T]["q"], 12)                     # 12 at 81c is $9.72 + a 13c fee
-            self.assertGreaterEqual(k.paper.cash, 0)
-            k.slots = {}; k._auto()
-            self.assertEqual(k.paper.pos[self.T]["q"], 12)                     # nothing left: no more
+            self.new(k, paper_capital=100)
+            k.shadow._count({"v": "base-2", "event": "E1", "pnl": -100.0, "n": 1, "fee": 0, "close": 1.0})
             sent = []
             k._exec = lambda book, t, delta, *a: sent.append((book.name, delta))
-            k.slots, k.live.cash = {}, 0.0
-            from tern.engine import Desk
             k._auto_book(k.live, k.cfg.strategy, "base-2", __import__("time").time(), k.shadow.own)
             self.assertEqual(sent, [("live", k.cfg.live.contracts)])           # (live's own caps are checked in _exec)
 
-    def test_closing_the_other_side_needs_no_cash(self):
-        with tempfile.TemporaryDirectory() as d:
-            k = self.desk(d)
-            k.paper.trade(self.T, -5, 0.20, 0.0, {"event": "KXBTCD-E1"}, "auto")   # holds 5 NO
-            k.paper.cash = 0.0
-            k._auto()
-            self.assertNotIn(self.T, {t for t, p in k.paper.pos.items() if p["q"]})
-
     def test_the_variants_box_says_when_one_is_out_of_cash(self):
         with tempfile.TemporaryDirectory() as d:
-            k, p, scr = self.setup(d)
+            k, scr = self.setup(d)
             self.new(k, paper_capital=100)
             k.shadow._count({"v": "base-2", "event": "E1", "pnl": -99.9, "n": 1, "fee": 0, "close": 1.0, "ticker": "E1-T1",
                              "side": "yes", "cost": 0.8, "ts": 1.0, "slot": 25})
-            self.press("p"); scr.focus = "variants"
+            self.press("p")
             scr.var_sel = "base-2"; self.sync()
             self.assertIn("base-2 has $0.10 left: it buys nothing", self.text())
             scr.var_sel = "band90"; self.sync()
@@ -3374,11 +2521,341 @@ class CashLimit(unittest.TestCase):
         from tern import reports
         with tempfile.TemporaryDirectory() as d:
             k = self.desk(d)
-            p = self.profile(k)
-            p.log.append("note", None, "cash limit on", bump=True)
-            p.shadow.save()
-            out = "\n".join(reports._periods(p.shadow, p.log.lines(), p.log.sv))
-            self.assertRegex(out, r"settings 2, .*: cash limit on")
+            k.slog.append("note", None, "cash limit on", bump=True)
+            self.assertRegex("\n".join(reports.periods(d)), r"settings 2, .*: cash limit on")
+
+
+class OneList(Rig, unittest.TestCase):
+    """One list of variants: enter selects, L goes live with the selected one, space turns one on or off, R starts over."""
+
+    def test_the_selected_one_is_what_every_box_shows(self):
+        with tempfile.TemporaryDirectory() as d:
+            k, scr = self.setup(d)
+            self.assertEqual(scr.variant, "base")                              # nothing picked yet: the first
+            self.new(k, "base", "wide", band_lo=0.55, band_hi=0.65, paper_capital=300, contracts=3)
+            k._shadow()
+            self.press("p"); scr.var_sel = "wide"; self.press(10)
+            self.assertEqual([x["t"] for x in scr.st["paper"]["pos"]], [self.T])
+            self.assertEqual((scr.st["paper"]["start"], scr.st["gate"]["open"], scr.strat()["band_lo"]), (300, 1, 0.55))
+            self.assertIn("equity · wide on paper", self.text())
+            self.assertIn(" wide ", "".join(scr.s.ch[39]))                     # the status line
+            self.assertIn("● +wide", self.text())
+            self.press("p")
+            self.assertIn("wide on paper", self.text())
+            self.press("g")
+            self.assertIn("wide trades live only when every one passes", self.text())
+            self.press(27)
+            import json
+            with open(os.path.join(d, "dash.json")) as fh:
+                self.assertEqual(json.load(fh)["variant"], "wide")             # the screen remembers it
+            self.assertEqual((self.cmds(), k.cfg.live.variant), ([], ""))      # the engine never heard of it
+            k._command({"op": "variant_delete", "variant": "wide"}); self.sync()
+            self.assertEqual(scr.variant, "base"); self.assertIn("gone", scr.flash)
+
+    def test_L_goes_live_with_the_selected_one(self):
+        with tempfile.TemporaryDirectory() as d:
+            k, scr = self.setup(d)
+            scr.variant = "band90"; self.sync()
+            self.press("L")
+            for want in ("ARM LIVE", "It would trade band90", "has not passed its gate", "type live"):
+                self.assertIn(want, self.text())
+            self.press(*"yes", 10)
+            self.assertEqual(self.cmds(), [])
+            self.press("L", *"live", 10)
+            [c] = self.run_cmds()
+            self.assertEqual((c["op"], c["on"], c["variant"]), ("live", True, "band90"))
+            self.assertEqual((k.cfg.live.enabled, k.cfg.live.variant), (True, "band90"))
+
+    def test_selecting_another_never_moves_live(self):
+        with tempfile.TemporaryDirectory() as d:
+            k, scr = self.setup(d)
+            k.cfg.live.enabled, k.cfg.live.variant = True, "band90"; k.mode = "live"; self.sync()
+            self.press("p"); scr.var_sel = "late"; self.press(10)
+            self.assertIn("live still trades band90", scr.flash)
+            self.assertEqual((self.cmds(), k.cfg.live.variant, scr.book_view), ([], "band90", "paper"))
+            self.assertIn(" L band90", self.text())
+            self.assertIn("live: band90" if scr.st["auto_live"] else "late", "".join(scr.s.ch[39]))
+            self.press("L")
+            for want in ("MOVE LIVE", "Live trades band90. Move it to late?", "off to turn live off"):
+                self.assertIn(want, self.text())
+            self.press(27)
+            self.assertEqual((self.cmds(), scr.flash), ([], "live not moved"))
+            self.press("L", *"live", 10)
+            [c] = self.run_cmds()
+            self.assertEqual((c["variant"], k.cfg.live.variant, k.cfg.live.enabled), ("late", "late", True))
+            scr.var_sel = "cap1"; self.press(10, "L", *"off", 10)              # off, from the same question
+            [c] = self.run_cmds()
+            self.assertEqual((c["on"], k.cfg.live.enabled), (False, False))
+
+    def test_L_with_lives_own_selected_turns_it_off_at_once(self):
+        with tempfile.TemporaryDirectory() as d:
+            k, scr = self.setup(d)
+            k.cfg.live.enabled, k.cfg.live.variant = True, "late"; scr.variant = "late"; self.sync()
+            self.press("L")
+            self.assertIsNone(scr.modal)
+            self.assertEqual([(c["op"], c["on"]) for c in self.run_cmds()], [("live", False)])
+            self.assertFalse(k.cfg.live.enabled)
+
+    def test_off_takes_no_entries_and_still_settles(self):
+        with tempfile.TemporaryDirectory() as d:
+            k = self.desk(d)
+            k._shadow()
+            self.assertIn("late off", k._command({"op": "variant_on", "variant": "late", "on": False}))
+            self.assertIn("already off", k._command({"op": "variant_on", "variant": "late", "on": False}))
+            self.assertIn("no variant", k._command({"op": "variant_on", "variant": "gone", "on": False}))
+            k = self.desk(d)                                                   # kept across a restart
+            rows = {r["v"] for r in k.shadow.rows}
+            k.shadow.slots, k.shadow.rows = {}, []
+            k._command({"op": "variant_on", "variant": "base", "on": False})
+            k._shadow()
+            self.assertFalse({"base", "late"} & {r["v"] for r in k.shadow.rows})
+            self.assertTrue(k.shadow.rows)
+            k._command({"op": "variant_on", "variant": "base", "on": True})
+            k.shadow.slots = {}; k.events["KXBTCD"].pop("shadowed"); k._shadow()
+            self.assertIn("base", {r["v"] for r in k.shadow.rows})
+            st = {v["name"]: v["on"] for v in self.status(k)["variants"]}
+            self.assertEqual((st["base"], st["late"]), (True, False))
+
+    def test_a_coin_only_an_off_variant_trades_is_not_fetched(self):
+        with tempfile.TemporaryDirectory() as d:
+            k = self.desk(d)
+            self.assertIn("KXHYPED", k._wanted())
+            k._command({"op": "variant_on", "variant": "multi", "on": False})
+            self.assertEqual(k._wanted(), {"KXBTCD"})
+
+    def test_space_on_the_screen(self):
+        with tempfile.TemporaryDirectory() as d:
+            k, scr = self.setup(d)
+            self.press("p"); scr.var_sel = "late"
+            self.press(" "); [c] = self.run_cmds()
+            self.assertEqual((c["op"], c["variant"], c["on"]), ("variant_on", "late", False))
+            self.assertIn("late is off: no new entries", self.text())
+            k.cfg.live.enabled, k.cfg.live.variant = True, "late"; self.sync()
+            self.press(" ")                                                    # on again would let live trade it
+            self.assertEqual((self.cmds(), scr.modal["type"]), ([], "livecmd"))
+            self.press(*"live", 10); self.run_cmds()
+            self.assertNotIn("late", k.shadow.own.off)
+            self.press(" "); self.run_cmds()                                   # off never asks
+            self.assertIn("late", k.shadow.own.off)
+
+    def test_R_starts_a_variant_over_and_keeps_its_record(self):
+        with tempfile.TemporaryDirectory() as d:
+            k, scr = self.setup(d)
+            self.new(k, "base", "mine", band_lo=0.55, band_hi=0.65, paper_capital=100, minutes=[25, 10]); k._shadow()
+            for i in range(3):
+                k.shadow._close({"v": "mine", "event": f"KXBTCD-H{i}", "n": 2, "cost": 0.5, "fee": 0.1, "ts": 5.0 + i, "close": 9.0,
+                                 "ticker": f"KXBTCD-H{i}-T1", "side": "yes", "slot": 25}, -20.0)
+            was = k.shadow.summary(["mine"])[0]
+            self.assertEqual((was["entries"], was["open"]), (3, 1))
+            scr.variant = "mine"; self.sync()
+            self.press("R", "n"); self.assertEqual(self.cmds(), [])
+            self.press("R")
+            self.assertIn("with $100 and an empty record", self.text())
+            self.press("y"); [c] = self.run_cmds()
+            self.assertEqual((c["op"], c["variant"]), ("variant_restart", "mine"))
+            for k in (k, self.desk(d)):                                        # and across a restart of the engine
+                new, old = k.shadow.summary(["mine", "mine-old"])
+                self.assertEqual((new["entries"], new["open"], new["pnl"], k.shadow.cash("mine", 100)), (0, 0, 0, 100))
+                self.assertEqual({**old, "name": "mine"}, was)
+                self.assertEqual((k.shadow.own.active(), k.shadow.own.deleted()), (["mine"], ["mine-old"]))
+            self.assertIn("bought nothing", k._command({"op": "variant_restart", "variant": "mine"}))
+            k.shadow.settle({self.T: True})                                    # its open entry settles for the old record
+            self.assertEqual([r["entries"] for r in k.shadow.summary(["mine", "mine-old"])], [0, 4])
+            k.shadow.save(); k = self.desk(d)
+            self.assertEqual([r["entries"] for r in k.shadow.summary(["mine", "mine-old"])], [0, 4])
+            k.shadow._close({"v": "mine", "event": "KXBTCD-H9", "n": 2, "cost": 0.5, "fee": 0.1, "ts": __import__("time").time(), "close": 9.0,
+                             "ticker": "x", "side": "yes", "slot": 25}, 1.0)
+            self.assertIn("kept as mine-old-2", k._command({"op": "variant_restart", "variant": "mine"}).replace("mine-ol-2", "mine-old-2"))
+            k = self.desk(d)
+            self.assertEqual([r["entries"] for r in k.shadow.summary(["mine", "mine-old"])], [0, 4])
+            self.assertEqual(sum(r["entries"] for r in k.shadow.summary(k.shadow.own.deleted())), 5)
+
+    def test_a_built_in_one_can_start_over_too(self):
+        with tempfile.TemporaryDirectory() as d:
+            k = self.desk(d)
+            k._shadow(); k.shadow.settle({self.T: True})
+            n = k.shadow.summary(["base"])[0]["entries"]
+            self.assertTrue(n)
+            self.assertIn("kept as base-old", k._command({"op": "variant_restart", "variant": "base"}))
+            k = self.desk(d)
+            self.assertEqual([r["entries"] for r in k.shadow.summary(["base", "base-old"])], [0, n])
+            self.assertEqual(k.shadow.own.active(), [])
+
+    def test_names_off_and_restarts_by_hand_are_checked(self):
+        import json
+        with tempfile.TemporaryDirectory() as d:
+            self.new(self.desk(d), name="mine")
+            path = os.path.join(d, "variants.json")
+            with open(path) as fh:
+                j = json.load(fh)
+            j["off"], j["restarts"] = ["late", 5, None], [5, {"v": "base"}, {"v": "base", "key": "nope", "before": 1}, {"v": "base", "key": "mine", "before": "x"}]
+            with open(path, "w") as fh:
+                json.dump(j, fh)
+            own = self.desk(d).shadow.own
+            self.assertEqual((own.off, own.restarts, own.active()), ({"late"}, [], ["mine"]))
+            for bad in (5, {}, "late"):
+                j["off"] = j["restarts"] = bad
+                with open(path, "w") as fh:
+                    json.dump(j, fh)
+                own = self.desk(d).shadow.own
+                self.assertEqual((own.off, own.restarts, own.active()), (set(), [], ["mine"]))
+
+
+class Merge(Rig, unittest.TestCase):
+    """Profiles of before move into the one list, once, with everything they bought."""
+
+    RULE = {"band_lo": 0.6, "band_hi": 0.9, "minutes": [25, 5], "max_spread": 0.05, "series": ["KXBTCD"], "cap": None, "max_vol": None,
+            "contracts": 19.0, "max_hour_cost": 100.0, "paper_capital": 100.0}
+
+    def entry(self, v, i, pnl=None, sv=7):
+        e = f"KXBTCD-H{i}"
+        return {"v": v, "ts": 100.0 + i, "event": e, "close": 200.0 + i, "ticker": f"{e}-T1", "side": "yes", "n": 2, "cost": 0.8, "fee": 0.02,
+                "slot": 25, "pnl": pnl, "sv": sv}
+
+    def folder(self, d, pid, name, own, settled, open_=(), created=1.0, enabled=True, variant="base", slots=None, **more):
+        import json
+        p = os.path.join(d, "profiles", pid); os.makedirs(p)
+        def put(n, o):
+            with open(os.path.join(p, n), "w") as fh:
+                fh.write(o if isinstance(o, str) else json.dumps(o))
+        put("profile.json", {"name": name, "created": created, "enabled": enabled, "sv": 7})
+        put("config.json", {"paper_capital": 100.0, "strategy": {"variant": variant, "contracts": 19.0, "max_hour_cost": 100.0}})
+        put("variants.json", {"variants": {k: {"rule": self.RULE, "title": more.get("titles", {}).get(k, k), "from": "base", "made": 1,
+                                               "deleted": x == "deleted"} for k, x in own.items()}})
+        put("shadow.json", {"rows": list(open_), "slots": slots or {}})
+        put("shadow-settled.jsonl", "".join(json.dumps(r) + "\n" for r in settled) + "cut sho")
+        return p
+
+    def two(self, d, **more):
+        """Profile 1 with two entries; profile 2 and 3 with their own, deleted and built-in ones."""
+        import json
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, "shadow-settled.jsonl"), "w") as fh:
+            fh.write("".join(json.dumps(self.entry("base", i, 1.0, 1)) + "\n" for i in range(2)))
+        with open(os.path.join(d, "shadow.json"), "w") as fh:
+            json.dump({"rows": [self.entry("base", 5, None, 1)], "slots": {"KXBTCD-H5": [25]}}, fh)
+        self.folder(d, "no2", "profile 2", {"mine": "", "shared": "deleted"},
+                    [self.entry("mine", 1, 2.0), self.entry("shared", 1, 3.0), self.entry("base", 1, 4.0)],
+                    [self.entry("mine", 5), self.entry("late", 5)], slots={"KXBTCD-H5": [25, 10]}, created=1.0, variant="mine")
+        self.folder(d, "p3", "profile 3", {"shared": "", "mine": "deleted"},
+                    [self.entry("shared", 2, 5.0), self.entry("mine", 2, 6.0), self.entry("base", 2, 7.0)],
+                    [self.entry("shared", 6)], created=2.0, enabled=more.get("on3", True), variant="base")
+        return {"base": (2, 2.0, 1), "mine": (1, 2.0, 1), "shared": (1, 5.0, 1), "shared-p2": (1, 3.0, 0), "base-p2": (1, 4.0, 0),
+                "late-p2": (0, 0.0, 1), "mine-p3": (1, 6.0, 0), "base-p3": (1, 7.0, 0)}
+
+    def check(self, k, want):
+        sh = k.shadow
+        got = {r["name"]: (r["entries"], r["pnl"], r["open"]) for r in sh.summary(list(want))}
+        self.assertEqual(got, want)
+        self.assertEqual(sh.own.active(), ["mine", "shared"])
+        self.assertEqual(set(sh.own.deleted()), {"shared-p2", "base-p2", "late-p2", "mine-p3", "base-p3"})
+        self.assertFalse(sh.own.damaged)
+
+    def test_everything_moves_and_is_counted_once(self):
+        import json
+        from tern import reports
+        with tempfile.TemporaryDirectory() as d:
+            want = self.two(d)
+            k = self.desk(d)
+            self.check(k, want)
+            self.assertEqual(k.shadow.order()[-2:], ["mine", "shared"])
+            self.assertEqual(sorted(k.shadow.slots["KXBTCD-H5"]), [10, 25])    # a slot either took is taken
+            self.assertTrue(os.path.exists(os.path.join(d, "profiles-merged", "no2", "variants.json")))
+            self.assertFalse(os.path.exists(os.path.join(d, "profiles")) or os.path.exists(os.path.join(d, "merging")))
+            self.assertTrue(any("profile 2: mine moved" in m for _, _, m in k.logs))
+            k.shadow.settle({"KXBTCD-H5-T1": True, "KXBTCD-H6-T1": False}); k.shadow.save()
+            self.assertEqual(k.shadow.summary(["late-p2"])[0]["entries"], 1)   # open ones settle where they belong
+            rule = k.shadow.own.rule("base-p2")                                # its copy of a built-in one: the rule it traded
+            self.assertEqual((rule["band_lo"], rule["contracts"], rule["paper_capital"]), (0.75, 19.0, 100.0))
+            for _ in range(2):
+                k = self.desk(d)                                               # once only
+                self.assertEqual(k.shadow.summary(["mine"])[0]["entries"], 2)
+            with open(os.path.join(d, "shadow-settled.jsonl")) as fh:
+                rows = [json.loads(l) for l in fh]
+            mine = next(r for r in rows if r["v"] == "mine")
+            self.assertEqual((mine["p"], mine["psv"], mine["sv"]), ("no2", 7, 1))
+            self.assertIn("was in profile 2", "\n".join(reports.periods(d)))
+            self.assertIn("base-p2", "\n".join(reports.desk(d)))
+
+    def test_cut_short_anywhere_it_starts_again_from_the_files_as_they_were(self):
+        from unittest import mock
+        from tern import merge, variants
+        for where in range(8):
+            with tempfile.TemporaryDirectory() as d:
+                want = self.two(d)
+                n = [0]
+                def cut(real):
+                    def f(*a, **kw):
+                        n[0] += 1
+                        if n[0] == where + 1:
+                            raise OSError("cut short")
+                        return real(*a, **kw)
+                    return f
+                with mock.patch.object(merge, "_put", cut(merge._put)), mock.patch.object(variants.VariantSet, "save", cut(variants.VariantSet.save)), \
+                        mock.patch.object(merge.os, "replace", cut(os.replace)):
+                    try:
+                        self.desk(d)
+                    except OSError:
+                        pass
+                self.check(self.desk(d), want)
+                self.check(self.desk(d), want)
+
+    def test_a_profile_that_was_off_comes_in_off(self):
+        with tempfile.TemporaryDirectory() as d:
+            self.two(d, on3=False)
+            self.assertEqual(self.desk(d).shadow.own.off, {"shared"})
+
+    def test_live_keeps_the_variant_it_would_have_traded(self):
+        import json
+        from tern import config
+        for prof, strat, want in (("1", "late", "late"), ("no2", "late", "mine"), ("p3", "late", "base-p3"), ("gone", "late", "")):
+            with tempfile.TemporaryDirectory() as d:
+                self.two(d)
+                with open(os.path.join(d, "config.json"), "w") as fh:
+                    json.dump({"strategy": {"variant": strat}, "live": {"profile": prof, "enabled": True}}, fh)
+                k = self.desk(d)
+                self.assertEqual(k.cfg.live.variant, want)
+                self.assertEqual(k.live_target()["ok"], prof in ("1", "no2"))  # a copy that stopped: live waits for a pick
+                k._command({"op": "set", "key": "alerts", "value": False})     # a save keeps it
+                self.assertEqual(config.load(d).live.variant, want)
+
+    def test_a_name_profile_1_already_has_is_not_taken(self):
+        import json
+        with tempfile.TemporaryDirectory() as d:
+            self.two(d)
+            with open(os.path.join(d, "variants.json"), "w") as fh:
+                json.dump({"variants": {"mine": {"rule": self.RULE, "title": "mine", "from": "base", "made": 1, "deleted": False}}}, fh)
+            own = self.desk(d).shadow.own
+            self.assertEqual(own.active(), ["mine", "mine-p2", "shared"])
+            self.assertEqual(len({own.title(k).lower() for k in own.active()}), 3)
+
+    def test_a_folder_that_cannot_be_read_is_kept_and_said(self):
+        with tempfile.TemporaryDirectory() as d:
+            self.two(d)
+            with open(os.path.join(d, "profiles", "no2", "config.json"), "w") as fh:
+                fh.write("{bad")
+            k = self.desk(d)
+            self.assertEqual(k.shadow.own.active(), ["shared"])
+            self.assertTrue(any("no2 could not be read" in m for _, _, m in k.logs))
+            self.assertTrue(os.path.exists(os.path.join(d, "profiles-merged", "no2", "shadow-settled.jsonl")))
+
+    def test_not_while_another_engine_runs(self):
+        import fcntl
+        with tempfile.TemporaryDirectory() as d:
+            self.two(d)
+            with open(os.path.join(d, "engine.lock"), "a") as lock:
+                fcntl.flock(lock, fcntl.LOCK_EX)
+                self.desk(d)
+                self.assertTrue(os.path.isdir(os.path.join(d, "profiles", "no2")))
+            self.desk(d)
+            self.assertFalse(os.path.isdir(os.path.join(d, "profiles")))
+
+    def test_reading_a_report_moves_nothing(self):
+        from tern import reports
+        with tempfile.TemporaryDirectory() as d:
+            self.two(d)
+            reports.desk(d); reports.periods(d)
+            self.assertTrue(os.path.isdir(os.path.join(d, "profiles", "no2")))
 
 
 class Net(unittest.TestCase):
@@ -3536,8 +3013,8 @@ class Web(unittest.TestCase):
         from tern.engine import live_dir
         st = {"heartbeat": time.time(), "mode": "paper", "pid": os.getpid(), "strategy": {"variant": "base", "series": ["KXBTCD"],
               "band_lo": 0.75, "band_hi": 0.95, "max_spread": 0.02, "minutes": [25, 20, 15, 10]},
-              "variants": [{"name": "base", "active": True, "hours": 1, "entries": 1, "pnl": 1.0, "curve": []},
-                           {"name": "band90", "hours": 1, "entries": 1, "pnl": 2.0, "curve": []}],
+              "variants": [{"name": "base", "on": True, "open": 0, "hours": 1, "entries": 1, "pnl": 1.0, "curve": []},
+                           {"name": "band90", "on": True, "open": 0, "hours": 1, "entries": 1, "pnl": 2.0, "curve": []}],
               "events": {"KXBTCD": {"event": "KXBTCD-E1", "close": time.time() + 900, "age": 0,
                                     "ladder": [{"t": self.T, "k": 99.99, "b": 0.5, "a": 0.52, "v": 10}]}}}
         with open(os.path.join(live_dir(d), "status.json"), "w") as fh:
@@ -3550,24 +3027,24 @@ class Web(unittest.TestCase):
             hub = Hub(d)
             f = hub.handle({"w": 120, "h": 40, "prefs": {"page": 2, "theme": "classic"}})
             sid = f["sid"]
-            for k in ("q", "s", "R", "L", "r", "Enter", "ArrowDown", "Enter"):
+            for k in ("q", "s", "R", "L", "r", "n", "E", "D", "N", " ", "ArrowDown", "Enter", "L"):
                 f = hub.handle({"sid": sid, "w": 120, "h": 40, "key": k})
             self.assertEqual(os.listdir(os.path.join(d, "cmd")), [])          # no command reached the engine
             self.assertFalse(os.path.exists(os.path.join(d, "dash.json")))     # the screen's prefs are its own
             self.assertIn("view only", "".join(t for t, _ in f["rows"][38]))
-            for k in ("t", "c", "Tab", "BackTab", "w", "4"):
+            for k in ("t", "c", "Tab", "BackTab", "3"):
                 f = hub.handle({"sid": sid, "w": 120, "h": 40, "key": k})
-            self.assertEqual(f["prefs"]["watch"], "band90")                    # ↓ then w: watching, trading unchanged
+            self.assertEqual(f["prefs"]["variant"], "band90")                  # ↓ then enter: selected, for this viewer
             self.assertNotEqual(f["prefs"]["theme"], "classic")
             self.assertEqual(f["prefs"]["chart"], "1h")
             self.assertNotIn("hidden", f["prefs"])
             self.assertNotIn("zoom", f["prefs"])
-            self.assertEqual(hub.sessions[sid][0].zoom, "log")                   # page 2's 4: zoomed in this tab only
+            self.assertEqual(hub.sessions[sid][0].zoom, "log")                   # page 2's 3: zoomed in this tab only
             hub.sessions[sid][0].flash = ""
             f = hub.handle({"sid": sid, "w": 120, "h": 40, "key": "ArrowUp"})
             row = "".join(t for t, _ in f["rows"][38])
-            f = hub.handle({"sid": sid, "w": 120, "h": 40, "click": {"y": 38, "x": row.index("4 back")}})
-            self.assertIsNone(hub.sessions[sid][0].zoom)                         # clicking "4 back" restores
+            f = hub.handle({"sid": sid, "w": 120, "h": 40, "click": {"y": 38, "x": row.index("3 back")}})
+            self.assertIsNone(hub.sessions[sid][0].zoom)                         # clicking "3 back" restores
             self.assertEqual(len(f["rows"]), 40)
 
     def test_web_pages_prefs(self):
@@ -3585,7 +3062,7 @@ class Web(unittest.TestCase):
             self.assertNotIn("slot3", old["prefs"])
             sid = f["sid"]
             go = lambda **req: hub.handle({"sid": sid, "w": 111, "h": 33, **req})
-            f = go(key="Enter")                                                 # focus on variants: picking is control
+            f = go(key="n")
             self.assertIn("view only", "".join(t for t, _ in f["rows"][31]))
             f = go(key="p")
             self.assertEqual(f["prefs"]["page"], 1)
@@ -3601,23 +3078,27 @@ class Web(unittest.TestCase):
             self.assertEqual(os.listdir(os.path.join(d, "cmd")), [])
             self.assertFalse(os.path.exists(os.path.join(d, "dash.json")))
 
-    def test_web_profiles_hint_click_views_without_focusing_first(self):
+    def test_web_select_hint_click_selects_the_highlighted_one(self):
         from tern.web import Hub
         with tempfile.TemporaryDirectory() as d:
-            k = EngineProfiles.desk(self, d, bid="0.58", ask="0.60")
-            k.seeded.add(self.T)
-            p = EngineProfiles.profile(self, k, "profile 2", band_lo=0.55, band_hi=0.65)
-            k._shadow(); k._status()
+            self.status(d)
             hub = Hub(d)
             f = hub.handle({"w": 111, "h": 33, "prefs": {"page": 2}})
             sid = f["sid"]
             go = lambda **req: hub.handle({"sid": sid, "w": 111, "h": 33, **req})
-            f = go(key="ArrowRight"); f = go(key="ArrowDown"); f = go(key="ArrowLeft")   # pick profile 2, focus back on variants
+            self.assertEqual(f["prefs"]["variant"], "base")
+            f = go(key="ArrowDown")
             rows = ["".join(t for t, _ in r) for r in f["rows"]]
-            y = next(i for i, r in enumerate(rows) if "profiles" in r and "view" in r)
+            y = next(i for i, r in enumerate(rows) if "variants" in r and "select" in r)
             f = go(click={"y": y, "x": rows[y].index("⏎")})
-            self.assertEqual(f["prefs"]["profile"], p.id)
+            self.assertEqual(f["prefs"]["variant"], "band90")
+            for hint in ("ew─", "Edit", "on/off", "Delete"):                   # the keys that change something are not drawn
+                self.assertNotIn(hint, rows[y])
             self.assertEqual(os.listdir(os.path.join(d, "cmd")), [])
+            f = hub.handle({"w": 111, "h": 33, "prefs": {"page": 2, "variant": "band90"}})   # a reload keeps it
+            self.assertEqual(f["prefs"]["variant"], "band90")
+            f = hub.handle({"w": 111, "h": 33, "prefs": {"page": 2, "variant": "gone"}})
+            self.assertEqual(f["prefs"]["variant"], "base")
 
     def test_settings_box_opens_but_changes_nothing(self):
         from tern.web import Hub
@@ -3649,37 +3130,6 @@ class Web(unittest.TestCase):
             f = hub.handle({"w": 120, "h": 40, "prefs": {"log_filter": "trades"}})   # a reload brings it back
             self.assertEqual(f["prefs"]["log_filter"], "trades")
 
-    def test_web_views_a_profile_and_changes_nothing(self):
-        import json
-        from tern.web import Hub
-        with tempfile.TemporaryDirectory() as d:
-            k = EngineProfiles.desk(self, d, bid="0.58", ask="0.60")
-            k.seeded.add(self.T)
-            p = EngineProfiles.profile(self, k, "profile 2", band_lo=0.55, band_hi=0.65)
-            k._shadow(); k._status()
-            hub = Hub(d)
-            sid = hub.handle({"w": 120, "h": 40})["sid"]
-            go = lambda key: hub.handle({"sid": sid, "w": 120, "h": 40, "key": key})
-            for key in ("p", "ArrowRight", "ArrowDown", "Enter"):
-                f = go(key)
-            self.assertEqual(f["prefs"]["profile"], p.id)
-            hub.publish(force=True)
-            with open(os.path.join(k.fast, "view-web.json")) as fh:
-                self.assertEqual(json.load(fh)["profiles"], [p.id])
-            k._read_view(); k._status()
-            hub.checked = 0                                                    # reread the status now, not in 0.2 s
-            f = go("ArrowUp")
-            self.assertIn("profile 2", "".join(t for t, _ in f["rows"][39]))     # status line: the profile shown
-            for key in (" ", "n", "d", "D", "N"):
-                f = go(key)
-                self.assertIn("view only", "".join(t for t, _ in f["rows"][38]), key)
-            go("e"); go("ArrowDown"); go("ArrowDown")
-            f = go("ArrowRight")                                               # band low, one step up
-            self.assertIn("view only", "".join(t for t, _ in f["rows"][38]))
-            self.assertEqual(os.listdir(os.path.join(d, "cmd")), [])          # nothing reached the engine
-            f = hub.handle({"w": 120, "h": 40, "prefs": {"profile": p.id, "page": 2}})   # a reload keeps it
-            self.assertEqual(f["prefs"]["profile"], p.id)
-
     def test_engine_sends_history_for_strikes_web_viewers_picked(self):
         import collections, json, time
         from tern.engine import Desk
@@ -3690,21 +3140,18 @@ class Web(unittest.TestCase):
             with open(os.path.join(k.fast, "view-web.json"), "w") as fh:
                 json.dump({"series": ["KXETHD", "KXFAKED"], "tickers": [self.T]}, fh)
             k._read_view()
-            self.assertEqual(k.web, {"series": ["KXETHD"], "tickers": [self.T], "profiles": []})
+            self.assertEqual(k.web, {"series": ["KXETHD"], "tickers": [self.T]})
             k._status()
             with open(os.path.join(k.fast, "status.json")) as fh:
                 self.assertIn(self.T, json.load(fh)["hist"])
             old = time.time() - 60                                             # tern web gone: stop serving it
             os.utime(os.path.join(k.fast, "view-web.json"), (old, old))
             k._read_view()
-            self.assertEqual(k.web, {"series": [], "tickers": [], "profiles": []})
+            self.assertEqual(k.web, {"series": [], "tickers": []})
 
 
-class Reports(unittest.TestCase):
+class Reports(Rig, unittest.TestCase):
     """The reports screen (o): the reports tern works out from its records, and the saved ones."""
-    T, desk, profile = EngineProfiles.T, EngineProfiles.desk, EngineProfiles.profile
-    setup, sync, text, press, cmds = (ScreenProfiles.setup, ScreenProfiles.sync, ScreenProfiles.text,
-                                      ScreenProfiles.press, ScreenProfiles.cmds)
 
     def save(self, d, name, text):
         with open(os.path.join(d, name), "w") as fh:
@@ -3724,15 +3171,13 @@ class Reports(unittest.TestCase):
     def test_index_lists_live_reports_then_saved_ones_newest_first(self):
         from tern import reports
         with tempfile.TemporaryDirectory() as d:
-            k = self.desk(d)
-            p = self.profile(k, "wide")
+            self.desk(d)
             for n in ("report-2026-11-09.txt", "report-2026-11-23.txt", "notes.txt", "report-x.json"):
                 self.save(d, n, "x\n")
             ix = reports.index(d)
-            self.assertEqual([r.id for r in ix], ["desk", "profiles", "profile:1", f"profile:{p.id}", "deleted",
+            self.assertEqual([r.id for r in ix], ["desk", "periods",
                                                   "saved:report-2026-11-23.txt", "saved:report-2026-11-09.txt"])
             self.assertEqual([r.label for r in ix if r.saved], ["2026-11-23", "2026-11-09"])
-            self.assertIn("wide", [r.label for r in ix])
 
     def test_the_screen_and_the_command_line_give_the_same_report(self):
         import contextlib, io
@@ -3740,10 +3185,8 @@ class Reports(unittest.TestCase):
         from tern import __main__ as cli, config as cfgmod, reports
         with tempfile.TemporaryDirectory() as d, mock.patch.object(cfgmod, "RUNTIME", d):
             k = self.desk(d)
-            p = self.profile(k, "wide")
             k._shadow(); k.shadow.settle({self.T: True})
-            for argv, rid in (([], "desk"), (["--profiles"], "profiles"), (["--profile", "1"], "profile:1"),
-                              (["--profile", "wide"], f"profile:{p.id}"), (["--deleted"], "deleted")):
+            for argv, rid in (([], "desk"), (["--periods"], "periods")):
                 out = io.StringIO()
                 with contextlib.redirect_stdout(out):
                     self.assertEqual(cli.main(["report", *argv]), 0)
@@ -3764,17 +3207,6 @@ class Reports(unittest.TestCase):
                 with self.assertRaises(LookupError):
                     reports.lines(d, rid)
 
-    def test_a_long_profile_name_is_cut_to_the_room(self):
-        from tern import reports
-        with tempfile.TemporaryDirectory() as d:
-            self.profile(self.desk(d), "a name that is forty characters long!!")
-            self.assertTrue(any("forty characters long" in l for l in reports.lines(d, "profiles")))
-            cut = reports.lines(d, "profiles", room=72)
-            table = cut[:cut.index("")]
-            self.assertLessEqual(max(map(len, table)), 72)
-            self.assertEqual(len({len(l) for l in table}), 1)                  # the columns still line up
-            self.assertTrue(any("…" in l for l in table))
-
     def test_feed_works_out_a_report_again_only_when_its_files_change(self):
         from unittest import mock
         from tern import reports
@@ -3794,18 +3226,17 @@ class Reports(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             feed = reports.Feed(check=0)
             self.until("this report could not be read", lambda: "\n".join(
-                (feed.get(d, "profile:gone") or reports.Report([], 0)).lines))
+                (feed.get(d, "gone") or reports.Report([], 0)).lines))
 
     def test_o_opens_the_reports_and_esc_closes_them(self):
         with tempfile.TemporaryDirectory() as d:
-            k, p, scr = self.setup(d)
+            k, scr = self.setup(d)
             self.save(d, "report-2026-11-23.txt", "saved on a Monday\n")
-            k.shadow.settle({self.T: True})
             status = "".join(scr.s.ch[39])
             self.cmds(); self.press("o")
             self.assertEqual(scr.overlay, "reports")
             self.until("base: the rule")
-            for what in ("LIVE", "SAVED", "variants", "profiles", "profile 1", "profile 2", "deleted", "2026-11-23"):
+            for what in ("LIVE", "SAVED", "variants", "by period", "2026-11-23"):
                 self.assertIn(what, self.text())
             self.assertEqual("".join(scr.s.ch[39])[:20], status[:20])          # the status line stays
             for key in (27, "o", "q"):
@@ -3816,11 +3247,11 @@ class Reports(unittest.TestCase):
 
     def test_arrows_pick_a_report_and_scroll_it(self):
         with tempfile.TemporaryDirectory() as d:
-            k, p, scr = self.setup(d)
+            k, scr = self.setup(d)
             self.save(d, "report-2026-11-23.txt", "".join(f"line {i:03}\n" for i in range(200)))
             c = self.curses
             self.press("o", c.KEY_DOWN)
-            self.until("each profile's book")
+            self.until("settings 1")
             self.press(c.KEY_END)                                              # the list: its last report
             self.until("line 000")
             self.press(c.KEY_RIGHT, c.KEY_DOWN)
@@ -3836,30 +3267,22 @@ class Reports(unittest.TestCase):
             self.press(c.KEY_LEFT, c.KEY_NPAGE)                                # PgDn pages the report from the list too
             self.assertNotIn("line 000", self.text())
             self.press(c.KEY_UP)
-            self.until("no deleted profiles")                                     # a new pick starts at its top
+            self.until("settings 1")                                     # a new pick starts at its top
             self.assertEqual(scr.rep_off, 0)
 
     def test_a_small_screen_shows_every_column_and_wraps_sentences(self):
-        from unittest import mock
-        from tern import dash, web
         with tempfile.TemporaryDirectory() as d:
-            k = self.desk(d); k.seeded.add(self.T)
-            self.profile(k, "a name that is forty characters long!!")
-            with mock.patch.object(dash, "Pal", web.WebPal):
-                self.k, self.scr = k, dash.Screen(web.VTerm(30, 100), d)
-            self.sync(); self.press("o")
+            k, scr = self.setup(d, 30, 100)
+            self.press("o")
             self.until("multi: every coin at once")
             self.press(" ")
             self.assertIn("2026-11-20)", self.text())                          # calm's description, wrapped, not cut
-            import curses
-            self.press(curses.KEY_DOWN)
-            self.until("each profile's book")
-            row = next(l for l in self.text().splitlines() if "a name that" in l and "base" in l)
+            row = next(l for l in self.text().splitlines() if "calm" in l and "+0.00" in l) if "+0.00" in self.text() else "+0.00"
             self.assertIn("+0.00", row)
 
     def test_the_wheel_scrolls_the_box_under_the_pointer(self):
         with tempfile.TemporaryDirectory() as d:
-            k, p, scr = self.setup(d)
+            k, scr = self.setup(d)
             self.save(d, "report-2026-11-23.txt", "".join(f"line {i:03}\n" for i in range(200)))
             self.press("o", self.curses.KEY_END)
             self.until("line 000")
@@ -3868,11 +3291,11 @@ class Reports(unittest.TestCase):
             self.assertNotIn("line 000", self.text())
             y, x, h, w = scr.rects["reports"]
             scr.wheel(y + 3, x + 3, -1); self.sync()
-            self.until("no deleted profiles")
+            self.until("settings 1")
 
     def test_a_report_that_is_gone_falls_back_to_the_first(self):
         with tempfile.TemporaryDirectory() as d:
-            k, p, scr = self.setup(d)
+            k, scr = self.setup(d)
             self.save(d, "report-2026-11-23.txt", "old one\n")
             self.press("o", self.curses.KEY_END)
             self.until("old one")
@@ -3884,7 +3307,7 @@ class Reports(unittest.TestCase):
     def test_gains_are_green_and_losses_red(self):
         from tern.dash import GREEN, RED
         with tempfile.TemporaryDirectory() as d:
-            k, p, scr = self.setup(d)
+            k, scr = self.setup(d)
             spans = scr.report_spans(["variant  hours entries open       P&L ¢/contract   win      t",
                                       "base         1       5    0     +1.82     +12.13  100%  -2.10"])
             color = {t.strip(): a for t, a in spans[1]}
@@ -3916,36 +3339,36 @@ class Reports(unittest.TestCase):
         import time
         from tern import reports
         with tempfile.TemporaryDirectory() as d:
-            p = self.profile(self.desk(d), "a name that is forty characters long!!")
+            self.desk(d)
             now = time.mktime((2026, 11, 30, 9, 5, 0, 0, 0, -1))
-            one = reports.save(d, "profiles", now=now)
-            two = reports.save(d, "profiles", now=now)
-            self.assertEqual([one, two], ["report-2026-11-30-0905-profiles.txt", "report-2026-11-30-0905-profiles-2.txt"])
+            one = reports.save(d, "periods", now=now)
+            two = reports.save(d, "periods", now=now)
+            self.assertEqual([one, two], ["report-2026-11-30-0905-by-period.txt", "report-2026-11-30-0905-by-period-2.txt"])
             got = reports.lines(d, "saved:" + one)
-            self.assertEqual(got[:2], ["2026-11-30 09:05 · tern report --profiles", ""])
-            self.assertEqual(got[2:], reports.lines(d, "profiles"))            # whole: no names cut to a screen
-            three = reports.save(d, f"profile:{p.id}", now=now + 60)
+            self.assertEqual(got[:2], ["2026-11-30 09:05 · tern report --periods", ""])
+            self.assertEqual(got[2:], reports.lines(d, "periods"))
+            three = reports.save(d, "desk", now=now + 60)
             self.save(d, "report-2026-11-30.txt", "x\n")
             self.save(d, "report-2026-11-23.txt", "x\n")
             self.assertEqual([r.label for r in reports.index(d) if r.saved],
-                             [f"11-30 09:06 {p.id}", "11-30 09:05 profiles-2", "11-30 09:05 profiles",
+                             ["11-30 09:06 variants", "11-30 09:05 by-period-2", "11-30 09:05 by-period",
                               "2026-11-30", "2026-11-23"])
             self.assertFalse([n for n in os.listdir(d) if n.endswith(".tmp")])
-            self.assertEqual(reports.index(d)[5].id, "saved:" + three)
+            self.assertEqual(reports.index(d)[2].id, "saved:" + three)
 
     def test_s_saves_the_report_shown(self):
         with tempfile.TemporaryDirectory() as d:
-            k, p, scr = self.setup(d)
+            k, scr = self.setup(d)
             saved = lambda: [n for n in os.listdir(d) if n.startswith("report-")]
             self.cmds(); self.press("o", self.curses.KEY_DOWN)
             self.assertIn("─save─", self.text())
             self.press("s")
             self.until("saved runtime/report-")
             [name] = saved()
-            self.assertTrue(name.endswith("-profiles.txt"), name)
-            self.until(f"{name[12:17]} {name[18:20]}:{name[20:22]} profiles ")     # listed, whole
+            self.assertTrue(name.endswith("-by-period.txt"), name)
+            self.until(f"{name[12:17]} {name[18:20]}:{name[20:22]} by-period")     # listed, whole
             self.press(self.curses.KEY_END)
-            self.until("· tern report --profiles")
+            self.until("· tern report --periods")
             self.press("s")
             self.assertIn("already saved", self.text())
             self.assertEqual(saved(), [name])
@@ -3956,7 +3379,7 @@ class Reports(unittest.TestCase):
         from tern import dash
         with tempfile.TemporaryDirectory() as d, mock.patch.object(dash, "engine_alive", lambda r: True), \
                 mock.patch.object(dash, "stop_engine", lambda *a: "asked to stop"):
-            k, p, scr = self.setup(d)
+            k, scr = self.setup(d)
             self.cmds(); self.press("s")
             self.assertIsNone(scr.modal)                                       # s used to stop it: now it says where it went
             self.assertIn("S stops / starts the engine", self.text())
@@ -3973,7 +3396,7 @@ class Reports(unittest.TestCase):
         from unittest import mock
         from tern import reports
         with tempfile.TemporaryDirectory() as d:
-            k, p, scr = self.setup(d)
+            k, scr = self.setup(d)
             self.press("o")
             with mock.patch.object(reports, "lines", side_effect=OSError(28, "No space left on device")):
                 self.press("s")
@@ -4012,7 +3435,7 @@ class Reports(unittest.TestCase):
             self.assertIn(name, out.getvalue())
             self.assertTrue(name.endswith("-summary.txt"), name)
             text = "\n".join(reports.lines(d, "saved:" + name))
-            for what in ("mode paper", "paper: equity", "base: the rule", "each profile's book"):
+            for what in ("mode paper", "variants on paper", "base: the rule", "the live gate"):
                 self.assertIn(what, text)
 
     def test_report_timer_writes_the_units(self):
@@ -4040,7 +3463,7 @@ class Reports(unittest.TestCase):
 
     def test_the_hint_and_the_help_name_the_key(self):
         with tempfile.TemporaryDirectory() as d:
-            k, p, scr = self.setup(d)
+            k, scr = self.setup(d)
             self.assertIn("─reports─", self.text())
             text = "\n".join(l if isinstance(l, str) else "".join(t for t, _ in l) for l in scr.help_lines(200))
             self.assertIn("reports: every record, live and saved", text)

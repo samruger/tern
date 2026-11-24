@@ -31,8 +31,6 @@ class Strategy:
     max_spread: float = 0.02
     contracts: float = 5.0                     # per strike per slot; this and the next are the built-in variants'
     max_hour_cost: float = 60.0                # dollars a variant may put into one hourly event (own ones hold theirs)
-    variant: str = "base"                      # the shadow variant paper and live trade (shadow.VARIANTS); set from
-                                               # the screen's variants box. Live needs that variant's own record past the gate.
 
 
 @dataclass
@@ -41,10 +39,10 @@ class Live:
     capital_usd: float = 100.0     # most the live book may have at risk (cost of open positions) at once
     max_order_usd: float = 25.0    # largest single live order the rule may send
     max_daily_loss: float = 30.0   # live loss since local midnight that cancels everything and returns to paper
-    auto_needs_gate: bool = True   # the rule trades live only after its paper record passes the gate
+    auto_needs_gate: bool = True   # live trades a variant only after its paper record passes the gate
     contracts: float = 5.0         # contracts live buys per strike per slot (paper: the variant's)
-    profile: str = "1"             # the profile whose rule live trades (d in the screen's profiles box); "1" is the
-                                   # desk. Its variant must pass the gate on that profile's own record.
+    variant: str = ""              # the variant live trades (L on the screen sets it to the one selected). It must pass
+                                   # the gate on its own record. Live never falls back to another.
 
 
 @dataclass
@@ -105,7 +103,10 @@ class Config:
                 out[k] = v
             return out
         top = keep(cls, d)
-        top["live"] = Live(**keep(Live, d.get("live")))
+        live, strat = d.get("live") or {}, d.get("strategy") or {}
+        if "variant" not in live and isinstance(strat.get("variant"), str) and live.get("profile", "1") in ("1", ""):
+            live = {**live, "variant": strat["variant"]}     # from before there was one list: what live would have traded
+        top["live"] = Live(**keep(Live, live))
         top["strategy"] = Strategy(**keep(Strategy, d.get("strategy")))
         top["gate"] = Gate(**keep(Gate, d.get("gate")))
         top["web"] = Web(**keep(Web, d.get("web")))
@@ -145,11 +146,11 @@ SETTINGS = [
     Setting("live", "contracts", "contracts a strike", 1, 100, 1, kind="n", risk=+1,
             what="contracts live buys per strike per slot; on paper each variant has its own"),
     Setting("gate", "min_days", "days of hours traded", 1, 90, 1, kind="n", risk=-1, group="GATE",
-            what="hours the variant in use has traded on paper, in days, before live may trade it"),
+            what="hours a variant has traded on paper, in days, before live may trade it"),
     Setting("gate", "min_entries", "settled entries", 10, 10_000, 50, kind="n", risk=-1,
-            what="settled paper entries the variant in use needs before live may trade it"),
+            what="settled paper entries a variant needs before live may trade it"),
     Setting("gate", "min_pnl", "paper P&L at least", -1_000, 10_000, 10, risk=-1,
-            what="paper P&L after fees the variant in use needs before live may trade it"),
+            what="paper P&L after fees a variant needs before live may trade it"),
     Setting("", "alerts", "desktop alerts", kind="bool", group="ALERTS",
             what="pop-ups for live orders and settlements, live turning off, errors and the engine stopping"),
     Setting("web", "enabled", "web screen", kind="bool", group="WEB",

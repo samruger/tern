@@ -16,7 +16,7 @@ import time
 import uuid
 
 from . import config as cfgmod
-from . import profiles as profmod
+from . import names as namesmod
 from . import reports
 from . import shadow as shadowmod
 from . import variants as varmod
@@ -290,37 +290,39 @@ HELP = [
     ("", "tern trades Kalshi's hourly crypto above-or-below markets by itself. Every trade comes from the "
          "rule; there are no manual orders. The engine runs on its own (tern.service) and keeps trading "
          "with this screen closed."),
-    ("THE RULE", "Kalshi prices long shots too high and favorites too low. With {variant}, the variant in use, the "
+    ("THE RULE", "Kalshi prices long shots too high and favorites too low. With {variant}, the variant selected, the "
                  "rule enters at {minutes} minutes before each "
                  "hourly close: it buys the favorite side of every strike whose mid is {band} (spread "
                  "{spread}c or less) at the ask, {contracts:g} contracts a strike and at most ${hour_cost:,.0f} an hour "
                  "a coin ({rule_coins}){caps}, and holds it to settlement. Over 67 days of BTC history the base rule "
                  "(75-95c, 25 20 15 10 minutes, 2c) made +0.6c a contract on data it was not chosen on."),
-    ("VARIANTS", "Each variant runs on paper side by side with the others, with its own record and "
+    ("VARIANTS", "Each variant runs on paper side by side with the others, with its own record, its own cash and "
                  "real fees. The built-in ones:\n"
                  "{variants}\n"
-                 "The one marked ● in the variants box (page 2: p) is what the paper book trades, and live too once it "
-                 "passes the gate. Highlight another with ↑↓ and press enter to switch; while live is on or armed "
-                 "you type \"live\" to confirm. Open positions ride to settlement.\n"
+                 "Highlight one with ↑↓ (page 2: p) and press (enter) to select it, marked ●: the book, equity, ladder, "
+                 "contract and gate show it. Selecting changes nothing that trades.\n"
                  "A variant holds everything about how it trades: its rule, contracts a strike, most an hour and paper start. "
-                 "It never buys more than the cash it has left. Once saved it never changes. Make your own, marked +, in any profile: (E) in the variants box opens the "
-                 "highlighted one's settings as a draft, and (s) there saves them as a new variant with an empty record. "
-                 "Saving changes nothing that trades; enter does. (D) deletes one, (N) renames it. At most {max_own} in "
-                 "a profile; a deleted one's record stays on file.\n"
+                 "It never buys more than the cash it has left. Once saved it never changes. Make your own, marked +: (n) opens "
+                 "base's settings as a draft, (E) the highlighted one's, and (s) there saves a new variant with an empty "
+                 "record; the one it came from and its record stay. (space) turns one off or on, (D) deletes one, (N) renames "
+                 "it, (R) starts the selected one over: its record so far is kept in the reports. At most {max_own} of your "
+                 "own; a deleted one's record stays on file.\n"
                  "Retired, records kept and listed by (tern report):\n"
                  "{retired}"),
-    ("THE GATE", "(g) Live trades the variant in use only after its own paper record has {days:g} days of hours "
-                 "traded, {entries} settled entries and P&L of ${pnl:g} or more after fees. Hours with the engine "
-                 "off don't count, and switching variants never skips it: the new one needs its own record."),
-    ("LIVE", "(L) arms live: it asks you to type \"live\". It needs KALSHI_KEY_ID and KALSHI_KEY_FILE in "
+    ("THE GATE", "(g) Live trades a variant only after its own paper record has {days:g} days of hours "
+                 "traded, {entries} settled entries and P&L of ${pnl:g} or more after fees. Hours with the engine or the "
+                 "variant off don't count, and moving live to another never skips it: that one needs its own record."),
+    ("LIVE", "(L) goes live with the selected variant: it asks you to type \"live\". Selecting another one later does not "
+             "move live; (L) with another selected asks whether to move it there, and (L) with live's own selected turns it "
+             "off. It needs KALSHI_KEY_ID and KALSHI_KEY_FILE in "
              "~/.config/tern/kalshi.env. The status line turns red (● LIVE) once Kalshi accepts the key. "
              "Caps: ${risk:,.0f} at risk at once and ${order:,.0f} per order; a loss of ${day:,.0f} since local midnight "
              "turns live off and leaves open positions to settle. Every order is immediate-or-cancel. Kalshi "
-             "is the record: its positions overwrite the engine's every 15 seconds. (L) again disarms."),
-    ("COINS", "(tab) and shift+tab step through {coins}. (r) opens the variant in use with the coin on screen "
+             "is the record: its positions overwrite the engine's every 15 seconds."),
+    ("COINS", "(tab) and shift+tab step through {coins}. (r) opens the selected variant with the coin on screen "
               "turned on or off, to save as a new one. The 67-day test was BTC only, so the rule trades BTC unless you turn others on."),
-    ("PAPER", "The paper book starts at ${paper:,.0f}, the paper start of the variant in use. (R) wipes it and its record of the rule (it asks y "
-              "first); the variants' records are kept."),
+    ("PAPER", "{variant} starts with ${paper:,.0f}, its paper start. Every variant that is on trades on paper all the "
+              "time, live or not, so its record keeps growing."),
 ]
 HELP_WIDTH = 78                                   # the prose wraps here; the key legend may run wider
 
@@ -332,18 +334,16 @@ HELP_BOXES = [
     ("", "", "  YES/NO), and how far it is from being bought. Starts on the nearest ★"),
     ("³", "ladder", "every strike high to low: bid, ask, probability bar, spread, volume and"),
     ("", "", "  your position; ★ marks the band. ↑↓ picks the strike the contract box shows"),
-    ("⁴", "book", "equity, P&L, cash, at risk, fees, the paper record of the rule, then open"),
+    ("⁴", "book", "the selected variant's equity, P&L, cash, at risk, fees and record, then open"),
     ("", "", "  positions, settlements and fills; (v) switches paper / live"),
-    ("⁵", "log", "what the engine did, newest at the bottom; scroll back with ↑↓ (page 2: ⁴)"),
+    ("⁵", "log", "what the engine did, newest at the bottom; scroll back with ↑↓ (page 2: ³)"),
     ("¹", "variants", "page 2: each variant's hours, entries, P&L, ¢ a contract, win rate, t,"),
-    ("", "", "  and gate progress (yellow: still short); ● in use; the highlighted"),
-    ("", "", "  one's P&L by hour below; + is one you made in this profile"),
-    ("²", "profiles", "page 2: profile 1 (the desk) and the profiles you made, each running"),
-    ("", "", "  the built-in variants and its own; ● is the one shown"),
-    ("³", "equity", "page 2: that book's equity by the minute"),
-    ("", "pages", "(p) flips page 1 (boxes 1-5) and page 2 (1 variants, 2 profiles, 3 equity,"),
-    ("", "", "  4 log); \"page 1/2\" at the log's bottom right says which. A screen big enough"),
-    ("", "", "  for every box shows them all as one, numbered 1-8. A box's number zooms it"),
+    ("", "", "  and gate progress (yellow: still short); ● selected, L live's, + one you"),
+    ("", "", "  made; the highlighted one's P&L by hour below"),
+    ("²", "equity", "page 2: the selected variant's equity by the hour (live's by the minute)"),
+    ("", "pages", "(p) flips page 1 (boxes 1-5) and page 2 (1 variants, 2 equity, 3 log);"),
+    ("", "", "  \"page 1/2\" at the log's bottom right says which. A screen big enough"),
+    ("", "", "  for every box shows them all as one, numbered 1-7. A box's number zooms it"),
     ("", "", "  to the whole screen; \"3 back\" on the bottom border: the same number restores"),
     ("", "status", "bottom row: PAPER or LIVE, the coin's price and 1h change, the hourly event"),
     ("", "", "  and time to its close, rule ON/off with the next slot (+live when live"),
@@ -374,42 +374,35 @@ HELP_KEYS = [
      ("look", [("p", "page 1 / page 2"),
                ("1-5", "page 1: zoom spot, contract, ladder,"),
                ("", "book or log to the whole screen"),
-               ("1-4", "page 2: variants, profiles, equity, log"),
+               ("1-3", "page 2: variants, equity, log"),
                ("", "(the same number again goes back)"),
                ("c", "spot chart span: 5m 15m 1h 24h"),
                ("v", "book and equity: paper / live"),
-               ("w", "watch the highlighted variant: book,"),
-               ("", "equity and band as if it traded (view only)"),
                ("o", "reports: every record, live and saved"),
                ("", "(←→ ↑↓ move, PgUp PgDn page, s saves one)"),
                ("t T", "next / previous of {themes} color themes")])],
-    [("trade", [("enter", "use the highlighted variant (page 2)"),
-                ("E", "the highlighted variant's settings, as a"),
-                ("", "draft: s saves a new variant, esc discards"),
+    [("variants", [("enter", "select the highlighted one (page 2): the book,"),
+                ("", "equity, band and gate show it"),
+                ("n", "new one, from base's settings, as a draft:"),
+                ("", "s saves it, esc discards"),
+                ("E", "the same from the highlighted one's settings;"),
+                ("", "that one and its record stay as they are"),
+                ("space", "turn it on / off"),
                 ("D", "delete it, if it is one you made"),
-                ("r", "E on the variant in use, this coin flipped"),
+                ("N", "rename it: its record keeps its own name"),
+                ("R", "start the selected one over (asks y)"),
+                ("r", "E on the selected one, this coin flipped")]),
+     ("trade", [("L", "live: on with the selected variant, off, or"),
+                ("", "moved to it (type \"live\")"),
                 ("g", "gate, variants and go-live checklist"),
-                ("e", "settings: this profile on/off, live limits,"),
-                ("", "gate, alerts, web, log"),
-                ("L", "arm (type \"live\") / disarm live"),
-                ("R", "reset the paper book (asks y)")]),
-     ("profiles", [("enter", "view the highlighted profile (page 2)"),
-                   ("space", "turn it on / off"),
-                   ("n", "new profile: the variant profile 1 trades"),
-                   ("", "and the built-in ones, empty records"),
-                   ("d", "live trades its rule (L), past its own"),
-                   ("", "gate; asks \"live\" while live is armed"),
-                   ("D", "delete it (type delete); kept on disk"),
-                   ("N", "rename the highlighted profile, or (in the"),
-                   ("", "variants box) a variant: its record keeps"),
-                   ("", "its own name")]),
+                ("e", "settings: live limits, gate, alerts, web, log")]),
      ("engine", [("S", "stop (asks y) / start the engine"),
                  ("h ?", "this help"),
                  ("q", "close the screen; the engine keeps going")]),
      ("settings", [("↑↓", "pick a setting"),
                    ("←→  - +", "step it down / up, or flip it"),
                    ("enter 0-9", "type a value, enter saves"),
-                   ("s", "in a variant (E): save as a new variant"),
+                   ("s", "in a variant (n, E): save as a new variant"),
                    ("esc", "close; in a variant: throw changes away")]),
      ("in here", [("↑↓ PgUp PgDn", "scroll this help or the gate"),
                   ("Home End", "top / bottom"),
@@ -420,9 +413,8 @@ HELP_KEYS = [
 HELP_CLI = [
     ("tern", "this screen (starts the engine in paper if it is down)"),
     ("tern report", "every variant's record, deleted and retired ones too (o shows it here)"),
-    ("tern report --profile NAME", "one profile's variants and their rules"),
-    ("tern report --profiles", "every profile's book side by side"),
-    ("tern report --save", "save a summary: status, variants, profiles (report-timer: weekly)"),
+    ("tern report --periods", "the same by settings period"),
+    ("tern report --save", "save a summary: status, variants (report-timer: weekly)"),
     ("tern status", "a plain-text summary"),
     ("tern live-check", "test the Kalshi key: balance and positions, no orders"),
     ("systemctl --user status tern", "the engine's service"),
@@ -431,32 +423,30 @@ HELP_CLI = [
 # what the log box may show (settings, e): key -> how the settings box names it
 LOG_FILTERS = {"all": "everything", "no_shadow": "no shadow lines", "quiet": "live, warnings, commands",
                "trades": "trades only"}
-TRADE_LINE = re.compile(r"^(?:paper|live): (?:\d+m slot on .*, [1-9]\d* bought$|\S+ (?:settled|finalized) )")
-# rows for the whole desk, not one profile's: the same in the settings box whichever profile is viewed
-DESK_KEYS = {r.key for r in cfgmod.SETTINGS}
+TRADE_LINE = re.compile(r"^(?:live: \d+m slot on .*, [1-9]\d* bought$|paper: \d+m slot on .* bought$|live: \S+ (?:settled|finalized) )")
 SCREEN_SETTINGS = [cfgmod.Setting("screen", "log", "log shows", kind="choice", group="SCREEN",
                                   what="shadow: the variants' hourly results · quiet hides paper too · trades: buys and settlements only")]
 
 # spot chart spans: c cycles them in this order (the engine sends ~15 min of seconds and 24h of minutes)
 CHARTS = {"5m": 300, "15m": 900, "1h": 3600, "24h": 86400}
 
-# every box; on each view its number key is its place in that view's reading order (page 2: 1 variants ... 4 log)
-BOXES = ["spot", "contract", "ladder", "book", "equity", "log", "variants", "profiles"]
+# every box; on each view its number key is its place in that view's reading order (page 2: 1 variants ... 3 log)
+BOXES = ["spot", "contract", "ladder", "book", "equity", "log", "variants"]
 PANELS = BOXES                                   # older name, kept for the web and tests
 # each view's rows of boxes, top to bottom; p flips page1 / page2, and a screen big enough for every box at its
 # smallest shows them all as one (merged). A box's number zooms it to the whole screen; the same number restores.
 PAGES = {"page1": [("spot", "contract"), ("ladder", "book"), ("log",)],          # equity is page 2's
-         "page2": [("variants",), ("profiles", "equity"), ("log",)],
-         "merged": [("spot", "contract"), ("ladder", "book"), ("variants", "profiles"), ("equity", "log")]}
+         "page2": [("variants",), ("equity",), ("log",)],
+         "merged": [("spot", "contract"), ("ladder", "book"), ("variants", "equity"), ("log",)]}
 PAGE_NAMES = {1: "trade", 2: "compare"}
 SHARE = {"spot": 0.36, "contract": 0.36, "ladder": 0.44, "book": 0.44, "equity": 0.28, "log": 0.28}   # flexible rows' height shares
 DROP_FIRST = ("↑↓", "space")                     # border hints that go before the others when a box is narrow
-LEFT_SHARE = {"spot": 0.6, "ladder": 0.52, "equity": 0.4, "variants": 0.6, "profiles": 0.6}         # a pair's left width share
+LEFT_SHARE = {"spot": 0.6, "ladder": 0.52, "equity": 0.4, "variants": 0.6}         # a pair's left width share
 MIN_H = {"spot": 6, "contract": 8, "ladder": 8, "book": 9, "equity": 6, "log": 4}   # a flexible box's smallest height
-WANT_W = {"ladder": 56, "variants": 80, "profiles": 70}   # the width a box needs to show all its columns (others 40)
+WANT_W = {"ladder": 56, "variants": 81}   # the width a box needs to show all its columns (others 40)
 SUPER = "¹²³⁴⁵⁶⁷⁸⁹"
-LEFT_MIN = {"ladder": 56, "variants": 56, "profiles": 56}   # the ladder's columns need this much before its bar has any room
-SCROLLS = ["ladder", "variants", "profiles", "book", "log"]   # the boxes ←→ focus and ↑↓ scroll
+LEFT_MIN = {"ladder": 56, "variants": 57}   # the ladder's columns need this much before its bar has any room
+SCROLLS = ["ladder", "variants", "book", "log"]   # the boxes ←→ focus and ↑↓ scroll
 ORPHAN_DROP = ["t", "c", "R", "L", "v", "r", "", "h", "S", "g", "q", "tab"]   # off-screen boxes' hints, first dropped first
 COMFY_H = {"spot": 10, "contract": 10, "ladder": 12, "book": 12, "equity": 8, "log": 8}   # sizes the merged view needs
 
@@ -464,7 +454,7 @@ COMFY_H = {"spot": 10, "contract": 10, "ladder": 12, "book": 12, "equity": 8, "l
 # the reports screen (o): the list's width, and the lines of a report that are a table's header, a table's row
 # (name, then whole-number columns and a P&L) and a name with what it is
 REPORT_LIST_W = 28
-REPORT_HEAD = re.compile(r"^\s*(?:variant|profile)\s.*\bhours\s+entries\b")
+REPORT_HEAD = re.compile(r"^\s*variant\s.*\bhours\s+entries\b")
 REPORT_ROW = re.compile(r"^(\s*)(\S.*?)(\s+\d+\s+\d+(?:\s+\d+)?\s+[+-]\d+\.\d\d\s+\S.*)$")
 REPORT_NAME = re.compile(r"^(\s*)([a-z0-9][\w-]*(?: \([^)]*\))?)(: )(.+)$")
 
@@ -490,40 +480,22 @@ PANEL_KEYS = {
     "spot": lambda s: [("tab", " next coin"), ("r", "ule on/off", "") if s.rule_on() is None
                        else ("r", "ule ", "on", "/off") if s.rule_on() else ("r", "ule on/", "off"),   # pink: the state now
                        ("c", "hart " + s.chart)],
-    "book": lambda s: [("v", "iew"), ("L", "ive"), ("R", "eset")],
+    "book": lambda s: [("v", "iew"), ("L", "ive"), ("R", "estart")],
     "contract": lambda s: [("t", "heme ", s.P.name)],
     "log": lambda s: [("g", "ate"), ("", "s", "e", "ttings"), ("", "rep", "o", "rts"), ("S", "top" if s.alive else "tart"), ("h", "elp"), ("q", "uit")],
 }
 
 
-def profile_overlay(st: dict, pid: str) -> dict:
-    """The status as profile pid would show it: its variants, its picked variant's record as the paper book,
-    its settings and rule. Panels read it as they read profile 1's. Viewing changes nothing about what trades."""
-    pr = next((p for p in st.get("profiles") or [] if p.get("id") == pid), None)
-    if pr is None:
+def selected_overlay(st: dict, name: str | None) -> dict:
+    """The status as the screen shows it with variant `name` selected: its record as the paper book, its rule, its gate.
+    Selecting changes nothing that trades. live_gate is the engine's: the variant live trades."""
+    row = next((v for v in st.get("variants") or [] if v["name"] == name), None)
+    if row is None:
         return st
-    rows = pr.get("variants") or []
-    out = dict(st)
-    out.update(profile_name=pr["name"], profile_id=pid, mode="paper", live_enabled=False, auto_live=False,
-               variants=rows, shadow=rows, live={})
-    pv = (st.get("pviews") or {}).get(pid)
-    if not pv:                                   # the engine sends it within a second of hearing which one
-        out.update(profile_wait=True, paper={}, views={}, settings={}, gate={}, strategy=None)
-        return out
-    var = pr.get("variant")
-    rec = next((v for v in rows if v["name"] == var), {})
-    out.update(views=pv.get("views") or {}, strategy=pv.get("strategy"), settings=pv.get("settings") or {},
-               paper=(pv.get("views") or {}).get(var) or {}, profile_log=pv.get("log") or [],
-               gate={**(pv.get("gate") or {}), "entries": rec.get("entries", 0), "open": rec.get("open", 0),
-                     "pnl": rec.get("pnl", 0.0), "win": rec.get("win"), "per_contract": rec.get("per_contract") or 0.0})
-    return out
-
-
-def rule_text(r: dict) -> str:
-    """One profile's rule in a line: band, slots, spread, coins, size."""
-    coins = " ".join(cfgmod.SERIES.get(c, c).split("-")[0] for c in r.get("series") or [])
-    return (f"{r['band_lo'] * 100:.0f}-{r['band_hi'] * 100:.0f}¢ · slots {' '.join(str(m) for m in r.get('minutes') or [])}"
-            f" · ≤{r['max_spread'] * 100:.0f}¢ wide · {coins} · {r['contracts']:g}/strike · ${r['max_hour_cost']:g}/h")
+    view = (st.get("views") or {}).get(name) or {}
+    return {**st, "paper": view, "strategy": view.get("strategy"), "live_gate": st.get("gate") or {},
+            "gate": {**(row.get("gate") or {}), "entries": row.get("entries", 0), "open": row.get("open", 0),
+                     "pnl": row.get("pnl", 0.0), "win": row.get("win"), "per_contract": row.get("per_contract") or 0.0}}
 
 
 class Screen:
@@ -542,11 +514,11 @@ class Screen:
         self.overlay: str | None = None        # "help", "gate" or "settings" while one is open
         self.set_sel = 0                       # the settings row the cursor is on
         self.set_buf: str | None = None        # the value being typed in the settings box, or None
-        self.edit_var: str | None = None       # E: the variant the box is open on (None: the settings box, e)
+        self.edit_var: str | None = None       # n, E: the variant the box's draft starts from (None: the settings box, e)
+        self.edit_new = False                  # ... opened with n: a new one, from base's settings
         self.draft: dict = {}                  # E: field -> value changed there and not saved
         self.set_back: int | None = None       # the settings row to go back to after E
-        self.edit_prof: str | None = None      # ... and the profile it was opened in
-        self.var_new: dict | None = None       # a draft was sent to be saved: cid, and its profile, variant and draft
+        self.var_new: dict | None = None       # a draft was sent to be saved: cid, and its variant and draft
         self.set_sent: dict[str, tuple] = {}   # key -> (value, time) sent but not yet in the status
         self.log_filter = "all"                # what the log box shows: LOG_FILTERS
         self.ov_off, self.ov_room, self.ov_len = 0, 1, 0   # its scroll: first line shown, lines that fit, lines in all
@@ -567,10 +539,8 @@ class Screen:
         self.focus = "ladder"                  # the box ↑↓ scroll; ←→ move it
         self.var_sel: str | None = None        # the variant the cursor is on in the variants box
         self.var_top = 0                       # first variant row shown when the list is taller than its box
-        self.watch: str | None = None          # w: a variant shown as if it traded (view only; trading is unchanged)
-        self.profile: str | None = None        # the profile shown (profiles.py); None is profile 1
-        self.prof_sel: str | None = None       # the profile the cursor is on in the profiles box
-        self.raw: dict = {}                    # status.json as the engine wrote it; self.st is it as the profile shows it
+        self.variant: str | None = None        # the variant selected (enter): the book, equity, band and gate show it
+        self.raw: dict = {}                    # status.json as the engine wrote it; self.st is it with that one selected
         self.set_sub = 0                       # in a slots / coins row of the settings box: the choice the cursor is on
         self.rep_list: list = []               # o: the reports there are (reports.index), looked up every 2 s
         self.rep_at = 0.0
@@ -591,12 +561,10 @@ class Screen:
                 self.series = d["series"]
             if d.get("chart") in CHARTS:
                 self.chart = d["chart"]
-            if isinstance(d.get("watch"), str):
-                self.watch = d["watch"]
+            if isinstance(d.get("variant"), str):
+                self.variant = d["variant"]
             if d.get("log_filter") in LOG_FILTERS:
                 self.log_filter = d["log_filter"]
-            if isinstance(d.get("profile"), str):
-                self.profile = d["profile"]
             self.P.set_theme(d.get("theme"))
         except (OSError, json.JSONDecodeError, AttributeError, TypeError):
             pass
@@ -614,50 +582,48 @@ class Screen:
                     self.st_stamp = stamp
         except (OSError, json.JSONDecodeError):
             pass
-        self.apply_profile()
+        self.apply_selected()
         for cid in list(self.pending):
             res = (self.st.get("results") or {}).get(cid)
             if res:
                 self.say(res); self.pending.pop(cid)
                 if self.var_new and self.var_new["cid"] == cid:
-                    self.var_new = None                  # refused (the draft stays open), or saved in a profile not shown now
+                    self.var_new = None                  # refused: the draft stays open
             elif time.time() - self.pending[cid] > 15:
                 self.say("no answer from the engine (is it running? press S)"); self.pending.pop(cid)
                 if self.var_new and self.var_new["cid"] == cid:
                     self.var_new = None
 
-    def apply_profile(self) -> None:
-        """self.st from self.raw: as is for profile 1, through profile_overlay for another. A profile that is
-        gone (deleted) puts the screen back on profile 1."""
+    def apply_selected(self) -> None:
+        """self.st from self.raw, with the selected variant's record in it. One that is gone (deleted) or was never
+        picked: the one live trades, else the first."""
         raw = self.raw
-        if self.profile and isinstance(raw.get("profiles"), list) and \
-                self.profile not in [p.get("id") for p in raw["profiles"]]:
-            self.profile, self.watch = None, None
-            self.forget_sent()
-            self.save_prefs(); self.write_view()
-            self.say("that profile is gone: back to profile 1")
-        self.st = profile_overlay(raw, self.profile) if self.profile else raw
-        if self.var_new and self.var_new["profile"] == self.profile:
+        names = [v["name"] for v in raw.get("variants") or []]
+        if names and self.variant not in names:
+            was, live = self.variant, (raw.get("live_cfg") or {}).get("variant")
+            self.variant = live if live in names else names[0]
+            self.st = selected_overlay(raw, self.variant)
+            if was is not None:
+                self.say(f"{was} is gone: {self.vn(self.variant)} is selected")
+            self.save_prefs()
+        self.st = selected_overlay(raw, self.variant)
+        if self.var_new:
             vn = self.var_new                        # a draft was saved: highlight the new variant, close its box
             new = next((v["name"] for v in self.st.get("variants") or [] if v.get("by") == vn["cid"]), None)
             if new:
                 self.var_new, self.var_sel = None, new
-                if (self.edit_var, self.edit_prof, self.draft) == (vn["variant"], vn["profile"], vn["draft"]):
+                if (self.edit_var, self.draft) == (vn["variant"], vn["draft"]):
                     self.close_settings()            # (not one opened since, or changed since)
-        if self.edit_var and (self.edit_prof != self.profile or
-                              self.st.get("variants") and self.vrow(self.edit_var) is None):
+        if self.edit_var and self.st.get("variants") and self.vrow(self.edit_var) is None:
             self.say("that variant is gone" + (": the changes were not saved" if self.draft else ""))
-            self.close_settings()                    # deleted meanwhile, or another profile is shown
+            self.close_settings()                    # deleted meanwhile
             if (self.modal or {}).get("type") == "vname":
                 self.modal = None
-
-    def pname(self) -> str:
-        return self.st.get("profile_name") or "profile 1"
 
     def write_view(self) -> None:
         tmp = os.path.join(self.fast, "view.json.tmp")
         with open(tmp, "w") as fh:
-            json.dump({"series": self.series, "ticker": self.sel, **({"profile": self.profile} if self.profile else {})}, fh)
+            json.dump({"series": self.series, "ticker": self.sel}, fh)
         os.replace(tmp, os.path.join(self.fast, "view.json"))
 
     def save_prefs(self) -> None:
@@ -665,8 +631,7 @@ class Screen:
             with open(self.prefs_path + ".tmp", "w") as fh:
                 json.dump({"page": self.page,
                            "series": self.series, "chart": self.chart, "theme": self.P.name,
-                           "watch": self.watch, "log_filter": self.log_filter,
-                           "profile": self.profile}, fh)
+                           "variant": self.variant, "log_filter": self.log_filter}, fh)
             os.replace(self.prefs_path + ".tmp", self.prefs_path)
         except OSError:
             pass
@@ -674,21 +639,17 @@ class Screen:
     def view(self, H: int, W: int) -> str:
         """merged when every box fits at a comfortable size, else the page p is on."""
         rows = PAGES["merged"]
-        need = sum(max(self.fixed_h(n)[0] if n in ("variants", "profiles") else COMFY_H[n] for n in row) for row in rows)
+        need = sum(max(self.fixed_h(n)[0] if n == "variants" else COMFY_H[n] for n in row) for row in rows)
         wide = max(sum(WANT_W.get(n, 40) for n in row) for row in rows)
         return "merged" if need <= H - 1 and wide <= W else f"page{self.page}"
 
     def fixed_h(self, name: str) -> tuple[int, int]:
-        """(wanted, smallest) height of a box that keeps all its rows: variants (its rows, then the tip line)
-        and profiles (scrolls, so it can give rows back first)."""
-        if name == "variants":
-            n = max(1, len(self.st.get("variants") or []))
-            return n + 4, n + 3
-        n = max(1, len(self.prof_rows()))
-        return n + 6, 7
+        """(wanted, smallest) height of the variants box: its rows, then the tip line; it scrolls, so it can give rows back."""
+        n = max(1, len(self.st.get("variants") or []))
+        return n + 4, min(n + 3, 10)
 
     def toggle(self, i: int) -> None:
-        """1-8: zoom this view's i-th box (its number on its border) to the whole screen; its number again restores."""
+        """1-7: zoom this view's i-th box (its number on its border) to the whole screen; its number again restores."""
         H, W = self.s.getmaxyx()
         v = self.view(H, W)
         here = view_boxes(v)
@@ -734,21 +695,20 @@ class Screen:
         return any(n == name for n, *_ in self.layout(H, W))
 
     def fit(self, rows: list[tuple[str, ...]], avail: int) -> list[int]:
-        """Each row's height. Rows holding variants or profiles take what those need to show every row;
-        the others share the rest by their shares, each at least its smallest. If even that is too much,
-        profiles gives rows back first (it scrolls), then variants its tip line, then all shrink alike."""
-        fixed = [max((self.fixed_h(n) if n in ("variants", "profiles") else (MIN_H[n], MIN_H[n])) for n in row)
-                 if any(n in ("variants", "profiles") for n in row) else None for row in rows]
+        """Each row's height. The row holding variants takes what that needs to show every row; the others share the
+        rest by their shares, each at least its smallest. If even that is too much, variants gives rows back first
+        (it scrolls), then all shrink alike."""
+        fixed = [max((self.fixed_h(n) if n == "variants" else (MIN_H[n], MIN_H[n])) for n in row)
+                 if "variants" in row else None for row in rows]
         mins = [max([MIN_H[n] for n in row if n in MIN_H] or [0]) if f is None else 0 for row, f in zip(rows, fixed)]
         h = [f[0] if f else m for f, m in zip(fixed, mins)]
         over = sum(h) - avail
-        for prefer in ("profiles", "variants"):          # give back down to the smallest, profiles first
-            for i, row in enumerate(rows):
-                if over > 0 and fixed[i] and prefer in row:
-                    floor = max([fixed[i][1]] + [MIN_H[n] for n in row if n in MIN_H])
-                    give = min(over, h[i] - floor)
-                    if give > 0:
-                        h[i] -= give; over -= give
+        for i, row in enumerate(rows):                   # give back down to the smallest
+            if over > 0 and fixed[i]:
+                floor = max([fixed[i][1]] + [MIN_H[n] for n in row if n in MIN_H])
+                give = min(over, h[i] - floor)
+                if give > 0:
+                    h[i] -= give; over -= give
         if over > 0:                                       # still too tall: everything shrinks alike
             tot = sum(h)
             h = [max(3, x * avail // tot) for x in h]
@@ -887,35 +847,27 @@ class Screen:
                 self.put(y, x, piece, P(P.c("key"), bold=True) if i % 2 == 0 else P(WHITE)); x += len(piece)
         self.put(y, x, "─", border)
 
-    def wview(self) -> dict | None:
-        """The watched variant's book-shaped view, or None when not watching (or the engine lacks it)."""
-        if not self.watch:
-            return None
-        v = (self.st.get("views") or {}).get(self.watch)
-        return None if v is None or self.watch == self.active() else v
-
-    def active(self) -> str | None:
-        return (self.st.get("strategy") or {}).get("variant")
-
-    def vn(self, name: str | None, rows: list | None = None) -> str:
-        """A variant's display name (N renames it); its records stay under its own name. rows: the profile's
-        variants, when it is not the one shown."""
+    def vn(self, name: str | None) -> str:
+        """A variant's display name (N renames it); its record stays under its own name."""
         if not name:
             return "?"
-        mine = next((v for v in (self.st.get("variants") if rows is None else rows) or [] if v["name"] == name), {})
+        mine = next((v for v in self.raw.get("variants") or [] if v["name"] == name), {})
         return mine.get("title") or (self.raw.get("variant_names") or {}).get(name, name)
 
     def vrow(self, name: str | None) -> dict | None:
-        """The shown profile's row of a variant."""
-        return next((v for v in self.st.get("variants") or [] if v["name"] == name), None)
+        """The engine's row of a variant."""
+        return next((v for v in self.raw.get("variants") or [] if v["name"] == name), None)
+
+    def live_variant(self) -> str | None:
+        """The variant live trades (or would, once armed)."""
+        return (self.raw.get("live_cfg") or {}).get("variant") or None
 
     def strat(self) -> dict | None:
-        """The rule's settings the screen marks the ladder and band with: the watched variant's, else the active one's."""
-        w = self.wview()
-        return w["strategy"] if w else self.st.get("strategy")
+        """The selected variant's settings: the screen marks the ladder and band with them."""
+        return self.st.get("strategy")
 
     def rule_on(self) -> bool | None:
-        """Whether the rule (or the watched variant) trades the coin on screen; None until the engine has said."""
+        """Whether the selected variant trades the coin on screen; None until the engine has said."""
         S = self.strat()
         return None if not S else self.series in (S.get("series") or [])
 
@@ -948,7 +900,7 @@ class Screen:
             left, right = self.status_parts(lvl)
             if need() <= W:
                 break
-        for drop in ("watch", "price"):               # still too long: the book box says watching; then the price
+        for drop in ("variant", "price"):             # still too long: the book box says which variant; then the price
             if need() > W:
                 left = [(tag, seg) for tag, seg in left if tag != drop]
         hy, x = H - 1, 0
@@ -977,12 +929,11 @@ class Screen:
             left.append(("mode", [(" ● LIVE " if lvl < 2 else " LIVE ", P(RED, bold=True) | curses.A_REVERSE)]))
         else:
             left.append(("mode", [(" ● PAPER " if lvl < 2 else " PAPER ", P(GREEN, bold=True) | curses.A_REVERSE)]))
-            if st.get("profile_name"):
-                name = st["profile_name"] if lvl < 2 else st["profile_name"][:12]
-                left.append(("profile", [(f" {name} ", P(P.c("variant"), bold=True) | curses.A_REVERSE)]))
             if st.get("live_enabled"):
                 armed = "(live armed: " + (st.get("live_error") or "authenticating") + ")"
                 left.append(("armed", [(armed[:60] if lvl < 2 else "(live armed)", P(YELLOW))]))
+        if self.variant:
+            left.append(("variant", [(f" {self.vn(self.variant)} ", P(P.c("variant"), bold=True) | curses.A_REVERSE)]))
         prod = cfgmod.SERIES[self.series]
         sp = (st.get("spot") or {}).get(prod) or {}
         p = sp.get("now")
@@ -1014,15 +965,12 @@ class Screen:
                              (" slot in ", P(P.c("word_c")))] if lvl < 2 else
                             [(" · ", P(grey)), (f"{max(ahead)}m", P(P.c("key"), bold=True)), (" in ", P(P.c("word_c")))]) \
                            + [(clock(tau - max(ahead) * 60), P(WHITE))]
-            if st.get('auto_live') and on and not self.wview():
-                seg.append((" +live", P(RED, bold=True)))
-            if self.wview() and lvl < 2:
-                seg[1:2] = [(f"ule ({self.vn(self.watch)}) ", P(P.c("word_b")))]
+            if st.get('auto_live'):
+                if self.live_variant() == self.variant:
+                    seg += [(" +live", P(RED, bold=True))] if on else []
+                else:
+                    seg.append((f" live: {self.vn(self.live_variant())}", P(RED, bold=True)))
             left.append(("rule", seg))
-        if self.wview():
-            left.append(("watch", [("watching ", P(YELLOW)), (self.vn(self.watch), P(YELLOW, bold=True))]
-                        + ([(" · trading ", P(grey)), (self.vn(self.active()), P(GREEN, bold=True)), (" (w)", P(grey))]
-                           if lvl < 2 else [])))
         # the engine can be up while its feeds are not (Wi-Fi drops): say how old the data is
         stale = []
         sec = sp.get("sec") or []
@@ -1170,7 +1118,7 @@ class Screen:
         grey = self.P.grey
         side, fav = ("YES", mid) if mid >= 0.5 else ("NO", 1 - mid)
         col = GREEN if side == "YES" else RED
-        who = "the rule" if not self.wview() else self.watch
+        who = self.vn(self.variant) if self.variant else "the rule"
         lo_b, hi_b = S["band_lo"], S["band_hi"]
         out: list = []
         if self.in_band(r, S):
@@ -1256,17 +1204,16 @@ class Screen:
         P, st = self.P, self.st
         vs = st.get("variants") or []
         G = st.get("gate_cfg") or {}
-        self.box(y, x, h, w, "variants", self.P.border("ladder"), "", [("⏎", " use"), ("w", "atch"), ("E", "dit"), ("", "re", "N", "ame"), ("D", "elete"), "↑↓"])
+        self.box(y, x, h, w, "variants", self.P.border("ladder"), "", [("⏎", " select"), ("n", "ew"), ("E", "dit"), ("space", " on/off"), ("", "re", "N", "ame"), ("D", "elete"), "↑↓"])
         if not vs:
             self.put(y + 2, x + 3, "waiting for the engine…", P(self.P.grey)); return
         names = [v["name"] for v in vs]
-        active = next((v["name"] for v in vs if v.get("active")), None)
         if self.var_sel not in names:
-            self.var_sel = active or names[0]
+            self.var_sel = self.variant if self.variant in names else names[0]
         head = P(self.P.c("head"), bold=True)
         nw = max([8] + [len(self.vn(n)) for n in names])   # the name column: as wide as the longest name
-        sh = nw - 8                                         # ... and every column after it moves along
-        hdr = f"  {'variant':<{nw}} {'hours':>5} {'entries':>7} {'P&L':>9} {'¢/ct':>6} {'win':>4} {'t':>6} gate"
+        sh = nw - 7                                         # ... and every column after it moves along
+        hdr = f"   {'variant':<{nw}} {'hours':>5} {'entries':>7} {'P&L':>9} {'¢/ct':>6} {'win':>4} {'t':>6} gate"
         self.put(y + 1, x + 2, hdr[:w - 4], head)
         # The list scrolls under the fixed header: the rows that fit, moved so the highlighted one shows
         rows = max(1, min(len(vs), h - 3))
@@ -1283,12 +1230,14 @@ class Screen:
             base = curses.A_REVERSE if sel else 0
             self.put(yy, x + 1, " " * (w - 2), base)
             row = P(P.pick("rows", j / max(1, len(vs) - 1))) | base
-            if v.get("own"):                             # one made here; the rest are built in
-                self.put(yy, x + 3, "+", P(P.c("key"), bold=True) | base)
-            watched = v["name"] == self.watch and not v.get("active")
-            self.put(yy, x + 2, "●" if v.get("active") else "◉" if watched else " ",
-                     P(GREEN if v.get("active") else YELLOW, bold=True) | base)
-            self.put(yy, x + 4, f"{self.vn(v['name']):<{nw}}", P(P.c("variant"), bold=True) | base)
+            if v["name"] == self.variant:                # selected; live's; one made here (the rest are built in)
+                self.put(yy, x + 2, "●", P(GREEN, bold=True) | base)
+            if v.get("live") and st.get("live_enabled"):
+                self.put(yy, x + 3, "L", P(RED, bold=True) | base)
+            if v.get("own"):
+                self.put(yy, x + 4, "+", P(P.c("key"), bold=True) | base)
+            on = v.get("on", True)
+            self.put(yy, x + 5, f"{self.vn(v['name']):<{nw}}", P(P.c("variant") if on else P.grey, bold=on) | base)
             pc = f"{v['per_contract']*100:+.2f}" if v.get("per_contract") is not None else "-"
             win = f"{v['win']:.0%}" if v.get("win") is not None else "-"
             t = f"{v['t']:+.2f}" if v.get("t") is not None else "-"
@@ -1300,7 +1249,9 @@ class Screen:
             self.put(yy, x + 50 + sh, f"{t:>6}", P(tc, bold=v.get("t") is not None and abs(v["t"]) >= 2) | base)
             cx = x + 57 + sh
             g = v.get("gate") or {}
-            if g.get("passed"):
+            if not on:
+                self.put(yy, cx, "off", P(RED, bold=True) | base)
+            elif g.get("passed"):
                 self.put(yy, cx, "✓ passed", P(GREEN, bold=True) | base)
             else:
                 for c in g.get("checks", []):          # a passed check is a word; one still short shows how far
@@ -1339,94 +1290,122 @@ class Screen:
             self.put(gy + gh, x + 2, f"P&L over its last {len(curve)} hours", P(self.P.grey))
         elif gh >= 1 and len(curve) < 2:
             self.put(gy + 1, x + 3, "the curve starts after a couple of settled hours", P(self.P.grey))
-        # The bottom row says what the highlighted variant is doing, when it is the one in use or the one
-        # watched. What w and enter do is on the top border; on a short box the row is the last variant's.
+        # The bottom row says what the highlighted variant is doing. On a short box the row is the last variant's.
         if y + 1 + rows < y + h - 2:
-            if cur.get("lost"):
-                self.put(y + h - 2, x + 2, f"{cur['lost']}: paper trades {self.vn(active)}, live waits · enter picks one"[:w - 4],
-                         P(YELLOW, bold=True))
+            name, sel_, live = self.vn(cur["name"]), cur["name"] == self.variant, cur.get("live") and st.get("live_enabled")
+            tip, col = "", GREEN
+            if not cur.get("on", True):
+                tip, col = f"{name} is off: no new entries, open ones settle · space turns it on", YELLOW
             elif cur.get("cash") is not None and cur["cash"] < (cur.get("rule") or {}).get("band_lo", 0) and not cur.get("open"):
-                tip = f"{self.vn(cur['name'])} has {money(cur['cash'])} left: it buys nothing · E makes one with a new paper start"
-                self.put(y + h - 2, x + 2, tip[:w - 4], P(YELLOW, bold=True))
-            elif cur["name"] == active and st.get("profile_name"):
-                tip = f"● {self.vn(active)} is {st['profile_name']}'s book (paper only) · every variant keeps running"
-                self.put(y + h - 2, x + 2, tip[:w - 4], P(GREEN, bold=True))
-            elif cur["name"] == active and self.live_pid() != "1":
-                lp = next((p["name"] for p in self.prof_rows() if p.get("live")), "?")
-                tip = f"● {self.vn(active)} is in use on paper · live trades {lp}'s rule (L in profiles)"
-                self.put(y + h - 2, x + 2, tip[:w - 4], P(GREEN, bold=True))
-            elif cur["name"] == active:
-                tip = f"● {self.vn(active)} is in use: paper now, live " + ("too" if (cur.get("gate") or {}).get("passed")
-                                                                  else "once it passes the gate")
-                self.put(y + h - 2, x + 2, tip[:w - 4], P(GREEN, bold=True))
-            elif cur["name"] == self.watch:
-                self.put(y + h - 2, x + 2, f"◉ watching {self.vn(cur['name'])} (view only)"[:w - 4], P(YELLOW, bold=True))
+                tip, col = f"{name} has {money(cur['cash'])} left: it buys nothing · E makes one with a new paper start, R starts it over", YELLOW
+            elif live:
+                tip, col = f"L live trades {name}" + (" · selected" if sel_ else ""), RED
+            elif sel_:
+                tip = f"● {name} is selected: the book shows it · L goes live with it" + \
+                    ("" if (cur.get("gate") or {}).get("passed") else ", once it passes the gate")
+            else:
+                tip, col = f"enter selects {name} · changes nothing that trades", P.grey
+            self.put(y + h - 2, x + 2, tip[:w - 4], P(col, bold=col != P.grey))
 
-    def toggle_watch(self) -> None:
-        """w: show the highlighted variant as if it traded (book, equity, band), or stop. View only."""
-        if self.wview():
-            name, self.watch = self.watch, None
-            self.save_prefs(); self.say(f"stopped watching {self.vn(name)}: back to the {self.vn(self.active())} paper book"); return
+    def select_variant(self) -> None:
+        """enter: the highlighted variant is the one the book, equity, band and gate show. Nothing that trades changes."""
         if not self.shown("variants"):
-            self.say("w watches a variant: " + self.back_to("highlight one in variants, then w")); return
-        name = self.var_sel
-        if not name or name == self.active():
-            self.say(f"{self.vn(name)} is what trades: the paper book already shows it"); return
-        self.watch = name; self.pos_off = 0; self.save_prefs()
-        self.say(f"watching {self.vn(name)} (view only) · {self.vn(self.active())} still trades · w or v goes back")
-
-    def use_variant(self) -> None:
-        """Enter in the variants box: trade the picked variant. Paper switches at once; while live is
-        on or armed it asks for "live" first, as arming does."""
-        if not self.shown("variants"):
-            self.say("enter picks a variant: " + self.back_to("where the variants box is")); return
-        vs = self.st.get("variants") or []
-        cur = next((v for v in vs if v["name"] == self.var_sel), None)
-        active = next((v["name"] for v in vs if v.get("active")), None)
-        if not cur:
+            self.say("enter selects a variant: " + self.back_to("highlight one in variants, then enter")); return
+        cur = self.vrow(self.var_sel)
+        if cur is None:
             return
-        if cur["name"] == active and not cur.get("lost"):
-            self.say(f"{self.vn(active)} is already in use"); return
-        if self.profile:                             # a profile's book: asks only if it is the live profile, armed
-            self.profile_set("strategy.variant", cur["name"], f"its variant {self.vn(active)} → {self.vn(cur['name'])}"); return
-        if self.st.get("mode") == "live" or self.st.get("live_enabled"):
-            g = cur.get("gate") or {}
-            self.modal = {"type": "variant", "title": "SWITCH LIVE VARIANT", "color": RED, "buf": "",
-                          "name": cur["name"], "was": active,
-                          "lines": [f"Live is on: real money would trade {self.vn(cur['name'])} instead of {self.vn(active)}.",
-                                    f"{self.vn(cur['name'])}: {cur.get('desc', '')}",
-                                    "It has passed the gate." if g.get("passed") else
-                                    f"It has not passed the gate (g): live waits until it does.",
-                                    "Open positions ride to settlement.",
-                                    "", "type live and press enter (esc cancels):", "> "]}
-            return
-        self.send(op="variant", name=cur["name"])
+        if cur["name"] == self.variant:
+            self.say(f"{self.vn(self.variant)} is already selected"); return
+        self.variant, self.pos_off = cur["name"], 0
+        live = self.live_variant() if self.armed() else None
+        self.book_view = "paper" if live and live != self.variant else None   # live's book is another variant's
+        self.save_prefs(); self.apply_selected()
+        self.say(f"{self.vn(self.variant)} selected: the book shows it" + (f" · live still trades {self.vn(live)}" if live and live != self.variant else ""))
 
-    # ---- the profile's own variants: E and D in the variants box
+    # ---- the variants: n, E, D, space
     def variant_key(self, ch: int) -> None:
-        """E or D with the variants box focused, on the highlighted variant."""
+        """D or space with the variants box on screen, on the highlighted variant."""
         cur = self.vrow(self.var_sel)
         if cur is None:
             self.say("no variants from the engine yet"); return
-        if "own" not in cur:
-            self.say("the engine running is older than this screen: restart it (S, S)"); return
+        if self.older_engine():
+            return
         name = self.vn(cur["name"])
-        if ch == ord("E"):
-            self.open_settings(cur["name"])
+        livs = self.armed() and cur["name"] == self.live_variant()
+        if ch == ord(" "):
+            on = not cur.get("on", True)
+            cmd = {"op": "variant_on", "variant": cur["name"], "on": on}
+            if on and livs:
+                self.modal = {"type": "livecmd", "title": "LIVE IS ARMED", "color": RED, "buf": "", "cmd": cmd, "kept": f"{name} kept off",
+                              "lines": [f"Live is armed with {name}: turned on, real money trades it from its next slot,",
+                                        "past its gate.", "", "type live and press enter (esc cancels):", "> "]}
+            else:
+                self.send(**cmd)
         elif not cur["own"]:
-            self.say(f"{name} is built in: it can't be deleted")
-        elif cur.get("active"):
-            self.say(f"{name} is in use: use another one first (enter), then D deletes it")
+            self.say(f"{name} is built in: it can't be deleted (space turns it off)")
+        elif livs:
+            self.say(f"{name} is what live trades: turn live off or move it first (L)")
         else:
             kept = "Its record stays on file (tern report lists it)." if cur["entries"] or cur["open"] else "It has not bought anything."
             self.modal = {"type": "vdelete", "title": f"delete {name}", "color": RED, "name": cur["name"],
-                          "lines": [f"Delete {name} from {self.pname()}? It stops running. {kept}", "",
-                                    "y deletes · any other key keeps it"]}
+                          "lines": [f"Delete {name}? It stops running. {kept}", "", "y deletes · any other key keeps it"]}
 
-    def open_settings(self, variant: str | None = None) -> None:
-        """e: the settings box (this profile, the desk, the screen). E: the same box on one variant, as a draft."""
+    def new_variant(self, edit: bool) -> None:
+        """E: a draft of the highlighted variant's settings (the selected one's where the box is not on screen).
+        n: a draft of base's."""
+        name = "base" if not edit else self.var_sel if self.shown("variants") and self.vrow(self.var_sel) else self.variant
+        if self.vrow(name) is None:
+            self.say("no variants from the engine yet"); return
+        if not self.older_engine():
+            self.open_settings(name, new=not edit)
+
+    def live_key(self) -> None:
+        """L: live on with the selected variant, off, or (armed with another) moved to the selected one."""
+        row = self.vrow(self.variant)
+        if row is None:
+            self.say("no variants from the engine yet"); return
+        if self.older_engine():
+            return
+        st, name, live = self.st, self.vn(self.variant), self.live_variant()
+        if st.get("live_enabled") and live == self.variant:
+            self.send(op="live", on=False); self.say("disarming live"); return
+        L = st.get("live_cfg") or {}
+        gate = f"{name} has passed its gate (g)." if (row.get("gate") or {}).get("passed") else \
+            f"{name} has not passed its gate (g): live waits until it does." if L.get("auto_needs_gate", True) else \
+            f"{name} has not passed its gate (g), and live.auto_needs_gate is off: it trades anyway."
+        off = [] if row.get("on", True) else [f"{name} is off: live enters nothing until space turns it on."]
+        if st.get("live_enabled"):
+            self.modal = {"type": "arm", "title": "MOVE LIVE", "color": RED, "buf": "", "variant": self.variant,
+                          "lines": [f"Live trades {self.vn(live)}. Move it to {name}? Real money would trade {name} instead.",
+                                    gate, *off, "Open live positions ride to settlement. Live's caps and size stay as they are.",
+                                    "", "type live to move it, off to turn live off (esc cancels):", "> "]}
+            return
+        self.modal = {"type": "arm", "title": "ARM LIVE", "color": RED, "buf": "", "variant": self.variant,
+                      "lines": [f"Live trading uses real money on Kalshi. It would trade {name}.", gate, *off,
+                                f"Caps: ${L.get('capital_usd', 0):,.0f} at risk, ${L.get('max_order_usd', 0):,.0f} per order,",
+                                f"live turns itself off after -${L.get('max_daily_loss', 0):,.0f} in a day.",
+                                *([] if st.get("keys") else ["", f"No key found yet: live stays off until {cfgmod.KEYFILE_ENV} exists."]),
+                                "", "type live and press enter (esc cancels):", "> "]}
+
+    def restart_key(self) -> None:
+        """R: the selected variant starts over."""
+        row, name = self.vrow(self.variant), self.vn(self.variant)
+        if row is None:
+            self.say("no variants from the engine yet"); return
+        if self.older_engine():
+            return
+        if self.armed() and self.live_variant() == self.variant:
+            self.say(f"{name} is what live trades: turn live off or move it first (L)"); return
+        start = (row.get("rule") or {}).get("paper_capital", 0)
+        self.modal = {"type": "restart", "title": f"start {name} over", "name": self.variant,
+                      "lines": [f"Start {name} over, with ${start:,.0f} and an empty record? Its gate starts over too.",
+                                "Its record so far is kept in the reports under a deleted variant's name.", "",
+                                "y starts it over · any other key keeps it"]}
+
+    def open_settings(self, variant: str | None = None, new: bool = False) -> None:
+        """e: the settings box (the desk's and the screen's). n, E: the same box on a variant's settings, as a draft."""
         self.overlay, self.set_buf, self.edit_var, self.draft = "settings", None, variant, {}
-        self.edit_prof, self.set_sub = self.profile, 0
+        self.edit_new, self.set_sub = new, 0
         if variant is not None:
             self.set_back, self.set_sel = self.set_sel, 0
 
@@ -1436,13 +1415,9 @@ class Screen:
             self.edit_var, self.draft = None, {}
             self.set_sel, self.set_back = self.set_back or 0, None     # back where e's box was left
 
-    def forget_sent(self) -> None:
-        """Values sent but not yet answered that are the shown profile's: another is about to be shown."""
-        self.set_sent = {k: v for k, v in self.set_sent.items() if k in DESK_KEYS}
-
     def rule_now(self, field: str):
-        """The variant E is on, as it is saved: one of its settings (None until the engine has said)."""
-        return None if self.st.get("profile_wait") else ((self.vrow(self.edit_var) or {}).get("rule") or {}).get(field)
+        """The variant the draft starts from, as it is saved: one of its settings (None until the engine has said)."""
+        return ((self.vrow(self.edit_var) or {}).get("rule") or {}).get(field)
 
     def draft_lines(self) -> list[str]:
         """What the draft changes, a line each."""
@@ -1450,35 +1425,35 @@ class Screen:
                 for r in varmod.RULE_SETTINGS if r.name in self.draft]
 
     def save_draft(self) -> None:
-        """s in E's box: asks for a name, then the draft becomes a new variant."""
+        """s in the box n and E open: asks for a name, then the draft becomes a new variant."""
         if self.var_new:
             self.say("the last save has not been answered yet"); return
-        if self.older_engine(self.edit_var):
+        if self.older_engine():
             return
         if not self.draft:
             self.say("nothing is changed yet: there is nothing to save"); return
         self.modal = {"type": "vname", "title": "save as a new variant", "color": CYAN, "buf": "", "max": varmod.NAME_MAX,
-                      "cmd": {"op": "variant_new", "profile": self.profile or "1", "from": self.edit_var, "rule": dict(self.draft)},
-                      "lines": [f"A new variant in {self.pname()}: {self.vn(self.edit_var)} with",
+                      "cmd": {"op": "variant_new", "from": self.edit_var, "rule": dict(self.draft)},
+                      "lines": ["A new variant: base's settings with" if self.edit_new else f"A new variant: {self.vn(self.edit_var)} with",
                                 *("  " + t for t in self.draft_lines()), "",
-                                "It starts with an empty record. What trades stays as it is: enter uses it.",
+                                f"It starts with an empty record. {self.vn(self.edit_var)} and its record stay as they are.",
                                 f"name, up to {varmod.NAME_MAX} characters (enter alone picks one, esc goes back):", "> "]}
 
-    def older_engine(self, name: str | None) -> bool:
-        """Whether the engine's status is from before variants held their size: it would save a copy without the changes."""
-        rule = (self.vrow(name) or {}).get("rule")
-        if rule is None or self.st.get("profile_wait") or "contracts" in rule:
+    def older_engine(self) -> bool:
+        """Whether the engine is from before there was one list: it would do something else with these commands."""
+        rows = self.raw.get("variants") or []
+        if not rows or all("on" in v for v in rows):
             return False
         self.say("the engine running is older than this screen: restart it (S, S)")
         return True
 
     def rule_coin(self) -> None:
-        """r: E on the variant in use, with the coin on screen flipped in the draft."""
-        name = self.active()
-        have = None if self.st.get("profile_wait") else ((self.vrow(name) or {}).get("rule") or {}).get("series")
+        """r: E on the selected variant, with the coin on screen flipped in the draft."""
+        name = self.variant
+        have = ((self.vrow(name) or {}).get("rule") or {}).get("series")
         if name is None or have is None:
             self.say("no value from the engine yet"); return
-        if self.older_engine(name):
+        if self.older_engine():
             return
         want = [c for c in cfgmod.SERIES if (c in have) != (c == self.series)]
         if not want:
@@ -1489,203 +1464,35 @@ class Screen:
         self.set_sel = [r.name for r in varmod.RULE_SETTINGS].index("series")
         self.set_sub = list(cfgmod.SERIES).index(self.series)
 
-    def in_profiles(self) -> bool:
-        return self.shown("profiles")
-
     def armed(self) -> bool:
         return bool(self.raw.get("live_enabled") or self.raw.get("mode") == "live")
 
-    def live_name(self) -> str:
-        return next((p["name"] for p in self.prof_rows() if p.get("live")), "profile 1")
-
-    def live_pid(self) -> str:
-        """The profile live trades (d picks it); "1" until the engine says otherwise."""
-        return next((p["id"] for p in self.prof_rows() if p.get("live")), "1")
-
-    def profile_set(self, key: str, value, what: str) -> None:
-        """Change a setting of the profile shown. On the live profile while live is armed that changes what
-        real money trades, so it asks for "live" first, as arming does."""
-        cmd = {"op": "profile_set", "profile": self.profile, "key": key, "value": value}
-        if self.armed() and self.profile == self.live_pid():
-            self.modal = {"type": "livecmd", "title": "LIVE PROFILE", "color": RED, "buf": "", "cmd": cmd,
-                          "sent": (key, value), "kept": f"{what} kept",
-                          "lines": [f"{self.pname()} is the live profile and live is armed:",
-                                    f"{what} changes what real money trades from the next slot.",
-                                    "", "type live and press enter (esc cancels):", "> "]}
-            return
-        self.send(**cmd)
-        self.set_sent[key] = (value, time.time())
-
-    def profile_live(self) -> None:
-        """d: live trades the highlighted profile's rule, once its own record of its variant passes the gate."""
-        cur = self.prof_cur()
-        if cur is None:
-            return
-        if cur.get("live"):
-            self.say(f"{cur['name']} is already the live profile"); return
-        cmd = {"op": "live_profile", "profile": cur["id"]}
-        if not self.armed():
-            self.send(**cmd); return
-        gate = "Its variant has passed the gate on its own record." if cur.get("gate_passed") else \
-            "Its variant has not passed the gate on its own record: live waits until it does."
-        was = next((p["name"] for p in self.prof_rows() if p.get("live")), "profile 1")
-        self.modal = {"type": "livecmd", "title": "SWITCH LIVE PROFILE", "color": RED, "buf": "", "cmd": cmd,
-                      "kept": f"live kept on {was}",
-                      "lines": [f"Live is on: real money would trade {cur['name']}'s rule ({self.vn(cur.get('variant'), cur.get('variants') or [])})",
-                                f"instead of {was}'s.", gate,
-                                "Open live positions ride to settlement. Live's caps and size stay as they are.",
-                                "", "type live and press enter (esc cancels):", "> "]}
-
-    def prof_rows(self) -> list[dict]:
-        return self.raw.get("profiles") or []
-
-    def prof_cur(self) -> dict | None:
-        rows = self.prof_rows()
-        ids = [p["id"] for p in rows]
-        if self.prof_sel not in ids:
-            self.prof_sel = self.profile if self.profile in ids else ids[0] if ids else None
-        return next((p for p in rows if p["id"] == self.prof_sel), None)
-
-    def profiles_panel(self, y, x, h, w) -> None:
-        P = self.P
-        self.box(y, x, h, w, "profiles", self.P.border("ladder"), "",
-                 [("⏎", " view"), ("space", " on/off"), ("n", "ew/re", "N", "ame"), ("d", "efault"), ("D", "elete"), "↑↓"])
-        rows = self.prof_rows()
-        cur = self.prof_cur()
-        if not rows or cur is None:
-            self.put(y + 2, x + 3, "waiting for the engine…", P(P.grey)); return
-        shown = self.profile or "1"
-        head = P(P.c("head"), bold=True)
-        self.put(y + 1, x + 2, f"   {'profile':<13} {'':<3} {'book':<8} {'set':>3} {'entries':>7} {'P&L':>9} {'¢/ct':>6} {'t':>6}"[:w - 4], head)
-        room = max(1, h - 6)
-        si = [p["id"] for p in rows].index(cur["id"])
-        top = max(0, si - room + 1)
-        for j, pr in enumerate(rows[top:top + room], start=top):
-            yy = y + 2 + j - top
-            sel = pr["id"] == cur["id"]
-            base = curses.A_REVERSE if sel else 0
-            self.put(yy, x + 1, " " * (w - 2), base)
-            self.put(yy, x + 2, "●" if pr["id"] == shown else " ", P(GREEN, bold=True) | base)
-            if pr.get("live"):                           # d: the profile live trades
-                self.put(yy, x + 3, "L", P(RED, bold=True) | base)
-            self.put(yy, x + 5, f"{pr['name'][:13]:<13} ", P(P.c("variant"), bold=True) | base)
-            self.put(yy, x + 19, "on " if pr.get("enabled") else "off", P(GREEN if pr.get("enabled") else RED, bold=True) | base)
-            rec = next((v for v in pr.get("variants") or [] if v["name"] == pr.get("variant")), {})
-            row = P(P.pick("rows", j / max(1, len(rows) - 1))) | base
-            self.put(yy, x + 23, f"{self.vn(pr.get('variant'), pr.get('variants') or [])[:8]:<8} {pr.get('sv', 1):>3} {rec.get('entries', 0):>7} ", row)
-            pnl = rec.get("pnl") or 0.0
-            self.put(yy, x + 44, f"{pnl:>+9.2f}", P(GREEN if pnl >= 0 else RED, bold=True) | base)
-            pc = f"{rec['per_contract'] * 100:+.2f}" if rec.get("per_contract") is not None else "-"
-            t = f"{rec['t']:+.2f}" if rec.get("t") is not None else "-"
-            self.put(yy, x + 54, f"{pc:>6} {t:>6}", row)
-        yy = y + 3 + min(room, len(rows))
-        if cur.get("rule") and yy < y + h - 2:       # not on the tip line's row
-            self.put(yy, x + 2, f"{cur['name']}: ", P(P.c("variant"), bold=True))
-            self.put(yy, x + 4 + len(cur["name"]), rule_text(cur["rule"])[:w - 8 - len(cur["name"])], P(WHITE))
-        live = next((p for p in rows if p.get("live")), None)
-        if cur.get("live") and cur["id"] != "1":
-            tip = "L live trades this profile's rule, past its own gate · d on another moves it"
-        elif cur["id"] != "1" or self.profile:
-            tip = "● shown · viewing changes nothing that trades · judge by entries and t, not P&L"
-        else:
-            tip = "profile 1 is the desk: paper, the gate · " + \
-                (f"live trades {live['name']} (L)" if live and live["id"] != "1" else "n makes a profile, d picks what live trades")
-        self.put(y + h - 2, x + 2, tip[:w - 4], P(P.grey))
-
-    def view_profile(self) -> None:
-        cur = self.prof_cur()
-        if cur is None:
-            return
-        pid = None if cur["id"] == "1" else cur["id"]
-        if pid == self.profile:
-            self.say(f"{cur['name']} is already shown"); return
-        self.profile, self.watch, self.var_sel, self.pos_off, self.set_sel = pid, None, None, 0, 0
-        self.forget_sent()
-        self.save_prefs(); self.write_view(); self.apply_profile()
-        self.say(f"viewing {cur['name']}" + (": its book is its variant's record, paper only" if pid else ": the desk"))
-
-    def profile_enable(self) -> None:
-        cur = self.prof_cur()
-        if cur is None:
-            return
-        if cur["id"] == "1":
-            self.say("profile 1 always runs: it holds the paper book and live"); return
-        self.send(op="profile_enable", profile=cur["id"], on=not cur.get("enabled"))
-
-    def profile_ask(self, kind: str) -> None:
-        cur = self.prof_cur()
-        if kind == "pdelete":
-            if cur is None or cur["id"] == "1":
-                self.say("profile 1 can't be deleted: it holds the paper book and live"); return
-            self.modal = {"type": "pdelete", "title": f"delete {cur['name']}", "color": RED, "buf": "", "id": cur["id"],
-                          "lines": [f"Delete {cur['name']}? Its records and settings log move to",
-                                    "runtime/profiles-deleted/ (tern report --deleted lists them); nothing is erased.",
-                                    "", "type delete and press enter (esc keeps it):", "> "]}
-        else:
-            n = len(self.prof_rows()) + 1
-            self.modal = {"type": "pname", "title": "new profile", "color": CYAN, "buf": "",
-                          "lines": ["A new profile starts with profile 1's settings and empty records;",
-                                    "change them with e while viewing it. It trades paper only until d makes it live.",
-                                    "", f"name (enter for \"profile {n}\", esc cancels):", "> "]}
-
     def rename_ask(self) -> None:
-        """N: rename the highlighted profile (the focused profiles box) or variant (the focused variants box)."""
-        if self.focus == "profiles" and self.in_profiles():
-            cur = self.prof_cur()
-            if cur is None:
-                return
-            what, target, mx = "profile", {"profile": cur["id"]}, profmod.NAME_MAX
-            name, note = cur["name"], ["Only its name changes: its records, settings and folder stay."]
-            blank = f"enter on an empty line names it \"{profmod.Names.DEFAULT}\" again" if cur["id"] == "1" else ""
-        elif self.focus == "variants" and self.shown("variants"):
-            v = self.var_sel
-            if not v:
-                return
-            what, target, mx, name = "variant", {"variant": v}, profmod.VARIANT_NAME_MAX, self.vn(v)
-            note = [f"Only what the screen calls it changes: its record, the gate and tern report",
-                    f"keep it as {v}. " + (f"It is {self.pname()}'s own." if (self.vrow(v) or {}).get("own")
-                                           else "Every profile shows the new name.")]
-            if self.profile:
-                target["profile"] = self.profile
-            blank = f"enter on an empty line names it {v} again"
-        else:
-            self.say("N renames: ←→ to focus profiles or variants (page 2), then N"); return
+        """N: rename the highlighted variant."""
+        v = self.var_sel
+        if not self.shown("variants") or self.vrow(v) is None:
+            self.say("N renames a variant: " + self.back_to("highlight one in variants, then N")); return
+        name, mx = self.vn(v), namesmod.VARIANT_NAME_MAX
         self.modal = {"type": "rename", "title": f"rename {name}", "color": CYAN, "buf": name, "max": mx,
-                      "target": target,
-                      "lines": [*note, *([blank] if blank else []), "",
-                                f"new {what} name, up to {mx} characters (ctrl+u clears, esc keeps it):", "> " + name]}
-
-    def not_here(self) -> bool:
-        """L and R while a profile is shown: those are profile 1's."""
-        if self.profile:
-            self.say(f"{self.pname()} is paper only: live and reset are profile 1's")
-            return True
-        return False
+                      "target": {"variant": v},
+                      "lines": ["Only what the screen calls it changes: its record, the gate and tern report",
+                                f"keep it as {v}.", f"enter on an empty line names it {v} again", "",
+                                f"new variant name, up to {mx} characters (ctrl+u clears, esc keeps it):", "> " + name]}
 
     def cur_book(self):
-        if self.wview():
-            return self.wview()
         v = self.book_view or ("live" if self.st.get("mode") == "live" else "paper")
         return self.st.get(v)
 
     def book_panel(self, y, x, h, w) -> None:
         P, st = self.P, self.st
-        wv = self.wview()
-        prof = st.get("profile_name")
-        v = "watch" if wv else "paper" if prof else self.book_view or ("live" if st.get("mode") == "live" else "paper")
-        b = wv if wv else st.get(v) or {}
+        v = self.book_view or ("live" if st.get("mode") == "live" else "paper")
+        b = st.get(v) or {}
         self.box(y, x, h, w, "book", self.P.border("book"), "", PANEL_KEYS["book"](self))
         tabs: list[tuple[str, int]] = []
-        if prof:
-            tabs += [(f" {prof} · {self.vn(self.active())} ", P(WHITE, bold=True) | (0 if wv else curses.A_REVERSE)),
-                     (" paper only ", P(self.P.grey))]
-            if st.get("profile_wait"):
-                tabs += [("waiting for the engine…", P(YELLOW))]
-        else:
-            for name in ("paper", "live"):
-                tabs += [(f" {name} ", P(WHITE, bold=True) | curses.A_REVERSE if name == v else P(self.P.grey)), (" ", 0)]
-        if wv:
-            tabs += [(f" watching {self.vn(self.watch)} ", P(YELLOW, bold=True) | curses.A_REVERSE), (" view only", P(self.P.grey))]
+        for name in ("paper", "live"):
+            label = f"{self.vn(self.variant)} on paper" if name == "paper" else \
+                f"live · {self.vn(self.live_variant())}" if st.get("live_enabled") and self.live_variant() else "live"
+            tabs += [(f" {label} ", P(WHITE, bold=True) | curses.A_REVERSE if name == v else P(self.P.grey)), (" ", 0)]
         body = [tabs]                                    # the whole book is one list of lines and scrolls as one
         if b:
             eq, start = b.get("equity"), b.get("start") or 0
@@ -1699,22 +1506,15 @@ class Screen:
                 L = st.get("live_cfg") or {}
                 lines.append(("caps", f"risk {money(L.get('capital_usd'))} · order {money(L.get('max_order_usd'))} · day -{money(L.get('max_daily_loss'))}", self.P.grey))
             g = st.get("gate") or {}
-            if wv:                                       # the watched variant's own record, not the paper book's
-                vr = next((x for x in st.get("variants") or [] if x["name"] == self.watch), {})
-                g = {"entries": vr.get("entries", 0), "open": vr.get("open", 0), "pnl": vr.get("pnl", 0.0),
-                     "win": vr.get("win"), "per_contract": vr.get("per_contract") or 0.0} if vr else {}
-                lines[0] = ("equity", money(eq) + "  on a paper start", val)
-            elif prof:
-                lines[0] = ("equity", money(eq) + "  on a paper start", val)
             if g:
                 wr = f"{g['win']:.0%}" if g.get("win") is not None else "-"
                 c = GREEN if g["pnl"] >= 0 else RED
                 a1 = f"{g['entries']} settled · {g['open']} open · {money(g['pnl'], True)}"
                 a2 = f"win {wr} · {g['per_contract']*100:+.2f}¢/ct"
                 if len(a1) + len(a2) + 3 <= w - 13:
-                    lines.append(("rule", f"{a1} · {a2}", c))
+                    lines.append(("record", f"{a1} · {a2}", c))
                 else:                                    # a narrow book: two lines, not one cut short
-                    lines += [("rule", a1, c), ("", a2, c)]
+                    lines += [("record", a1, c), ("", a2, c)]
             body += [[(f"{k:<8} ", ROW), (val, P(c, bold=k == "equity"))] for k, val, c in lines]
             body += [[("", 0)]] + self.book_lines(b)
         yy = y + 1
@@ -1787,15 +1587,13 @@ class Screen:
 
     def equity_panel(self, y, x, h, w) -> None:
         P, st = self.P, self.st
-        wv = self.wview()
-        prof = st.get("profile_name")
-        v = "paper" if prof else self.book_view or ("live" if st.get("mode") == "live" else "paper")
-        b = wv if wv else st.get(v) or {}
-        hourly = bool(wv or b.get("hourly"))
+        v = self.book_view or ("live" if st.get("mode") == "live" else "paper")
+        b = st.get(v) or {}
+        hourly = bool(b.get("hourly"))
         curve = [e for _, e in (b.get("curve") or [])]
         if hourly and b.get("start") is not None:
             curve = [b["start"]] + curve
-        title = "watching " + self.vn(self.watch) if wv else f"{prof} · {self.vn(self.active())}" if prof else v
+        title = f"{self.vn(self.variant)} on paper" if v == "paper" else "live"
         self.box(y, x, h, w, f"equity · {title}", self.P.border("equity"), "",
                  f"{len(curve) - 1} h" if hourly else f"{len(curve)} min")
         if len(curve) < 2:
@@ -1906,7 +1704,7 @@ class Screen:
                 out.append((ts, lvl, msg, 0, None, 0)); continue
             head = m.group(1)
             indent = len(head) + 2                                 # the cells start two spaces after "settled"
-            names = [self.vn(c.group(1), self.raw.get("variants") or []) for c in cells]   # profile 1's line
+            names = [self.vn(c.group(1)) for c in cells]
             pnls = [c.group(2) for c in cells]
             nw, pw = max(map(len, names)) + 1, max(map(len, pnls))
             per = max(1, min(LOG_GRID_COLS, (w - 13 - indent + 3) // (nw + pw + 3)))   # 3 spaces between
@@ -1939,12 +1737,6 @@ class Screen:
             if names:
                 i = names.index(self.var_sel) if self.var_sel in names else 0
                 self.var_sel = names[max(0, min(len(names) - 1, i + d))]
-        elif name == "profiles":
-            ids = [p["id"] for p in self.prof_rows()]
-            if ids:
-                self.prof_cur()
-                i = ids.index(self.prof_sel) if self.prof_sel in ids else 0
-                self.prof_sel = ids[max(0, min(len(ids) - 1, i + d))]
         elif name == "book":
             self.pos_off = max(0, self.pos_off + d)    # book_panel clamps the far end
         elif name == "reports":
@@ -2127,7 +1919,7 @@ class Screen:
             contracts=S["contracts"], hour_cost=S["max_hour_cost"],
             days=G["min_days"], entries=G["min_entries"], pnl=G["min_pnl"],
             risk=L["capital_usd"], order=L["max_order_usd"], day=L["max_daily_loss"],
-            coins=" ".join(v.split("-")[0] for v in cfgmod.SERIES.values()), paper=((self.vrow(self.active()) or {}).get("rule") or {}).get("paper_capital") or cfgmod.Config().paper_capital,
+            coins=" ".join(v.split("-")[0] for v in cfgmod.SERIES.values()), paper=((self.vrow(self.variant) or {}).get("rule") or {}).get("paper_capital") or cfgmod.Config().paper_capital,
             variants="\n".join(f"|  {n:<8} {d}" for n, d in shadowmod.DESC.items()),
             retired="\n".join(f"|  {n:<8} {d}" for n, d in shadowmod.RETIRED.items()))
         lines: list = []
@@ -2184,21 +1976,21 @@ class Screen:
 
         def head(text, note=""):
             return [(text, P(P.c("head"), bold=True))] + ([(note, P(P.grey))] if note else [])
-        rows = next((p.get("variants") for p in self.prof_rows() if p["id"] == g.get("profile")), None)   # the live profile's
-        who = f"{g['profile_name']}'s " if g.get("profile") not in (None, "1") else ""
-        out: list = [head("PAPER CHECKS", f"   {who}{self.vn(g.get('variant'), rows) if g.get('variant') else 'the rule'}"
-                                          " trades live only when every one passes"),
-                     "  (unless live.auto_needs_gate is false)" + ("" if not who else
-                                                                  f"; d in the profiles box picks the live profile")]
+        live, lg = self.live_variant(), st.get("live_gate") or {}
+        out: list = [head("PAPER CHECKS", f"   {self.vn(self.variant)} trades live only when every one passes"),
+                     "  (unless live.auto_needs_gate is false)" +
+                     (f" · live {'trades' if st.get('live_enabled') else 'is set to'} {self.vn(live)}" if live and live != self.variant else "")]
+        if st.get("live_enabled") and not lg.get("ok", True):
+            out.append(f"  [ ] live waits: {(lg.get('checks') or [{}])[0].get('name', '')}")
         for c in g.get("checks", []):
             out.append(f"  [{'x' if c['ok'] else ' '}] {c['name']}  ({c['detail']})")
         if st.get("shadow"):
             rows = shadowmod.table(st["shadow"])
-            out += ["", head("VARIANTS", "   side by side on paper; (p) page 2 shows them, enter picks one (tern report)")]
+            out += ["", head("VARIANTS", "   side by side on paper; (p) page 2 shows them, (enter) selects one (tern report)")]
             out += [[("  " + rows[0], P(P.grey, bold=True))]] + ["  " + l for l in rows[1:]]
         out += ["", head("GO LIVE", "   all three are needed")]
         out.append(f"  [{'x' if st.get('keys') else ' '}] Kalshi key present ({cfgmod.KEYFILE_ENV})")
-        out.append(f"  [{'x' if st.get('live_enabled') else ' '}] armed with L")
+        out.append(f"  [{'x' if st.get('live_enabled') else ' '}] armed with L" + (f", {self.vn(live)}" if st.get("live_enabled") and live else ""))
         out.append(f"  [{'x' if st.get('mode') == 'live' else ' '}] authenticated" + (f": {st.get('live_error')}" if st.get("live_error") else ""))
         out += ["", head("CAPS"), f"  ${L.get('capital_usd', 0):,.0f} at risk · ${L.get('max_order_usd', 0):,.0f} per order · "
                     f"-${L.get('max_daily_loss', 0):,.0f} a day turns live off"]
@@ -2258,7 +2050,7 @@ class Screen:
         self.box(0, x, h, w, cur.label, P.border("ladder"), "",
                  ([] if cur.saved else [("s", "ave")]) + [("←→", " box"), ("↑↓", " scroll" if self.rep_focus == "report" else " pick"), ("esc", " close")])
         self.drawing = ""
-        got = reports.FEED.get(self.runtime, cur.id, w - 4)
+        got = reports.FEED.get(self.runtime, cur.id)
         if got is None:
             self.rep_room, self.rep_len = room, 0
             self.put(2, x + 3, "reading the records…", P(WHITE)); return
@@ -2309,12 +2101,9 @@ class Screen:
                 m = re.match(r"(settings \d+)(.*)", l)
                 out.append([(m[1], P(P.c("head"), bold=True))] + self.log_spans(m[2], "", WHITE))
             elif named and named[2] not in LOG_BOOK:      # base: the rule ...
-                body, use, after = named[4].partition("← in use")
+                body, use, after = named[4].partition("← live")
                 out.append([(named[1] + named[2], P(P.c("variant"), bold=True)), (named[3], P(P.c("sep")))] +
                            self.log_spans(body, "", WHITE) + [(use + after, P(GREEN, bold=True))])
-            elif i == 0 and "): " in l and "book trades" in l:   # profile 2 (no2): on, book trades ...
-                name, _, rest = l.partition(": ")
-                out.append([(name, P(P.c("key"), bold=True)), (": ", P(P.c("sep")))] + self.log_spans(rest, "", WHITE))
             else:
                 out.append(self.rich(l))
             out[-1] = [(t, a) for t, a in out[-1] if t]
@@ -2378,10 +2167,10 @@ class Screen:
 
     # ------------------------------------------------------------ settings (e)
     def set_rows(self) -> list:
-        """The box's rows. E: a variant's. e: the profile's (none for profile 1), the desk's, the screen's."""
+        """The box's rows. n, E: a variant's. e: the desk's, the screen's."""
         if self.edit_var:
             return list(varmod.RULE_SETTINGS)
-        return (profmod.PROFILE_SETTINGS if self.profile else []) + cfgmod.SETTINGS + SCREEN_SETTINGS
+        return cfgmod.SETTINGS + SCREEN_SETTINGS
 
     def set_value(self, key: str):
         """What the setting is: the draft's value or the variant's; the engine's value, or the one just sent until
@@ -2390,7 +2179,7 @@ class Screen:
             return self.log_filter
         if key.startswith("rule."):
             return self.draft[key[5:]] if key[5:] in self.draft else self.rule_now(key[5:])
-        now_v = ((self.raw if key in DESK_KEYS else self.st).get("settings") or {}).get(key)
+        now_v = (self.raw.get("settings") or {}).get(key)
         sent = self.set_sent.get(key)
         if sent and now_v != sent[0] and time.time() - sent[1] < 10:
             return sent[0]
@@ -2473,36 +2262,30 @@ class Screen:
             out += [[("web screen now: ", P(WHITE)), (say[0], P(say[1], bold=True))]]
         else:                                            # the same height on every row
             out += [[("", 0)]]
-        if self.st.get("profile_wait"):
-            out += [[("Waiting for the engine to send this profile's settings…", P(YELLOW, bold=True))]]
-        elif any(r.key not in ((self.raw if r.key in DESK_KEYS else self.st).get("settings") or {})
-                 for r in rows if r.sec not in ("screen", "rule")) or \
-                self.edit_var and "contracts" not in ((self.vrow(self.edit_var) or {}).get("rule") or {}):
+        if any(r.key not in (self.raw.get("settings") or {}) for r in rows if r.sec not in ("screen", "rule")) or \
+                self.edit_var and any("on" not in v for v in self.raw.get("variants") or []):
             out += [[("The engine running is older than this screen: restart it (S, S) to change these.", P(YELLOW, bold=True))]]
         elif self.edit_var:
-            out += [[("Nothing is saved until s: that makes a new variant. What trades stays as it is.", P(P.grey))]]
+            out += [[("Nothing is saved until s: that makes a new variant" + ("." if self.edit_new else f"; {self.vn(self.edit_var)} stays as it is."), P(P.grey))]]
         elif armed:
             out += [[("Live is armed: raising a live limit or lowering a gate asks you to type \"live\".", P(YELLOW, bold=True))]]
         return out
 
     def rule_head(self, row) -> list:
-        """What follows a group's name: the variant E is on and how much of it is changed, or whose rows they are."""
+        """What follows RULE: the variant the draft starts from, and how much of it is changed."""
         P = self.P
-        if row.group == "RULE":
-            n = len(self.draft)
-            own = (self.vrow(self.edit_var) or {}).get("own")
-            return [("  " + self.vn(self.edit_var), P(P.c("variant"), bold=True)), ("  built in" if not own else "", P(P.grey)),
-                    (f"  {n} change{'s' if n > 1 else ''}, not saved" if n else "", P(YELLOW))]
-        if row.group == "PROFILE":
-            return [("  " + self.pname(), P(P.c("variant"), bold=True))]
-        if row.group in ("LIVE", "GATE", "ALERTS", "WEB") and self.profile:
-            return [("  every profile's", P(P.grey))]
-        return []
+        if row.group != "RULE":
+            return []
+        n = len(self.draft)
+        own = (self.vrow(self.edit_var) or {}).get("own")
+        note = "  base's settings to start from" if self.edit_new else "  built in" if not own else ""
+        return [("  " + ("new variant" if self.edit_new else self.vn(self.edit_var)), P(P.c("variant"), bold=True)), (note, P(P.grey)),
+                (f"  {n} change{'s' if n > 1 else ''}, not saved" if n else "", P(YELLOW))]
 
     def set_choices(self, row) -> list:
         if row.kind == "coins":
             return list(cfgmod.SERIES)
-        return sorted({*profmod.SLOT_CHOICES, *(self.set_value(row.key) or [])}, reverse=True)   # and config.json's own
+        return sorted({*varmod.SLOT_CHOICES, *(self.set_value(row.key) or [])}, reverse=True)   # and config.json's own
 
     def send_setting(self, row, value) -> None:
         key = row.key
@@ -2526,10 +2309,6 @@ class Screen:
             else:
                 self.draft[row.name] = value
             return
-        if key not in DESK_KEYS:                     # the shown profile's
-            if value != self.set_value(key):
-                self.profile_set(key, value, f"{row.label} {self.set_fmt(row, self.set_value(key))} → {self.set_fmt(row, value)}")
-            return
         if row.kind in ("usd", "n"):
             if not row.lo <= value <= row.hi:
                 self.say(f"{row.label} must be {self.set_fmt(row, row.lo)} to {self.set_fmt(row, row.hi)}"); return
@@ -2539,7 +2318,7 @@ class Screen:
         if cur is not None and value == cur:
             return
         loosens = row.risk and cur is not None and (value - cur) * row.risk > 0
-        if loosens and self.armed():                 # (the desk's own: a viewed profile's status says paper)
+        if loosens and self.armed():
             what = "Raise" if row.risk > 0 else "Lower"
             self.modal = {"type": "setlive", "title": "LIVE IS ARMED", "color": RED, "buf": "", "key": key, "value": value,
                           "lines": [f"{what} {row.sec} {row.label} from {self.set_fmt(row, cur)} to {self.set_fmt(row, value)}?",
@@ -2669,7 +2448,7 @@ class Screen:
         self.footer(H, W)
         if self.overlay == "settings":
             lines = self.settings_lines()
-            self.draw_overlay(lines, f"variant {self.vn(self.edit_var)}" if self.edit_var else "settings", self.P.border("contract"), pin=len(lines) - self.set_foot,
+            self.draw_overlay(lines, ("new variant" if self.edit_new else f"variant {self.vn(self.edit_var)}") if self.edit_var else "settings", self.P.border("contract"), pin=len(lines) - self.set_foot,
                               follow=self.set_line, hints=[("↑↓", " pick"), ("←→", " step"), ("enter", " type")] +
                               ([("s", "ave as new"), ("esc", " discard")] if self.edit_var else [("esc", " close")]))
         elif self.overlay:
@@ -2700,53 +2479,44 @@ class Screen:
             m = self.modal; self.modal = None
             if m.get("type") == "vdelete":
                 if ch in (ord("y"), ord("Y")):
-                    self.send(op="variant_delete", profile=self.profile or "1", variant=m["name"])
+                    self.send(op="variant_delete", variant=m["name"])
                 else:
                     self.say("kept")
                 return True
-            if m.get("type") in ("pname", "pdelete", "rename", "vname"):
+            if m.get("type") in ("rename", "vname"):
                 if ch in (10, 13, curses.KEY_ENTER):
                     if m["type"] == "vname":
                         cid = self.send(name=m["buf"].strip(), **m["cmd"])
-                        self.var_new = {"cid": cid, "profile": self.profile, "variant": m["cmd"]["from"],
-                                        "draft": m["cmd"]["rule"]} if cid else None
-                    elif m["type"] == "pname":
-                        self.send(op="profile_new", name=m["buf"].strip())
-                    elif m["type"] == "rename":
-                        self.send(op="rename", name=m["buf"].strip(), **m["target"])
-                    elif m["buf"].strip().lower() == "delete":
-                        self.send(op="profile_delete", profile=m["id"])
+                        self.var_new = {"cid": cid, "variant": m["cmd"]["from"], "draft": m["cmd"]["rule"]} if cid else None
                     else:
-                        self.say("kept (type delete exactly)")
+                        self.send(op="rename", name=m["buf"].strip(), **m["target"])
                     return True
                 if ch == 27:
-                    self.say({"pdelete": "kept", "pname": "no new profile", "vname": "not saved yet: the draft is still open"}.get(m["type"], "name kept")); return True
+                    self.say("not saved yet: the draft is still open" if m["type"] == "vname" else "name kept"); return True
                 if ch in (curses.KEY_BACKSPACE, 127, 8):
                     m["buf"] = m["buf"][:-1]
                 elif ch == 21:                   # ctrl+u: clear the line
                     m["buf"] = ""
-                elif 32 <= ch < 127 and len(m["buf"]) < m.get("max", profmod.NAME_MAX):
+                elif 32 <= ch < 127 and len(m["buf"]) < m["max"]:
                     m["buf"] += chr(ch)
                 m["lines"][-1] = "> " + m["buf"]
                 self.modal = m
                 return True
-            if m.get("type") in ("arm", "variant", "setlive", "livecmd"):
+            if m.get("type") in ("arm", "setlive", "livecmd"):
                 arm = m["type"] == "arm"
-                kept = m["kept"] if m["type"] == "livecmd" else "not armed" if arm else \
-                    "cap kept" if m["type"] == "setlive" else f"kept {self.vn(m.get('was'))}"
+                moving = m["title"] == "MOVE LIVE"
+                kept = m["kept"] if m["type"] == "livecmd" else "live not moved" if moving else "not armed" if arm else "cap kept"
                 if ch in (10, 13, curses.KEY_ENTER):
                     if m["buf"].strip().lower() == "live":
                         if arm:
-                            self.send(op="live", on=True); self.say("live armed")
+                            self.send(op="live", on=True, variant=m["variant"]); self.say("live moved" if moving else "live armed")
                         elif m["type"] == "setlive":
                             self.send(op="set", key=m["key"], value=m["value"])
                             self.set_sent[m["key"]] = (m["value"], time.time())
-                        elif m["type"] == "livecmd":
-                            self.send(**m["cmd"])
-                            if m.get("sent"):
-                                self.set_sent[m["sent"][0]] = (m["sent"][1], time.time())
                         else:
-                            self.send(op="variant", name=m["name"])
+                            self.send(**m["cmd"])
+                    elif moving and m["buf"].strip().lower() == "off":
+                        self.send(op="live", on=False); self.say("disarming live")
                     else:
                         self.say(kept + " (type live exactly)")
                     return True
@@ -2765,9 +2535,11 @@ class Screen:
                 else:
                     self.say("engine kept running")
                 return True
-            if m.get("type") == "reset":
+            if m.get("type") == "restart":
                 if ch in (ord("y"), ord("Y")):
-                    self.send(op="reset_paper")
+                    self.send(op="variant_restart", variant=m["name"])
+                else:
+                    self.say("kept")
                 return True
             return True
         if self.overlay == "settings":
@@ -2795,29 +2567,16 @@ class Screen:
                                      curses.KEY_PPAGE: -10, curses.KEY_NPAGE: 10}[ch])
         elif ch in (curses.KEY_LEFT, curses.KEY_RIGHT):
             self.move_focus(-1 if ch == curses.KEY_LEFT else 1)
-        elif ch in (10, 13, curses.KEY_ENTER):         # the focused box's: view a profile, or use a variant
-            if self.focus == "profiles" and self.in_profiles():
-                self.view_profile()
-            elif self.focus == "variants" or not self.shown("variants") and not self.in_profiles():
-                self.use_variant()
+        elif ch in (10, 13, curses.KEY_ENTER):
+            self.select_variant()
+        elif ch in (ord("n"), ord("E")):
+            self.new_variant(edit=ch == ord("E"))
+        elif ch in (ord("D"), ord(" ")):
+            if self.shown("variants"):
+                self.variant_key(ch)
             else:
-                self.say("enter: ←→ to focus variants or profiles, then enter")
-        elif ch in (ord("E"), ord("D")) and self.focus == "variants" and self.shown("variants"):
-            self.variant_key(ch)
-        elif ch == ord("n") and self.focus == "variants" and self.shown("variants"):
-            self.say("E opens a variant's settings; s there saves them as a new one")
-        elif ch == ord("E"):
-            self.say("E opens a variant's settings: " + ("←→ to focus variants, then E" if self.shown("variants") else
-                                                      self.back_to("highlight one in variants, then E")))
-        elif ch in (ord(" "), ord("n"), ord("D"), ord("d")) and self.in_profiles():
-            if self.focus != "profiles":                 # like enter, they act on the focused box only
-                self.say("space, n and d are the profiles box's, D its or the variants box's: ←→ to focus one")
-            elif ch == ord(" "):
-                self.profile_enable()
-            elif ch == ord("d"):
-                self.profile_live()
-            else:
-                self.profile_ask("pname" if ch == ord("n") else "pdelete")
+                self.say(("D deletes a variant: " if ch == ord("D") else "space turns a variant on or off: ") +
+                         self.back_to("highlight one in variants"))
         elif ch == ord("N"):
             self.rename_ask()
         elif ord("1") <= ch <= ord(str(len(BOXES))):
@@ -2838,13 +2597,8 @@ class Screen:
             self.chart = order[(order.index(self.chart) + 1) % len(order)] if self.chart in order else "15m"
             self.save_prefs()
         elif ch == ord("v"):
-            if self.wview():                             # v leaves the watch view for the real book
-                self.watch = None; self.save_prefs(); self.say("back to the paper/live book")
-            else:
-                cur = self.book_view or ("live" if self.st.get("mode") == "live" else "paper")
-                self.book_view = "live" if cur == "paper" else "paper"
-        elif ch == ord("w"):
-            self.toggle_watch()
+            cur = self.book_view or ("live" if self.st.get("mode") == "live" else "paper")
+            self.book_view = "live" if cur == "paper" else "paper"
         elif ch == ord("g"):
             self.overlay, self.ov_off = "gate", 0
         elif ch == ord("e"):
@@ -2858,25 +2612,9 @@ class Screen:
         elif ch == ord("s"):
             self.say("S stops / starts the engine · s saves a report (o)")
         elif ch == ord("R"):
-            if self.not_here():
-                return True
-            self.modal = {"type": "reset", "title": "reset paper", "lines": ["Wipe the paper book and the rule's paper record?",
-                                                                               "The variants' records and the gate are kept.", "", "y resets · any other key keeps it"]}
+            self.restart_key()
         elif ch == ord("L"):
-            if self.not_here():
-                return True
-            if self.st.get("live_enabled"):
-                self.send(op="live", on=False); self.say("disarming live")
-            else:
-                L = self.st.get("live_cfg") or {}
-                self.modal = {"type": "arm", "title": "ARM LIVE", "color": RED, "buf": "",
-                              "lines": ["Live trading uses real money on Kalshi.",
-                                        f"Caps: ${L.get('capital_usd', 0):,.0f} at risk, ${L.get('max_order_usd', 0):,.0f} per order,",
-                                        f"live turns itself off after -${L.get('max_daily_loss', 0):,.0f} in a day.",
-                                        (f"Live trades {self.live_name()}'s rule, only past its gate (g)." if self.live_pid() != "1"
-                                         else "The rule trades live only past the gate (g)."),
-                                        *([] if self.st.get("keys") else ["", f"No key found yet: live stays off until {cfgmod.KEYFILE_ENV} exists."]),
-                                        "", "type live and press enter (esc cancels):", "> "]}
+            self.live_key()
         return True
 
     def loop(self) -> None:

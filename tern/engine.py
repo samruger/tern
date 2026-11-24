@@ -1,4 +1,4 @@
-"""The desk: polls spot and the current hourly event, runs the favorite rule, takes settings
+"""The desk: polls spot and the current hourly events, runs every variant on paper and the live one live, takes
 commands from the screen, settles positions, reconciles live, and writes the status the screen reads."""
 
 from __future__ import annotations
@@ -17,10 +17,11 @@ import traceback
 import uuid
 
 from . import config as cfgmod
-from .book import Book, afford, taker_fee
+from .book import Book, taker_fee
 from .kalshi import Kalshi, KalshiError, quote
 from .record import Recorder
-from . import profiles as profmod
+from . import merge as mergemod
+from . import names as namesmod
 from . import shadow as shadowmod
 from . import variants as varmod
 from . import webctl
@@ -37,8 +38,8 @@ WEB_VIEW_AGE = 30.0    # seconds view-web.json counts after tern web last wrote 
 WEB_TICKERS = 12       # strikes at most whose contract history goes to web viewers
 LOG_TIME = "%Y-%m-%d %H:%M:%S"           # how log() stamps a line in tern.log, and how it is read back
 LOG_LINE = re.compile(r"^(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d) (\w[\w ]{4}) (.*)$")   # level is padded to 5
-TRADES_KEPT, CURVE_KEPT, ENTRIES_KEPT = 5000, 20_000, 20_000   # history lines read back into memory on start
-RULE_LOG = "rule-entries.jsonl"          # the paper book's settled entries of the rule, one a line
+TRADES_KEPT, CURVE_KEPT = 5000, 20_000   # history lines read back into memory on start
+OLD_PAPER = "paper-book.json"            # the paper book as it was when variants' own records took its place
 LOST_REPLY_WAITS = (1.0, 2.0, 4.0)   # seconds between looks for an order whose reply never came
 
 
@@ -157,86 +158,51 @@ class Desk:
         self.events: dict[str, dict] = {}      # series -> {event, title, close, markets, fetched}
         self.hist: dict[str, collections.deque] = {}   # ticker -> (ts, bid, ask)
         self.view = {"series": "KXBTCD", "ticker": None}
-        self.web = {"series": [], "tickers": [], "profiles": []}   # what web viewers (tern web) look at: view only, never trades
+        self.web = {"series": [], "tickers": []}   # what web viewers (tern web) look at: view only, never trades
         self.seeded: set[str] = set()
         self.mode = "paper"
         self.live_error = ""
         self.foreign: list[str] = []
         self.balance: float | None = None
         self.last = collections.defaultdict(float)
+        # the desk's settings changes, and the settings version new rows are stamped with
+        self.slog = namesmod.SettingsLog(os.path.join(runtime, "settings-log.jsonl"))
+        self._merge_profiles()
         self.shadow = Shadow(runtime, self.cfg.taker_fee)
         self._load_state()
         self.rec = Recorder(runtime)
         self.closed: dict[str, dict] = {}      # hourly events that have closed and still owe their results
-        # profile 1's settings changes, from now on; a profile's are in its own folder (profiles.py)
-        self.slog = profmod.SettingsLog(os.path.join(runtime, "settings-log.jsonl"))
-        self.profiles: list[profmod.Profile] = []
-        self.names = profmod.Names(runtime)    # profile 1's name, the built-in variants' display names
+        self.names = namesmod.Names(runtime)   # the built-in variants' display names
         if self.shadow.own.damaged:
             self.log("variants.json has something unreadable in it: those variants are not running", "error")
         self.shadow.own.keep_filled()
-        if self._lost(self.cfg.strategy, self.shadow):
-            self.log(f"profile 1: {self._lost(self.cfg.strategy, self.shadow)}: paper trades base, live waits for a pick", "error")
-        self._profiles_reload(force=True)
+        if self.cfg.live.enabled and not self.live_target()["ok"]:
+            self.log(f"live waits: {self.live_target()['why']}", "error")
         for ev, close in self.shadow.pending(time.time()).items():
             self.closed[ev] = {"series": ev.split("-", 1)[0], "close": close}
-        def owed(p):
-            for ev, close in p.shadow.pending(time.time()).items():
-                self.closed.setdefault(ev, {"series": ev.split("-", 1)[0], "close": close})
-        self._each_profile(owed, "load")
 
-    # ------------------------------------------------------------ profiles (profiles.py)
-    def _profiles_reload(self, now: float | None = None, force: bool = False) -> None:
-        """Pick up profile folders added or removed, and hand edits of their config.json, every 5 s.
-        A profile already loaded keeps its object (and its records in memory)."""
-        now = time.time() if now is None else now
-        if not force and now - self.last["profiles"] < 5:
+    def _merge_profiles(self) -> None:
+        """The profiles of before move into the one list, once (merge.py). Only with the engine's lock: another engine
+        may be running on those files."""
+        if not os.path.isdir(os.path.join(self.runtime, mergemod.FROM)) and \
+                not os.path.exists(os.path.join(self.runtime, mergemod.BUSY)):
             return
-        self.last["profiles"] = now
-        have = {p.id: p for p in self.profiles}
-        out = []
-        for pid in profmod._ids(self.runtime):
-            p = have.get(pid)
+        with open(os.path.join(self.runtime, "engine.lock"), "a") as lock:
             try:
-                if p is None:
-                    p = profmod.Profile.load(os.path.join(self.runtime, profmod.PROFILES_DIR, pid), self.cfg.taker_fee,
-                                             upgrade=True)
-                    if p.shadow.own.damaged:
-                        self.log(f"profile {p.name}: variants.json has something unreadable in it", "error")
-                    p.shadow.own.keep_filled()
-                    if self._lost(p.cfg.strategy, p.shadow):
-                        self.log(f"profile {p.name}: {self._lost(p.cfg.strategy, p.shadow)}: its book trades base", "error")
-                else:
-                    for key, was, to in p.reload_cfg():
-                        self.log(f"profile {p.name}: {key} {was} → {to} by hand (settings {p.log.sv})")
-                out.append(p)
-            except Exception as ex:              # a broken folder is skipped, never the desk
-                if p is not None:
-                    out.append(p)
-                if now - self.last["perr" + pid] >= 60:
-                    self.last["perr" + pid] = now
-                    self.log(f"profile folder {pid}: {ex}", "error")
-        self.profiles = sorted(out, key=lambda p: (p.created, p.id))
-
-    def _each_profile(self, fn, what: str) -> None:
-        """fn(p) for every profile, each on its own: an error is logged (once a minute a profile) and skipped,
-        so profile 1 and live never wait on a profile."""
-        for p in list(self.profiles):
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                return                           # (run() then says so and stops)
             try:
-                fn(p)
-            except Exception as ex:
-                now = time.time()
-                if now - self.last["perr" + p.id] >= 60:
-                    self.last["perr" + p.id] = now
-                    self.log(f"profile {p.name}: {what}: {ex}", "error")
+                said = mergemod.merge(self.runtime, self.slog.sv)
+            finally:
+                fcntl.flock(lock, fcntl.LOCK_UN)
+        for line in said:
+            self.log(line)
+        self.cfg = cfgmod.load(self.runtime, self.cfg)
 
     def _wanted(self) -> set[str]:
-        """The coins to fetch: profile 1's, what the screen and web viewers look at, and enabled profiles'."""
-        out = set(shadowmod.all_coins(self.cfg.strategy, self.shadow.own)) | {self.view["series"]} | set(self.web["series"])
-        for p in self.profiles:
-            if p.enabled:
-                out |= set(shadowmod.all_coins(p.cfg.strategy, p.shadow.own))
-        return out
+        """The coins to fetch: what the variants trade, and what the screen and web viewers look at."""
+        return set(shadowmod.all_coins(self.cfg.strategy, self.shadow.own)) | {self.view["series"]} | set(self.web["series"])
 
     def _reload_cfg(self, now: float | None = None, force: bool = False) -> None:
         """Re-read config.json every 5 s. A record field changed by hand is logged and bumps the settings version."""
@@ -249,7 +215,7 @@ class Desk:
         if self.cfg is not old:
             if self.shadow.own.guessed:              # it could not be read when the engine started
                 self.shadow.own.keep_filled(shadowmod.sizes_of(self.cfg))
-            for key, was, to in profmod.diff_record(old.strategy, self.cfg.strategy):
+            for key, was, to in namesmod.diff_record(old.strategy, self.cfg.strategy):
                 self.slog.append(key, was, to, bump=True)
                 self.log(f"config: {key} {was} → {to} (settings {self.slog.sv})")
             if old.web != self.cfg.web:              # a hand edit of the web section: the service follows it
@@ -280,22 +246,16 @@ class Desk:
                 except OSError:
                     pass
                 self.log(f"{os.path.basename(path)} unreadable ({ex}); kept as {os.path.basename(keep)}", "error")
-        self.paper = Book.from_dict(st["paper"]) if st.get("paper") else Book("paper", self._start())
+        if isinstance(st.get("paper"), dict):        # from when there was one paper book: kept, no longer traded
+            keep = os.path.join(self.runtime, OLD_PAPER)
+            if not os.path.exists(keep):
+                _atomic_json(keep, {"paper": st["paper"], "open": st.get("auto", [])})
         self.live = Book.from_dict(st["live"]) if st.get("live") else Book("live", 0.0)
         # History is kept in append-only files beside state.json, so a save writes what is new and not
         # the whole record. A state.json from before that still holds the lists: they seed the files once.
-        for b in (self.paper, self.live):
-            old = st.get(b.name) or {}
-            b.trades = self._history(f"{b.name}-trades.jsonl", old.get("trades"), TRADES_KEPT)
-            b.curve = self._history(f"{b.name}-curve.jsonl", old.get("curve"), CURVE_KEPT)
-        rows = st.get("auto", [])
-        done = self._history(RULE_LOG, [a for a in rows if a["pnl"] is not None], ENTRIES_KEPT)
-        # An entry is written to the file before state.json is saved without it. If the engine died in
-        # between it is in both: the file wins, so it is not settled twice.
-        key = lambda a: (a.get("ts"), a.get("ticker"), a.get("slot"))
-        seen = {key(a) for a in done}
-        self.auto = done + [a for a in rows if a["pnl"] is None and key(a) not in seen]   # paper record of the rule: one row per entry
-        self.auto_done: list[dict] = []              # entries settled since the last save, not in RULE_LOG yet
+        old = st.get("live") or {}
+        self.live.trades = self._history("live-trades.jsonl", old.get("trades"), TRADES_KEPT)
+        self.live.curve = self._history("live-curve.jsonl", old.get("curve"), CURVE_KEPT)
         self.slots = {k: set(v) for k, v in st.get("slots", {}).items()}     # "book|event" -> minutes done
         self.hour_cost = st.get("hour_cost", {})     # "book|event" -> dollars
         self.taken = st.get("taken", {})             # "book|event" -> {ticker: entries}, for a variant's per-strike cap
@@ -338,7 +298,7 @@ class Desk:
         self.taken = {k: v for k, v in self.taken.items() if fresh(k)}
         # meta is only needed for strikes that are quoted now or still owed a settlement
         need = {m["ticker"] for e in self.events.values() for m in e["markets"]}
-        need |= set(self.paper.pos) | set(self.live.pos) | {a["ticker"] for a in self.auto if a["pnl"] is None}
+        need |= set(self.live.pos) | {r["ticker"] for r in self.shadow.rows}
         if any(e["markets"] for e in self.events.values()):
             self.meta = {t: m for t, m in self.meta.items() if t in need}
             for k in [k for k in self.last if k.startswith("st") and k[2:] not in need]:
@@ -348,15 +308,12 @@ class Desk:
         sig = self._fingerprint()
         if sig == self._saved_sig and now - self.last["fullsave"] < 60:
             return
-        for b in (self.paper, self.live):            # history first: state.json never runs ahead of it
-            self._append_history(f"{b.name}-trades.jsonl", b.new_trades)
-            self._append_history(f"{b.name}-curve.jsonl", b.new_curve)
-        self._append_history(RULE_LOG, self.auto_done)
-        # Only what cannot be asked for again is saved: open entries, and meta for strikes still owed a
-        # settlement (the rest of meta comes back with the first market fetch).
-        owed = [a for a in self.auto if a["pnl"] is None]
-        keep = set(self.paper.pos) | set(self.live.pos) | {a["ticker"] for a in owed}
-        st = {"paper": self.paper.to_dict(), "live": self.live.to_dict(), "auto": owed,
+        self._append_history("live-trades.jsonl", self.live.new_trades)   # history first: state.json never runs ahead of it
+        self._append_history("live-curve.jsonl", self.live.new_curve)
+        # Only what cannot be asked for again is saved: meta for strikes still owed a settlement (the rest of
+        # meta comes back with the first market fetch).
+        keep = set(self.live.pos) | {r["ticker"] for r in self.shadow.rows}
+        st = {"live": self.live.to_dict(),
               "slots": {k: sorted(v) for k, v in self.slots.items()}, "hour_cost": self.hour_cost, "taken": self.taken,
               "day": self.day, "meta": {t: m for t, m in self.meta.items() if t in keep}, "ev_close": self.ev_close}
         text = json.dumps(st, separators=(",", ":"))
@@ -375,7 +332,7 @@ class Desk:
             return (len(b.trades), b.trades[-1]["ts"] if b.trades else 0, len(b.curve), tuple(b.curve[-1]) if b.curve else (),
                     round(b.cash, 6), round(b.realized, 6), round(b.start or 0, 6), len(b.pos),
                     sum(round(p["q"], 6) for p in b.pos.values()))
-        return (book(self.paper), book(self.live), len(self.auto), sum(1 for a in self.auto if a["pnl"] is not None),
+        return (book(self.live),
                 sum(len(v) for v in self.slots.values()), len(self.slots), round(sum(self.hour_cost.values()), 6),
                 len(self.hour_cost), sum(sum(v.values()) for v in self.taken.values()), json.dumps(self.day, sort_keys=True), len(self.meta), len(self.ev_close))
 
@@ -608,15 +565,8 @@ class Desk:
 
     # ------------------------------------------------------------ execution
     def _exec(self, book: Book, ticker: str, delta: float, price: float, avail: float, tag: str) -> dict | None:
-        """Fill a taker order of `delta` YES at limit `price` in `book`. Returns the trade record."""
+        """Send a taker order of `delta` YES at limit `price` for the live book. Returns the trade record."""
         meta = {k: self.meta.get(ticker, {}).get(k) for k in ("event", "strike", "close", "series")}
-        if book is self.paper:
-            n = min(abs(delta), avail) if avail else 0
-            if n <= 0:
-                return None
-            d = n if delta > 0 else -n
-            return book.trade(ticker, d, price, taker_fee(n, price, self.cfg.taker_fee), meta, tag)
-        # live
         if self.mode != "live" or not self.api:
             raise KalshiError("live is not active")
         # The rule only buys, but a strike's favorite can flip between slots (YES at 25m, NO at 15m), and
@@ -698,8 +648,8 @@ class Desk:
 
     # ------------------------------------------------------------ the rule
     def _live_rule_on(self, gate: dict) -> bool:
-        # a live profile that is gone or off stops live entries even with auto_needs_gate off
-        return self.mode == "live" and gate.get("profile_ok", True) and (gate["passed"] or not self.cfg.live.auto_needs_gate)
+        # a live variant that is gone or off stops live entries even with auto_needs_gate off
+        return self.mode == "live" and gate["ok"] and (gate["passed"] or not self.cfg.live.auto_needs_gate)
 
     def vol(self, series: str, now: float) -> float | None:
         """The coin's realized volatility over the last hour (shadow.vol), from the spot feed."""
@@ -708,60 +658,29 @@ class Desk:
             rows = list(mq)[-70:] if mq else []
         return shadowmod.vol(rows, now)
 
-    def variant(self) -> str:
-        """The variant paper and live trade. A name config.json doesn't know falls back to base."""
-        v = self.cfg.strategy.variant
-        return v if shadowmod.known(v, self.shadow.own) else "base"
-
-    def _start(self) -> float:
-        """What the paper book starts with: the paper start of the variant it trades."""
-        return shadowmod.start_of(self.variant(), self.cfg, self.shadow.own)
-
-    @staticmethod
-    def _lost(S, shadow) -> str:
-        """Why the variant a profile was set to can't be what it trades, or "". Its paper then falls back to base;
-        live never does (live_target): it waits until one is picked."""
-        return "" if shadowmod.known(S.variant, shadow.own) else f"its variant {S.variant!r} is not there any more"
-
-    def vname(self, name: str, own) -> str:
-        """What the screen calls a variant: a profile's own (own: its VariantSet) or a built-in one."""
-        return own.title(name) if own is not None and name in own.all else self.names.variant(name)
+    def vname(self, name: str) -> str:
+        """What the screen calls a variant: one of your own or a built-in one."""
+        own = self.shadow.own
+        return own.title(name) if name in own.all else self.names.variant(name)
 
     def live_target(self) -> dict:
-        """The profile live trades (live.profile; d in the profiles box): its id, name, rule, variant and
-        records. ok is False, with why, when live must not enter for it: a profile that is gone or off.
-        Live never falls back to profile 1 on its own."""
-        pid = str(self.cfg.live.profile or "1")
-        if pid == "1":
-            lost = self._lost(self.cfg.strategy, self.shadow)
-            return {"id": "1", "name": self.names.profile, "S": self.cfg.strategy, "variant": self.variant(),
-                    "shadow": self.shadow, "ok": not lost, "why": lost and f"{lost}: pick one (enter, page 2)"}
-        p = self._profile(pid)
-        if p is None:
-            return {"id": pid, "name": pid, "S": self.cfg.strategy, "variant": self.variant(), "shadow": None,
-                    "ok": False, "why": f"live profile {pid!r} is gone: pick one with d"}
-        lost = self._lost(p.cfg.strategy, p.shadow)
-        if lost:
-            return {"id": p.id, "name": p.name, "S": p.cfg.strategy, "variant": p.variant, "shadow": p.shadow,
-                    "ok": False, "why": f"{p.name}: {lost}: pick one (enter, page 2)"}
-        return {"id": p.id, "name": p.name, "S": p.cfg.strategy, "variant": p.variant, "shadow": p.shadow,
-                "ok": p.enabled, "why": "" if p.enabled else f"{p.name} is off (space turns it on)"}
+        """The variant live trades (live.variant; L on the screen). ok is False, with why, when live must not enter:
+        none was picked, or it is gone or off. Live never falls back to another on its own."""
+        name, own = self.cfg.live.variant, self.shadow.own
+        why = "no variant is picked for live: select one (enter) and press L" if not name else \
+            f"live's variant {name!r} is not there any more: select one (enter) and press L" if not shadowmod.known(name, own) else \
+            f"{self.vname(name)} is off (space turns it on)" if name in own.off else ""
+        return {"variant": name, "ok": not why, "why": why}
 
     def _auto(self, gate: dict | None = None) -> None:
+        """Live's entries. Paper is the variants' own records (_shadow)."""
         gate = gate or self.gate()
-        # each book trades its own profile's rule: paper profile 1's, live the live profile's (live_target)
-        jobs = [(self.paper, self.cfg.strategy, self.variant(), self.shadow.own)]
         if self._live_rule_on(gate):
-            t = self.live_target()
-            if t["shadow"] is not None:
-                jobs.append((self.live, t["S"], t["variant"], t["shadow"].own))
-        now = time.time()
-        for book, S, var, own in jobs:
-            self._auto_book(book, S, var, now, own)
+            self._auto_book(self.live, self.cfg.strategy, self.live_target()["variant"], time.time(), self.shadow.own)
 
     def _auto_book(self, book, S, var: str, now: float, own=None) -> None:
         lo, hi, cap, mins, spread, coins, mvol = shadowmod.params(var, S, own)
-        contracts, hour = shadowmod.size_of(var, S, own)
+        hour = shadowmod.size_of(var, S, own)[1]
         for series in coins:
             e = self.events.get(series)
             if not e or not e["markets"] or now - e["fetched"] > 10:
@@ -779,27 +698,20 @@ class Desk:
                 continue                         # the coin moved too hard this past hour (calm)
             held = self.taken.setdefault(key, {})
             sig = [s for s in signals(e["markets"], lo, hi, spread) if cap is None or held.get(s["ticker"], 0) < cap]
-            if book is self.live and sig:
+            if sig:
                 self._save_state()               # the slot is on disk before any order: a restart never repeats it
             placed = 0
             lost0 = self.lost_replies
             for s in sig:
-                if book is self.live and self.lost_replies > lost0:
+                if self.lost_replies > lost0:
                     # Kalshi's order endpoint is failing: each lookup sleeps ~7s, and a run of them
                     # would stall settling, the loss check and the screen while prices go stale.
                     self.log("live rule stopped for this slot: an order reply was lost, the rest are skipped", "warn")
                     break
                 spent = self.hour_cost.get(key, 0.0)
                 unit = s["price"] if s["delta_sign"] > 0 else 1 - s["price"]
-                # whole contracts, no more than the quote shows: paper is sized exactly as the shadow record
-                # sizes it; live has its own size (live.contracts)
-                size = self.cfg.live.contracts if book is self.live else contracts
-                n = float(int(min(size, s["size"], max(0.0, (hour - spent) / max(unit, 1e-6)))))
-                if book is self.paper:           # no more than its cash, as in shadow (what closes the other side needs none)
-                    q = book.pos.get(s["ticker"], {}).get("q", 0.0)
-                    closes = abs(q) if q * s["delta_sign"] < 0 else 0.0
-                    if n > closes:
-                        n = closes + afford(n - closes, unit, s["price"], book.cash, self.cfg.taker_fee)
+                # whole contracts, no more than the quote shows, at live's own size and the variant's hourly limit
+                n = float(int(min(self.cfg.live.contracts, s["size"], max(0.0, (hour - spent) / max(unit, 1e-6)))))
                 if n < 1:
                     continue                     # a cheaper favorite further on may still fit (as in shadow)
                 try:
@@ -815,45 +727,27 @@ class Desk:
                 self.hour_cost[key] = spent + abs(rec["delta"]) * unit + rec["fee"]
                 held[s["ticker"]] = held.get(s["ticker"], 0) + 1
                 placed += 1
-                if book is self.paper:
-                    self.auto.append({"ts": now, "ticker": s["ticker"], "side": s["side"], "n": abs(rec["delta"]),
-                                      "cost": unit, "fee": rec["fee"], "slot": slot, "pnl": None})
-            who = "" if book is self.paper or self.cfg.live.profile in ("1", "") else f"{self.live_target()['name']} · "
-            self.log(f"{book.name}: {slot}m slot on {e['event']} ({who}{self.vname(var, own)}): {len(sig)} favorites in band, {placed} bought")
-            if book is self.live and sig:
+            self.log(f"{book.name}: {slot}m slot on {e['event']} ({self.vname(var)}): {len(sig)} favorites in band, {placed} bought")
+            if sig:
                 self._save_state()
 
-    def gate(self, name: str | None = None, rec: dict | None = None) -> dict:
-        """The live gate: the live profile's variant (live_target), judged on that profile's own shadow
-        record of it, so switching variants or profiles never lets a short or losing record trade live.
-        A live profile that is gone or off fails it. The paper book's record of the rule rides along
-        for the book box."""
-        rows = [a for a in self.auto if a["pnl"] is not None]
-        pnl = sum(a["pnl"] for a in rows)
-        wins = sum(1 for a in rows if a["pnl"] > 0)
-        per = sum(a["pnl"] / a["n"] for a in rows) / len(rows) if rows else 0.0
-        if name is not None:
-            g = self.checks(name, rec)
-        else:
-            t = self.live_target()
-            sh = t["shadow"]
-            g = self.checks(t["variant"], sh.summary([t["variant"]])[0] if sh else
-                            {"hours": 0, "entries": 0, "pnl": 0.0}, who=t["name"] if t["id"] != "1" else "")
-            if not t["ok"]:
-                g["checks"] = [{"name": t["why"], "ok": False, "detail": "live enters nothing", "key": "profile",
-                                "have": 0, "need": 1}] + g["checks"]
-                g["passed"] = False
-            g["profile"], g["profile_name"], g["profile_ok"] = t["id"], t["name"], t["ok"]
-        return {**g, "entries": len(rows), "open": len(self.auto) - len(rows),
-                "pnl": pnl, "win": wins / len(rows) if rows else None, "per_contract": per}
+    def gate(self) -> dict:
+        """The live gate: live's variant (live_target), judged on its own record, so moving live to another never lets
+        a short or losing record trade. One that is gone or off fails it."""
+        t = self.live_target()
+        g = self.checks(t["variant"] or "the live variant", self.shadow.summary([t["variant"]])[0])
+        if not t["ok"]:
+            g["checks"] = [{"name": t["why"], "ok": False, "detail": "live enters nothing", "key": "live",
+                            "have": 0, "need": 1}] + g["checks"]
+            g["passed"] = False
+        return {**g, "ok": t["ok"]}
 
-    def checks(self, name: str, rec: dict | None = None, who: str = "") -> dict:
-        """A variant's gate checks alone, on its shadow record (rec is its summary() row; profile 1's by
-        default). who names a profile other than 1 in the check lines."""
+    def checks(self, name: str, rec: dict | None = None) -> dict:
+        """A variant's gate checks alone, on its record (rec is its summary() row)."""
         G = self.cfg.gate
         r = rec or self.shadow.summary([name])[0]
         days = r["hours"] / 24              # hours it actually traded, not time elapsed
-        var, name = name, f"{who}'s {name}" if who else name
+        var, name = name, self.vname(name)
         checks = [
             {"name": f"{name} on paper ≥ {G.min_days:g} days", "ok": days >= G.min_days, "detail": f"{days:.1f} days of hours traded",
              "key": "days", "have": days, "need": G.min_days},
@@ -867,7 +761,7 @@ class Desk:
     # ------------------------------------------------------------ shadow variants and the recorder
     def _shadow(self) -> None:
         now = time.time()
-        for series in self._shadow_coins():
+        for series in shadowmod.all_coins(self.cfg.strategy, self.shadow.own):
             e = self.events.get(series)
             if e and e["markets"] and now - e["fetched"] <= 10 and e["close"] > now and e.get("shadowed") != e["fetched"]:
                 e["shadowed"] = e["fetched"]
@@ -875,7 +769,6 @@ class Desk:
                 for note in self.shadow.step(e["event"], e["close"], e["markets"], self.cfg.strategy, now,
                                              vol=v, sv=self.slog.sv, paper=self.cfg.paper_capital):
                     self.log(note)
-                self._each_profile(lambda p: p.step(e["event"], e["close"], e["markets"], now, v), "step")
         for ev, c in list(self.closed.items()):
             late = now > c["close"] + 1800
             if now < c["close"] + 45 or now - c.get("tried", 0) < (300 if late else 20):
@@ -886,43 +779,28 @@ class Desk:
             except KalshiError:
                 continue
             res = {m["ticker"]: m["result"] == "yes" for m in ms if m.get("result") in ("yes", "no")}
-            if not late and (not res or len(res) < len(ms) or not self._needs(ev) <= set(res)):
+            if not late and (not res or len(res) < len(ms) or not self.shadow.needs(ev) <= set(res)):
                 continue
             voided = {m["ticker"] for m in ms if m.get("status") in ("finalized", "settled")
                       and m.get("result") not in ("yes", "no", None, "")}
             n = self.shadow.settle(res)
             # finalized without yes/no: voided. Those rows would otherwise stay open for good.
             n += self.shadow.void(voided)
-            self._each_profile(lambda p: (p.shadow.settle(res), p.shadow.void(voided)), "settle")
             if not c.get("recorded") and res:
                 c["recorded"] = True
                 self.rec.results(c["series"], c["close"], [(m["floor_strike"], m["result"]) for m in ms
                                                             if m["ticker"] in res and m.get("floor_strike") is not None])
-            if not self._needs(ev):                  # rows Kalshi has not decided yet are asked about again:
+            if not self.shadow.needs(ev):            # rows Kalshi has not decided yet are asked about again:
                 del self.closed[ev]                  # dropping the event would leave them open until a restart
             if n:
                 self.log("shadow: " + ev + " settled · " + " · ".join(
                     f"{r['name']} {r['pnl']:+.2f}" for r in self.shadow.summary() if r["entries"]))
         self.shadow.save()
-        self._each_profile(lambda p: p.shadow.save(), "save")
-
-    def _shadow_coins(self) -> list[str]:
-        """Every coin some variant of some profile trades, profile 1's first."""
-        out = list(shadowmod.all_coins(self.cfg.strategy, self.shadow.own))
-        self._each_profile(lambda p: out.extend(c for c in shadowmod.all_coins(p.cfg.strategy, p.shadow.own) if c not in out), "step")
-        return out
-
-    def _needs(self, ev: str) -> set[str]:
-        """The strikes of an event that profile 1 or any profile still holds open rows on."""
-        out = set(self.shadow.needs(ev))
-        self._each_profile(lambda p: out.update(p.shadow.needs(ev)), "settle")
-        return out
 
     # ------------------------------------------------------------ settlement
     def _settle(self) -> None:
         now = time.time()
-        due = {t for b in (self.paper, self.live) for t, p in b.pos.items() if (p.get("close") or 0) < now - 20}
-        due |= {a["ticker"] for a in self.auto if a["pnl"] is None and self.meta.get(a["ticker"], {}).get("close", now) < now - 20}
+        due = {t for t, p in self.live.pos.items() if (p.get("close") or 0) < now - 20}
         ready = [t for t in due if now - self.last["st" + t] >= 20]   # throttle first, so nothing holds the queue
         for t in sorted(ready, key=lambda t: (self.last["st" + t], t))[:6]:   # longest-waiting first
             self.last["st" + t] = now
@@ -938,24 +816,13 @@ class Desk:
                     self._void(t, res)
                 continue
             y = res == "yes"
-            for b in (self.paper, self.live):
-                r = b.settle(t, y)
-                if r:
-                    self.log(f"{b.name}: {t} settled {res.upper()}, {'+' if r['realized'] >= 0 else '-'}${abs(r['realized']):,.2f}")
-            for a in self.auto:
-                if a["ticker"] == t and a["pnl"] is None:
-                    won = y if a["side"] == "yes" else not y
-                    a["pnl"] = round(a["n"] * ((1.0 if won else 0.0) - a["cost"]) - a["fee"], 4)
-                    self.auto_done.append(a)
+            r = self.live.settle(t, y)
+            if r:
+                self.log(f"live: {t} settled {res.upper()}, {'+' if r['realized'] >= 0 else '-'}${abs(r['realized']):,.2f}")
 
     def _void(self, t: str, res) -> None:
-        for b in (self.paper, self.live):
-            if b.void(t):
-                self.log(f"{b.name}: {t} finalized as {res!r}, not yes/no: voided, stake returned", "warn")
-        for a in self.auto:
-            if a["ticker"] == t and a["pnl"] is None:
-                a["pnl"] = round(-a["fee"], 4)
-                self.auto_done.append(a)
+        if self.live.void(t):
+            self.log(f"live: {t} finalized as {res!r}, not yes/no: voided, stake returned", "warn")
 
     # ------------------------------------------------------------ commands from the screen
     def _commands(self) -> None:
@@ -995,36 +862,15 @@ class Desk:
     def _command(self, c: dict) -> str:
         op = c.get("op")
         if op == "live":
-            self.cfg.live.enabled = bool(c["on"]); cfgmod.save(self.cfg, self.runtime)
-            if not c["on"]:
-                self.mode = "paper"; self.api = None
-                return "live off: back to paper (live positions ride to settlement)"
-            self.last["bal"] = 0
-            self.day = {}                        # the daily loss counts from now: a same-day KILL must not fire again at once
-            return "live armed: authenticating with Kalshi (the daily loss limit counts from now)"
-        if op == "variant":
-            name = c.get("name")
+            return self._live_command(c)
+        if op == "variant_new":
+            return self._variant_new(c)
+        if op in ("variant_delete", "variant_on", "variant_restart"):
+            name = c.get("variant")
             if not shadowmod.known(name, self.shadow.own):
-                return f"unknown variant {name!r} (known: {', '.join(self.shadow.order())})"
-            if name == self.cfg.strategy.variant:
-                return f"{name} is already in use"
-            was = self.variant()
-            self.cfg.strategy.variant = name; cfgmod.save(self.cfg, self.runtime)
-            g = self.checks(name)
-            vn = lambda v: self.vname(v, self.shadow.own)
-            msg = f"variant {vn(was)} → {vn(name)}: paper trades it from the next slot (open positions ride to settlement)"
-            if (self.mode == "live" or self.cfg.live.enabled) and self.live_target()["id"] == "1":
-                msg += " · live trades it now" if g["passed"] or not self.cfg.live.auto_needs_gate else \
-                       f" · live waits: {vn(name)} has not passed the gate"
-            self.log(msg, "warn" if self.mode == "live" else "info")
-            return msg
-        if op in ("variant_new", "variant_delete"):
-            w = self._who(c.get("profile"))
-            if isinstance(w, str):
-                return w
-            return self._variant_new(w, c) if op == "variant_new" else self._variant_delete(w, c.get("variant"))
-        if op == "live_profile":
-            return self._live_profile(c.get("profile"))
+                return f"no variant {name!r}"
+            return {"variant_delete": self._variant_delete, "variant_on": lambda n: self._variant_on(n, bool(c.get("on"))),
+                    "variant_restart": self._variant_restart}[op](name)
         if op == "set":
             key, was = c.get("key"), None
             if cfgmod.setting(key) is not None:
@@ -1035,7 +881,7 @@ class Desk:
                 return f"not set: {ex}"
             cfgmod.save(self.cfg, self.runtime)
             if was != v:
-                self.slog.append(key, was, v, bump=key in profmod.RECORD_KEYS)
+                self.slog.append(key, was, v, bump=key in namesmod.RECORD_KEYS)
             r = cfgmod.setting(key)
             label = {"live": "live ", "gate": "gate ", "web": "web "}.get(r.sec, "") + r.label
             label = "web screen" if key == "web.enabled" else label
@@ -1049,43 +895,41 @@ class Desk:
             return msg
         if op == "rename":
             return self._rename(c)
-        if op and op.startswith("profile_"):
-            return self._profile_command(op, c)
-        if op == "reset_paper":
-            self.paper = Book("paper", self._start()); self.auto = []; self.auto_done = []
-            for name in ("paper-trades.jsonl", "paper-curve.jsonl", RULE_LOG):   # its history goes with it
-                try:
-                    os.remove(os.path.join(self.runtime, name))
-                except FileNotFoundError:
-                    pass
-            self.slots = {k: v for k, v in self.slots.items() if not k.startswith("paper|")}
-            self.hour_cost = {k: v for k, v in self.hour_cost.items() if not k.startswith("paper|")}
-            self.taken = {k: v for k, v in self.taken.items() if not k.startswith("paper|")}
-            return f"paper reset to ${self.paper.start:,.2f}"
         return f"unknown command {op!r}"
 
-    def _live_profile(self, pid) -> str:
-        """d in the profiles box: the profile whose rule live trades from the next slot. Its variant needs its
-        own record past the gate; open live positions ride to settlement."""
-        pid = str(pid or "")
-        p = None if pid == "1" else self._profile(pid)
-        if pid != "1" and p is None:
-            return f"no profile {pid!r}"
-        if pid == str(self.cfg.live.profile or "1"):
-            return f"{self.names.profile if pid == '1' else p.name} is already the live profile"
-        was = self.live_target()["name"]
-        self.cfg.live.profile = pid; cfgmod.save(self.cfg, self.runtime)
-        t, g = self.live_target(), self.gate()
-        vn = self.vname(t["variant"], t["shadow"].own if t["shadow"] is not None else None)
-        msg = f"live profile {was} → {t['name']} ({vn}): live trades its rule from the next slot"
+    def _armed_with(self, name: str) -> bool:
+        return (self.mode == "live" or self.cfg.live.enabled) and self.cfg.live.variant == name
+
+    def _live_note(self, name: str) -> str:
+        t = self.live_target()
         if not t["ok"]:
-            msg += f" · {t['why']}"
-        elif not g["passed"] and self.cfg.live.auto_needs_gate:
-            msg += f" · live waits: its {vn} record has not passed the gate"
-        if self.mode == "live" or self.cfg.live.enabled:
-            msg += " · open live positions ride to settlement"
-        self.log(msg, "warn" if self.mode == "live" else "info")
-        return msg
+            return f" · {t['why']}"
+        return "" if self.checks(name)["passed"] or not self.cfg.live.auto_needs_gate else \
+            f" · live waits: {self.vname(name)} has not passed the gate"
+
+    def _live_command(self, c: dict) -> str:
+        """L: live on with a variant (the one selected on the screen), moved to another one, or off."""
+        L = self.cfg.live
+        if not c.get("on"):
+            L.enabled = False; cfgmod.save(self.cfg, self.runtime)
+            self.mode = "paper"; self.api = None
+            return "live off: back to paper (live positions ride to settlement)"
+        name = c.get("variant")
+        if not shadowmod.known(name, self.shadow.own):
+            return f"live not changed: no variant {name!r}"
+        was = L.variant if L.enabled else None
+        if was == name:
+            return f"live already trades {self.vname(name)}"
+        L.variant, L.enabled = name, True
+        cfgmod.save(self.cfg, self.runtime)
+        self.slog.append("live.variant", was, name, bump=False)
+        if was is not None:
+            msg = f"live moved from {self.vname(was)} to {self.vname(name)}: from the next slot, open live positions ride to settlement" + self._live_note(name)
+            self.log(msg, "warn")
+            return msg
+        self.last["bal"] = 0
+        self.day = {}                            # the daily loss counts from now: a same-day KILL must not fire again at once
+        return f"live armed with {self.vname(name)}: authenticating with Kalshi (the daily loss limit counts from now)" + self._live_note(name)
 
     def _web_state(self, now: float) -> dict:
         """tern-web.service as the settings box shows it: whether it runs, and where to open it. Asked every
@@ -1097,194 +941,97 @@ class Desk:
             self._webst = {"state": webctl.state(), "url": webctl.url(self.cfg.web)}
         return self._webst
 
-    # ------------------------------------------------------------ a profile's own variants (variants.py)
-    def _who(self, pid) -> "dict | str":
-        """Profile pid ("1" or none: the desk) as the variant commands see it, or why there is none."""
-        if pid in (None, "", "1"):
-            return {"id": "1", "name": self.names.profile, "cfg": self.cfg, "shadow": self.shadow,
-                    "log": self.slog, "variant": self.variant()}
-        p = self._profile(pid)
-        if p is None:
-            return f"no profile {pid!r}"
-        return {"id": p.id, "name": p.name, "cfg": p.cfg, "shadow": p.shadow, "log": p.log,
-                "variant": p.variant}
-
-    def _variant_new(self, w: dict, c: dict) -> str:
-        """s in E's box: a variant's settings with the draft's changes, saved as a new variant with an empty record.
-        Nothing that trades changes: enter in the variants box puts it in use."""
-        sh, parent = w["shadow"], c.get("from") or w["variant"]
+    # ------------------------------------------------------------ the variants (variants.py)
+    def _variant_new(self, c: dict) -> str:
+        """s in the box n and E open: a variant's settings with the draft's changes, saved as a new variant with an
+        empty record. The one it came from, its record and what live trades stay as they are."""
+        sh, parent = self.shadow, c.get("from")
+        if c.get("profile") not in (None, "", "1"):
+            return "no new variant: the screen that asked is from when there were profiles: reopen it"
         if not shadowmod.known(parent, sh.own):
             return f"no new variant: unknown variant {parent!r}"
-        rule = shadowmod.rule_of(parent, w["cfg"], sh.own)
+        rule = shadowmod.rule_of(parent, self.cfg, sh.own)
         try:
             changes = varmod.checked(c.get("rule") or {}, rule)
             if varmod.same({**rule, **changes}, rule):
-                raise ValueError(f"nothing is different from {self.vname(parent, sh.own)}")
+                raise ValueError(f"nothing is different from {self.vname(parent)}")
             key = sh.own.add({**rule, **changes}, c.get("name") or "", parent, self.names.shown())
         except ValueError as ex:
             return f"no new variant: {ex}"
         sh.changes += 1
         sh.own.by[key] = str(c.get("id", ""))
-        w["log"].append("variant", parent, key, bump=False)
+        self.slog.append("variant", parent, key, bump=False)
         what = []
         for f, v in changes.items():
             if v != rule[f]:
-                w["log"].append("rule." + f, rule[f], v, bump=False)
-                what.append(f"{varmod.RULE[f].label} {profmod.show('rule.' + f, rule[f])} → {profmod.show('rule.' + f, v)}")
-        return f"{w['name']}: new variant {sh.own.title(key)}, from {self.vname(parent, sh.own)}" + \
-            (": " + ", ".join(what) if what else "") + " · enter in variants uses it"
+                self.slog.append("rule." + f, rule[f], v, bump=False)
+                what.append(f"{varmod.RULE[f].label} {namesmod.show('rule.' + f, rule[f])} → {namesmod.show('rule.' + f, v)}")
+        return f"new variant {sh.own.title(key)}, from {self.vname(parent)}: {', '.join(what)}"
 
-    def _variant_delete(self, w: dict, name) -> str:
-        """D in the variants box: one of the profile's own stops running. Its entries stay on file."""
-        sh, own = w["shadow"], w["shadow"].own
+    def _variant_delete(self, name: str) -> str:
+        """D: one of your own stops running. Its entries stay on file."""
+        sh, own = self.shadow, self.shadow.own
         if name in shadowmod.VARIANTS:
-            return f"{self.names.variant(name)} is built in: it can't be deleted"
-        if not own.has(name):
-            return f"no variant {name!r}"
-        if name == w["variant"]:
-            return f"{own.title(name)} is in use: use another one first (enter), then delete it"
+            return f"{self.names.variant(name)} is built in: it can't be deleted (space turns it off)"
+        if self._armed_with(name):
+            return f"{own.title(name)} is what live trades: turn live off or move it first (L)"
         title, used = own.title(name), sh.bought(name)
         own.delete(name, used)
         sh.changes += 1
-        w["log"].append("variant", name, None, bump=False)
-        return f"{w['name']}: {title} deleted" + (": its record stays (tern report)" if used else "")
+        self.slog.append("variant", name, None, bump=False)
+        return f"{title} deleted" + (": its record stays (tern report)" if used else "")
+
+    def _variant_on(self, name: str, on: bool) -> str:
+        """space: off takes no new entries (open ones still settle) and the hours while off don't count."""
+        own = self.shadow.own
+        if on != (name in own.off):
+            return f"{self.vname(name)} is already {'on' if on else 'off'}"
+        own.turn(name, on)
+        self.shadow.changes += 1
+        self.slog.append("on." + name, not on, on, bump=False)
+        return f"{self.vname(name)} " + ("on: enters from its next slot" if on else "off: no new entries; open ones still settle") + \
+            ((" · live trades it" if on else " · it is live's: live enters nothing while it is off") if self._armed_with(name) else "")
+
+    def _variant_restart(self, name: str) -> str:
+        """R: a variant starts over, with its paper start and an empty record. What it bought so far is kept under a
+        deleted variant's name."""
+        if self._armed_with(name):
+            return f"{self.vname(name)} is what live trades: turn live off or move it first (L)"
+        if not self.shadow.bought(name):
+            return f"{self.vname(name)} has bought nothing: there is nothing to start over"
+        rule = shadowmod.rule_of(name, self.cfg, self.shadow.own)
+        key = self.shadow.restart(name, rule, time.time())
+        self.shadow.save()
+        self.slog.append("restart", name, key, bump=False)
+        return f"{self.vname(name)} starts over at ${rule['paper_capital']:,.0f}: its record so far is kept as {key} (tern report)"
 
     def _rename(self, c: dict) -> str:
-        """A profile ("profile": its id, "1" the desk) or a variant ("variant": its name; with "profile", one of
-        that profile's own) gets a new name."""
-        to = c.get("name") if isinstance(c.get("name"), str) else ""
-        if "variant" in c:
-            v = c.get("variant")
-            w = self._who(c.get("profile"))
-            if isinstance(w, str):
-                return w
-            own = w["shadow"].own
-            try:
-                if own.has(v):
-                    was, now = own.rename(v, to, self.names.shown())
-                    w["shadow"].changes += 1
-                else:
-                    sets = [self.shadow.own] + [p.shadow.own for p in self.profiles]
-                    was, now = self.names.rename_variant(v, to, [x for o in sets for k in o.active() for x in (k, o.title(k))])
-            except ValueError as ex:
-                return f"not renamed: {ex}"
-            if was == now:
-                return f"{now} keeps its name"
-            return f"variant {was} is now {now}" + ("" if now != v else " again") + \
-                (f" (its record stays under {v})" if now != v else "")
-        pid = c.get("profile")
-        if pid == "1":
-            was, now = self.names.profile, " ".join(to.split())[:profmod.NAME_MAX] or profmod.Names.DEFAULT
-            if len(" ".join(to.split())) > profmod.NAME_MAX:
-                return f"not renamed: a profile's name is at most {profmod.NAME_MAX} characters"
-            if was == now:
-                return f"{now} keeps its name"
-            self.names.profile = now; self.names.save()
-            self.slog.append("name", was, now, bump=False)
-            return f"{was} is now {now}"
-        p = self._profile(pid)
-        if p is None:
-            return f"no profile {pid!r}"
+        """A variant gets a new name on the screen; its record keeps its own."""
+        to, v = c.get("name") if isinstance(c.get("name"), str) else "", c.get("variant")
+        own = self.shadow.own
         try:
-            was, now = p.rename(to)
+            if own.has(v):
+                was, now = own.rename(v, to, self.names.shown())
+                self.shadow.changes += 1
+            else:
+                was, now = self.names.rename_variant(v, to, [x for k in own.active() for x in (k, own.title(k))])
         except ValueError as ex:
             return f"not renamed: {ex}"
-        return f"{now} keeps its name" if was == now else f"{was} is now {now}"
-
-    def _profile(self, pid) -> "profmod.Profile | None":
-        return next((p for p in self.profiles if p.id == pid), None)
-
-    def _profile_command(self, op: str, c: dict) -> str:
-        pid = c.get("profile")                   # ("id" is the command's own, for its result)
-        if op == "profile_new":
-            name = c.get("name") if isinstance(c.get("name"), str) else ""
-            try:
-                p = profmod.create(self.runtime, name, self.cfg, self.cfg.taker_fee)
-            except ValueError as ex:
-                return f"no new profile: {ex}"
-            self.profiles.append(p)
-            return f"{p.name} made: the variant profile 1 trades and the built-in ones, empty records, running from the next slot (settings 1)"
-        if pid == "1":
-            return {"profile_enable": "profile 1 always runs: it holds the paper book and live",
-                    "profile_delete": "profile 1 can't be deleted: it holds the paper book and live",
-                    }.get(op, "profile 1's settings are changed in its own settings box")
-        p = self._profile(pid)
-        if p is None:
-            return f"no profile {pid!r}"
-        if op == "profile_delete":
-            if str(self.cfg.live.profile) == p.id:
-                return f"{p.name} is the live profile: make another one live first (d), then delete it"
-            to = profmod.delete(self.runtime, p.id)
-            self.profiles = [x for x in self.profiles if x is not p]
-            if self.view.get("profile") == p.id:
-                self.view = {k: v for k, v in self.view.items() if k != "profile"}
-            return f"{p.name} deleted: kept in {os.path.relpath(to, self.runtime)}"
-        if op == "profile_enable":
-            p.set("enabled", bool(c.get("on")))
-            live = " · it is the live profile: live enters nothing while it is off" \
-                if not p.enabled and str(self.cfg.live.profile) == p.id else ""
-            return f"{p.name} " + ("on: enters from the next slot" if p.enabled else "off: no new entries; open ones still settle") + live
-        if op == "profile_set":
-            key = c.get("key")
-            if key not in profmod.SCREEN_KEYS:   # how it trades is its variants'
-                return f"{p.name}: not set: {key!r} is not a profile setting"
-            try:
-                was, now = p.set(key, c.get("value"))
-            except ValueError as ex:
-                return f"{p.name}: not set: {ex}"
-            live = " · the live profile: live trades this from the next slot" \
-                if str(self.cfg.live.profile) == p.id and was != now and (self.mode == "live" or self.cfg.live.enabled) else ""
-            return f"{p.name}: {profmod.label(key)} {profmod.show(key, was)} → {profmod.show(key, now)} (settings {p.log.sv})" + live
-        return f"unknown command {op!r}"
-
-    def _summary(self, p: "profmod.Profile") -> list[dict]:
-        """A profile's variant summaries, recomputed only when its records change (status is written every step)."""
-        key = (p.shadow.changes, p.shadow.own.changes, p.variant, repr(p.cfg.strategy), p.cfg.paper_capital)
-        if getattr(p, "_sum", (None,))[0] != key:
-            lost = self._lost(p.cfg.strategy, p.shadow)
-            p._sum = (key, [{**r, **self._vinfo(r["name"], p.cfg, p.shadow), "active": r["name"] == p.variant,
-                             **({"lost": lost} if lost and r["name"] == p.variant else {})}
-                            for r in p.shadow.summary()])
-        return p._sum[1]
+        if was == now:
+            return f"{now} keeps its name"
+        return f"variant {was} is now {now}" + ("" if now != v else " again") + \
+            (f" (its record stays under {v})" if now != v else "")
 
     @staticmethod
     def _vinfo(name: str, cfg, shadow) -> dict:
         """What the screen needs to know of a variant besides its record: its rule, and whether it is the
-        profile's own (then its display name, what it was made from and the id of the command that made it)."""
+        your own (then its display name, what it was made from and the id of the command that made it)."""
         own = shadow.own
-        out = {"desc": shadowmod.desc_of(name, own), "rule": shadowmod.rule_of(name, cfg, own), "own": name in own.all,
+        out = {"desc": shadowmod.desc_of(name, own), "rule": shadowmod.rule_of(name, cfg, own), "own": name in own.all, "on": name not in own.off,
                "cash": round(shadow.cash(name, shadowmod.start_of(name, cfg, own)), 2)}
         if out["own"]:
             out.update(title=own.title(name), parent=own.all[name]["from"], by=own.by.get(name, ""))
         return out
-
-    def _profile_rows(self, variants: list[dict], looked: set | None = None) -> list[dict]:
-        """One row per profile for the screen's profiles box, profile 1 first. Only a profile someone is
-        looking at carries its variants' curves."""
-        live = str(self.cfg.live.profile or "1")
-        out = [{"id": "1", "name": self.names.profile, "enabled": True, "variant": self.variant(), "sv": self.slog.sv,
-                "created": 0, "variants": variants, "rule": shadowmod.rule_of(self.variant(), self.cfg, self.shadow.own), "live": live == "1",
-                "gate_passed": next((v["gate"]["passed"] for v in variants if v.get("active") and v.get("gate")), False)}]
-        def one(p):
-            rows = self._summary(p)
-            rec = next((r for r in rows if r["name"] == p.variant), {"hours": 0, "entries": 0, "pnl": 0.0})
-            if p.id not in (looked or set()):
-                rows = [{k: v for k, v in r.items() if k != "curve"} for r in rows]
-            out.append({"id": p.id, "name": p.name, "enabled": p.enabled, "variant": p.variant, "sv": p.log.sv,
-                        "created": p.created, "rule": shadowmod.rule_of(p.variant, p.cfg, p.shadow.own), "variants": rows, "live": live == p.id,
-                        "gate_passed": self.checks(p.variant, rec)["passed"]})
-        self._each_profile(one, "status")
-        return out
-
-    def _pview(self, p: "profmod.Profile", mids: dict, strikes: dict) -> dict:
-        """What the screen needs to show one profile: every variant as a book on its paper start, its settings."""
-        rows = {r["name"]: r for r in self._summary(p)}
-        return {"views": {n: {**p.shadow.view(n, r, mids, strikes, shadowmod.start_of(n, p.cfg, p.shadow.own)),
-                              "strategy": self._strat(n, p.cfg.strategy, p.shadow.own)} for n, r in rows.items()},
-                "strategy": self._strat(p.variant, p.cfg.strategy, p.shadow.own),
-                "settings": {"enabled": p.enabled, "strategy.variant": p.variant},   # (how it trades is in its variants' rows)
-                "gate": self.checks(p.variant, rows[p.variant]),
-                "log": p.log.lines()[-20:]}
 
     @staticmethod
     def _strat(name: str, S, own=None) -> dict:
@@ -1343,39 +1090,25 @@ class Desk:
                     "trades": b.trades[-30:]}
         gate = gate or self.gate()
         shadow = self.shadow.summary()
-        lost = self._lost(self.cfg.strategy, self.shadow)
-        variants = [{**r, **self._vinfo(r["name"], self.cfg, self.shadow), "active": r["name"] == self.variant(),
-                     **({"lost": lost} if lost and r["name"] == self.variant() else {}),
+        variants = [{**r, **self._vinfo(r["name"], self.cfg, self.shadow), "live": r["name"] == self.cfg.live.variant,
                      "gate": self.checks(r["name"], r)} for r in shadow]
 
         def strat(name: str) -> dict:
             return self._strat(name, self.cfg.strategy, self.shadow.own)
-        strategy = strat(self.variant())
-        # every variant as if it traded, for the screen's watch view (w): its shadow record shaped like a book
+        # every variant's record shaped like a book: the screen shows the selected one's
         strikes = {t: m.get("strike") for t, m in self.meta.items()}
         views = {r["name"]: {**self.shadow.view(r["name"], r, mids, strikes, shadowmod.start_of(r["name"], self.cfg, self.shadow.own)),
                              "strategy": strat(r["name"])} for r in shadow}
         st = {"heartbeat": now, "stopped": stopped, "pid": os.getpid(), "mode": self.mode, "live_enabled": self.cfg.live.enabled,
               "live_error": self.live_error, "keys": self._has_keys(now), "balance": self.balance,
               "spot": sp, "events": evs, "hist": hist, "view": self.view,
-              "paper": book_view(self.paper), "live": book_view(self.live),
+              "live": book_view(self.live),
               "gate": gate, "shadow": shadow, "variants": variants, "gate_cfg": self.cfg.gate.__dict__,
-              "strategy": strategy, "views": views, "live_cfg": self.cfg.live.__dict__,
-              "settings": {**{r.key: cfgmod.get_setting(self.cfg, r.key) for r in cfgmod.SETTINGS},
-                           "strategy.variant": self.variant()},
+              "views": views, "live_cfg": self.cfg.live.__dict__,
+              "settings": {r.key: cfgmod.get_setting(self.cfg, r.key) for r in cfgmod.SETTINGS},
               "logs": [list(x) for x in list(self.logs)[-200:]], "results": self.results,
-              "auto_live": self._live_rule_on(gate), "pviews": {}, "variant_names": dict(self.names.variants),
+              "auto_live": self._live_rule_on(gate), "variant_names": dict(self.names.variants),
               "web_state": self._web_state(now)}
-        looked = {self.view.get("profile")} | set(self.web.get("profiles", []))
-        st["profiles"] = self._profile_rows(variants, looked)
-        for p in self.profiles:
-            if p.id in looked:
-                try:
-                    st["pviews"][p.id] = self._pview(p, mids, strikes)
-                except Exception as ex:          # the screen goes without this profile's views, nothing else
-                    if now - self.last["perr" + p.id] >= 60:
-                        self.last["perr" + p.id] = now
-                        self.log(f"profile {p.name}: status: {ex}", "error")
         _atomic_json(os.path.join(self.fast, "status.json"), st)
 
     # ------------------------------------------------------------ loop
@@ -1387,34 +1120,28 @@ class Desk:
                 self.view = v
         except (OSError, json.JSONDecodeError):
             pass
-        ids = {p.id for p in self.profiles}
-        if "profile" in self.view and (not isinstance(self.view["profile"], str) or self.view["profile"] not in ids):
-            # one since deleted (or not a name at all): back to profile 1
-            self.view = {k: v for k, v in self.view.items() if k != "profile"}
-        self.web = {"series": [], "tickers": [], "profiles": []}
+        self.web = {"series": [], "tickers": []}
         try:                                        # tern web: the coins and strikes its viewers have on screen
             path = os.path.join(self.fast, "view-web.json")
             if time.time() - os.path.getmtime(path) < WEB_VIEW_AGE:   # no viewer left: stop serving them
                 with open(path) as fh:
                     v = json.load(fh)
                 self.web = {"series": [s for s in v.get("series", []) if s in cfgmod.SERIES][:len(cfgmod.SERIES)],
-                            "tickers": [t for t in v.get("tickers", []) if isinstance(t, str)][:WEB_TICKERS],
-                            "profiles": [x for x in v.get("profiles", []) if isinstance(x, str) and x in ids][:profmod.MAX_PROFILES]}
+                            "tickers": [t for t in v.get("tickers", []) if isinstance(t, str)][:WEB_TICKERS]}
         except (OSError, json.JSONDecodeError, AttributeError, TypeError):
             pass
 
     def step(self) -> None:
         now = time.time()
         self._reload_cfg(now)
-        self._profiles_reload(now)
         self._read_view()
         wanted = self._wanted()
         unknown = sorted(wanted - set(cfgmod.SERIES))
         if unknown and now - self.last["badseries"] > 60:
             self.last["badseries"] = now
             self.log(f"config: ignoring unknown series {', '.join(unknown)} (known: {', '.join(cfgmod.SERIES)})", "warn")
-        mine = shadowmod.params(self.variant(), self.cfg.strategy, self.shadow.own)[5]
-        for s in sorted(wanted & set(cfgmod.SERIES), key=lambda s: (s not in mine, s)):   # the coins the books trade first
+        mine = shadowmod.params(self.cfg.live.variant, self.cfg.strategy, self.shadow.own)[5]
+        for s in sorted(wanted & set(cfgmod.SERIES), key=lambda s: (s not in mine, s)):   # the coins live trades first
             self.spot.want(cfgmod.SERIES[s])
             try:
                 self._refresh_event(s)
@@ -1427,10 +1154,8 @@ class Desk:
         self._auto(gate)
         self._shadow()
         self._settle()
-        mids = self._mids()
-        self.paper.mark_curve(self.paper.equity(mids), now)
         if self.mode == "live":
-            self.live.mark_curve(self.live.equity(mids), now)
+            self.live.mark_curve(self.live.equity(self._mids()), now)
         if now - self.last["save"] >= 5:
             self.last["save"] = now; self._save_state()
         self._status(gate)

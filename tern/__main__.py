@@ -3,12 +3,9 @@
   tern                  the screen (starts the engine in paper if it is not running)
   tern run              run the engine in the foreground
   tern status           a plain-text summary
-  tern report           profile 1's variants side by side, built in and its own (shadow records, paper only)
-  tern report --profile NAME
-                        a profile's variants, split by settings period ("1" or "profile 1": the desk)
-  tern report --profiles
-                        every profile's book side by side; --deleted: the deleted ones
-  tern report --save    save a summary (status, variants, profiles) as runtime/report-*.txt; o on the screen shows it
+  tern report           the variants side by side, built in and your own (paper records)
+  tern report --periods the same, split by settings period
+  tern report --save    save a summary (status, variants) as runtime/report-*.txt; o on the screen shows it
   tern report-timer     write a systemd user timer that does that every Monday at 10:00
   tern live-check       test the Kalshi key: balance and positions, no orders
   tern web [--host H] [--port P] | --config
@@ -45,17 +42,21 @@ def _status(runtime: str) -> int:
           + (f", live error: {st['live_error']}" if st.get("live_error") else ""))
     for s, e in (st.get("events") or {}).items():
         print(f"{s}: {e['event']} closes in {max(0, e['close'] - time.time()) / 60:.1f} min")
-    for name in ("paper", "live"):
-        b = st.get(name) or {}
-        if not b or (name == "live" and not b.get("start")):
-            continue
-        print(f"\n{name}: equity ${b['equity']:,.2f} (start ${b['start']:,.2f}), cash ${b['cash']:,.2f}, "
+    b = st.get("live") or {}
+    if b.get("start"):
+        print(f"\nlive: equity ${b['equity']:,.2f} (start ${b['start']:,.2f}), cash ${b['cash']:,.2f}, "
               f"at risk ${b['at_risk']:,.2f}, fees ${b['fees']:,.2f}")
         for p in b["pos"]:
             print(f"  {'YES' if p['q'] > 0 else 'NO ':3s} {abs(p['q']):g} @ {p['avg']*100:.1f}c  {p['t']}")
     g = st.get("gate") or {}
+    rows = st.get("variants") or []
+    if rows:
+        print("\nvariants on paper:")
+        for v in rows:
+            print(f"  {v['name']:<12} {'on ' if v.get('on', True) else 'off'} {v['entries']:>6} settled, {v['open']} open, P&L ${v['pnl']:+,.2f}"
+                  + ("  ← live" if v.get("live") and st.get("live_enabled") else ""))
     if g:
-        print(f"\nrule on paper: {g['entries']} settled, {g['open']} open, P&L ${g['pnl']:+,.2f}")
+        print(f"\nthe live gate ({g.get('variant')}):")
         for c in g["checks"]:
             print(f"  [{'x' if c['ok'] else ' '}] {c['name']}  ({c['detail']})")
     return 0
@@ -242,16 +243,8 @@ def _report(runtime: str, args: list[str]) -> int:
     from . import reports
     if not args:
         out = reports.desk(runtime)
-    elif args[0] == "--profiles":
-        out = reports.side_by_side(runtime)
-    elif args[0] == "--deleted":
-        out = reports.deleted(runtime)
-    elif args[0] == "--profile" and len(args) > 1:
-        try:
-            out = reports.of_profile(runtime, reports.find(runtime, " ".join(args[1:])))
-        except LookupError as ex:
-            print(ex.args[0])
-            return 2
+    elif args == ["--periods"]:
+        out = reports.periods(runtime)
     elif args == ["--save"]:
         import contextlib
         import io
@@ -259,11 +252,11 @@ def _report(runtime: str, args: list[str]) -> int:
         with contextlib.redirect_stdout(buf):
             _status(runtime)
         name = reports.save_text(runtime, "summary", "tern report --save", [*buf.getvalue().rstrip().split("\n"), "",
-                                 *reports.desk(runtime), "", *reports.side_by_side(runtime)])
+                                 *reports.desk(runtime)])
         print(f"saved {os.path.join(runtime, name)}")
         return 0
     else:
-        print("tern report [--profile NAME | --profiles | --deleted | --save]")
+        print("tern report [--periods | --save]")
         return 2
     print("\n".join(out))
     return 0

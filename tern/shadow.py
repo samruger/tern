@@ -1,12 +1,12 @@
 """Shadow records: variants of the rule, run forward on paper side by side.
 
 Each variant was written down before it saw any data, and each keeps its own record with real fees,
-so after a few weeks the comparison is out of sample. Nothing here touches the paper or live books;
-the engine trades whichever variant strategy.variant names, and that variant's record here is its gate.
+so after a few weeks the comparison is out of sample. Nothing here touches the live book; live trades the
+variant live.variant names, and that variant's record here is its gate.
 
 The built-in variants are listed once, in TABLE below. The screen's variants box, its help, `tern report` and
 the gate all read that table; README.md repeats it for people, and a test fails if it falls behind. The ones
-made on the screen are each profile's own (variants.py): a Shadow runs both.
+made on the screen are in variants.py: a Shadow runs both.
 """
 
 from __future__ import annotations
@@ -63,7 +63,7 @@ RETIRED = {
 
 
 def own_set(dir: str) -> VariantSet:
-    """The variants a profile made itself, from its folder (runtime/ for profile 1). One saved before variants held
+    """The variants made on the screen, from the folder that holds them (runtime/). One saved before variants held
     their size gets the one in the folder's config.json."""
     guessed = False
     try:
@@ -77,7 +77,7 @@ def own_set(dir: str) -> VariantSet:
 
 
 def sizes_of(cfg: Config) -> dict:
-    """A profile's size and paper start, as a variant may hold them (config.json may say anything)."""
+    """config.json's size and paper start, as a variant may hold them (config.json may say anything)."""
     S = cfg.strategy
     return {f: max(0.0, min(1e9, v)) for f, v in (("contracts", S.contracts), ("max_hour_cost", S.max_hour_cost),
                                                    ("paper_capital", cfg.paper_capital))}
@@ -124,7 +124,7 @@ def start_of(name: str, cfg: Config, own: VariantSet | None = None) -> float:
 
 
 def rule_of(name: str, cfg: Config, own: VariantSet | None = None) -> dict:
-    """Everything about how a variant trades (variants.FIELDS), built in or own. cfg: its profile's."""
+    """Everything about how a variant trades (variants.FIELDS), built in or own."""
     S = cfg.strategy
     return as_rule(params(name, S, own), *size_of(name, S, own), start_of(name, cfg, own))
 
@@ -138,10 +138,15 @@ def known(name, own: VariantSet | None = None) -> bool:
     return name in VARIANTS or own is not None and own.has(name)
 
 
+def running(own: VariantSet | None = None) -> list[str]:
+    """Every variant that is on: the built-in ones, then your own, oldest first."""
+    return [n for n in [*ORDER, *(own.active() if own else [])] if own is None or n not in own.off]
+
+
 def all_coins(S, own: VariantSet | None = None) -> list[str]:
     """Every series some variant trades: the engine fetches these and the shadow steps on them."""
-    out = list(S.series)
-    for name in [*VARIANTS, *(own.active() if own else [])]:
+    out: list[str] = []
+    for name in running(own):
         out += [c for c in params(name, S, own)[5] if c not in out]
     return out
 
@@ -149,7 +154,7 @@ def all_coins(S, own: VariantSet | None = None) -> list[str]:
 def all_minutes(S, own: VariantSet | None = None) -> list:
     """Every slot some variant enters at: the configured ones and own variants' others."""
     out = list(S.minutes)
-    for name in own.active() if own else []:
+    for name in [n for n in own.active() if n not in own.off] if own else []:
         out += [m for m in own.rule(name)["minutes"] if m not in out]
     return out
 
@@ -168,14 +173,14 @@ class Shadow:
         self.open_path = os.path.join(runtime, "shadow.json")
         self.done_path = os.path.join(runtime, "shadow-settled.jsonl")
         self.rate = fee_rate
-        self.own = own_set(runtime)                # this profile's own variants
+        self.own = own_set(runtime)                # the variants made on the screen
         self.own.used = lambda: set(self.agg) | {r["v"] for r in self.rows if isinstance(r.get("v"), str)}
         self.rows: list[dict] = []                 # open entries
         self.slots: dict[str, list] = {}           # event -> slots taken
         self.agg: dict[str, dict[str, list]] = {}  # variant -> event -> [pnl, contracts, entries, wins, stops]
         self.by_sv: dict[tuple, dict[str, list]] = {}   # (variant, settings version) -> event -> the same
         self.closes: dict[str, float] = {}         # event -> close time, to order the hours
-        self.recent: dict[str, deque] = {}         # variant -> its last settled rows, for the screen's watch view
+        self.recent: dict[str, deque] = {}         # variant -> its last settled rows, for view()
         self.fees: dict[str, float] = {}           # variant -> entry fees paid on settled rows
         self.dirty = False
         self.changes = 0                           # goes up whenever rows are added or settled: summaries cache on it
@@ -194,6 +199,7 @@ class Shadow:
                 for line in fh:
                     try:
                         r = json.loads(line)
+                        r["v"] = self._whose(r)
                         self._count(r)
                         done.add(self._key(r))
                     except (json.JSONDecodeError, KeyError, TypeError):
@@ -203,8 +209,11 @@ class Shadow:
         # A row is written to the settled file before shadow.json is saved without it. If the engine
         # died in between, the row is in both: the settled file wins, so it is not settled twice.
         n = len(self.rows)
+        for r in self.rows:
+            if isinstance(r.get("v"), str):
+                r["v"] = self._whose(r)
         # retired variants (stop20, arb) had no open rows when they stopped; any left would not settle right.
-        # One of the profile's own may have, deleted or lost from variants.json: those settle like any other.
+        # One of your own may have, deleted or lost from variants.json: those settle like any other.
         self.rows = [r for r in self.rows if self._key(r) not in done and isinstance(r.get("v"), str) and r["v"] not in RETIRED]
         self.dirty = len(self.rows) != n
 
@@ -213,6 +222,29 @@ class Shadow:
         return (r.get("v"), r.get("ticker"), r.get("ticker2"), r.get("ts"), r.get("slot"))
 
     # ------------------------------------------------------------ bookkeeping
+    def _whose(self, r: dict) -> str:
+        """The variant an entry counts for: the one that bought it, or, from before a restart (R), the one kept for that."""
+        v = r["v"]
+        for x in self.own.restarts:
+            if x["v"] == v and (r.get("ts") or 0) < x["before"]:
+                return x["key"]
+        return v
+
+    def restart(self, name: str, rule: dict, now: float) -> str:
+        """R: start a variant over. Its entries so far, open ones too, are another (deleted) variant's from here on."""
+        key = self.own.restart(name, rule, now)
+        for d in (self.agg, self.recent, self.fees):
+            if name in d:
+                d[key] = d.pop(name)
+        for (v, sv) in [k for k in self.by_sv if k[0] == name]:
+            self.by_sv[key, sv] = self.by_sv.pop((v, sv))
+        for r in self.rows:
+            if r["v"] == name:
+                r["v"] = key
+        self.dirty = True
+        self.changes += 1
+        return key
+
     def _count(self, r: dict) -> None:
         self.changes += 1
         a = self.agg.setdefault(r["v"], {}).setdefault(r["event"], [0.0, 0.0, 0, 0, 0])
@@ -244,7 +276,7 @@ class Shadow:
         return taker_fee(n, p, self.rate)
 
     def order(self) -> list[str]:
-        """The variants that run here: the built-in ones, then the profile's own, oldest first."""
+        """The variants there are: the built-in ones, then your own, oldest first (those turned off too)."""
         return ORDER + self.own.active()
 
     def bought(self, name: str) -> bool:
@@ -269,7 +301,8 @@ class Shadow:
             return []
         done.append(slot); self.dirty = True; self.changes += 1
         series = event.split("-", 1)[0]
-        for name in self.order():
+        bought: dict[str, int] = {}
+        for name in running(self.own):
             lo, hi, cap, mins, spread, coins, mvol = params(name, S, self.own)
             size, hour = size_of(name, S, self.own)
             mine_rule = self.own.rule(name) if name not in VARIANTS else None
@@ -298,7 +331,9 @@ class Shadow:
                 self.rows.append({"v": name, "ts": now, "event": event, "close": close, "ticker": s["ticker"],
                                   "side": s["side"], "n": n, "cost": unit, "fee": fee, "slot": slot, "pnl": None,
                                   **({} if sv is None else {"sv": sv})})
-        return []
+                bought[name] = bought.get(name, 0) + 1
+        return [f"paper: {slot}m slot on {event}: " + ", ".join(f"{self.own.title(n)} {k}" for n, k in bought.items()) + " bought"] \
+            if bought else []
 
     # ------------------------------------------------------------ settlement
     def pending(self, now: float) -> dict[str, float]:
@@ -380,9 +415,9 @@ class Shadow:
                     "curve": curve[-240:]}
 
     def view(self, name: str, rec: dict, mids: dict, strikes: dict, start: float) -> dict:
-        """A variant's shadow record shaped like a book, so the screen can show it as if it traded:
+        """A variant's record shaped like a book, as the screen shows the selected one:
         open entries marked at the mid, the last settlements and fills, and equity on a paper start.
-        rec is the variant's summary() row. Watching it changes nothing about what trades."""
+        rec is the variant's summary() row."""
         pos, open_cost, open_fee, mark = [], 0.0, 0.0, 0.0
         for r in sorted((r for r in self.rows if r["v"] == name), key=lambda r: (r["close"], r["ts"])):
             m = mids.get(r["ticker"])
