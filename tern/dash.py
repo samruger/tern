@@ -389,8 +389,8 @@ OVERLAY_TOKENS = re.compile(
     r"|(?P<warn>\b(?:real money|turns live off|turns itself off|Nothing trades|No key found yet|Wipe)\b)"
     r"|(?P<keyhint>^(?:y|any key|any other key)\b|\besc\b|·\s(?:any (?:other )?key)\b)"
     r"|(?P<path>~/\S+|\bKALSHI_KEY_(?:ID|FILE)\b|\blive\.\w+)")
-SHADOW_LINE = re.compile(r"^(shadow: \S+ settled|paper: \d+m slot on \S+ bought) · (.+)$")   # the engine's lines after an
-                                                                                             # hour settles, and a slot
+SHADOW_LINE = re.compile(r"^shadow: ([A-Z0-9]+)-(\S+) settled · (.+)$")       # the engine's line after a coin's hour settles
+SLOT_LINE = re.compile(r"^(paper: \d+m slot on \S+ bought) · (.+)$")        # and after a slot
 SHADOW_CELL = re.compile(r"^(\S+) ([+-]\d[\d,]*\.\d\d|\d+)$")
 
 # the help's key legend: two columns of (section, [(keys, what they do)])
@@ -1513,13 +1513,20 @@ class Screen:
         for j, (ts, lvl, msg, sub, cells, indent) in enumerate(shown):
             yy = y + 1 + j
             age = (len(shown) - 1 - j) / max(1, rows - 1)          # 0 for the bottom (newest) line
-            if cells:                                              # a shadow line's: name and P&L
+            color = lambda v: P({"+": GREEN, "-": RED}.get(v.lstrip()[:1], WHITE), bold=True)
+            if cells and len(cells) == 3 and cells[1][1] == "d":   # a variant an hour changed: by how much, and its record now
+                (name, _), (d, _), (v, _) = cells
+                cx = x + 11 + indent
+                for text, attr in ((name, P(P.c("variant"), bold=True)), ("   ", 0), (d, color(d)),
+                                   ("   now " if d.strip() else "now ", P(P.grey)), (v, color(v))):
+                    self.put(yy, cx, text, attr); cx += len(text)
+            elif cells:                                            # a slot's: the variants and what they bought
                 cx = x + 11 + indent
                 for n, (name, v) in enumerate(cells):
                     if n:
                         self.put(yy, cx, " · ", P(P.c("sep"))); cx += 3
                     self.put(yy, cx, name, P(P.c("variant"), bold=True)); cx += len(name) + 1
-                    self.put(yy, cx, v, P({"+": GREEN, "-": RED}.get(v[0], WHITE), bold=True)); cx += len(v)
+                    self.put(yy, cx, v, color(v)); cx += len(v)
             if sub:                                                # a continuation row: no time, no text
                 continue
             self.put(yy, x + 2, time.strftime("%H:%M:%S", time.localtime(ts)), P(P.pick("fade_ts", age)))
@@ -1587,26 +1594,54 @@ class Screen:
         return out
 
     def log_rows(self, logs: list, w: int) -> list[tuple]:
-        """The log box's screen rows, (ts, level, text, sub, cells, indent). A shadow settlement line ("shadow: EV
-        settled · base +1.20 · band90 -0.40 ..."), or a slot's ("paper: 25m slot on EV bought · base 5 ..."), wraps
-        between its (name, P&L or entries) cells, the rows after the first (sub 1, 2... and no text) starting under
-        what follows "shadow: ". Every other line is one row: sub 0, no cells."""
-        out = []
-        for ts, lvl, msg in logs:
+        """The log box's screen rows, (ts, level, text, sub, cells, indent). An hour's shadow settlement lines, one a coin
+        with every variant's record, become one entry: the coins, then a row for each variant the hour changed, with the
+        change and its record now. A slot's line ("paper: 25m slot on EV bought · base 5 ...") wraps between its
+        (name, entries) cells. The rows after an entry's first (sub 1, 2...) have no time and start under what follows
+        "shadow: " or "paper: ". Every other line is one row: sub 0, no cells."""
+        split = lambda text: [m for m in map(SHADOW_CELL.match, text.split(" · ")) if m]
+        whole = lambda m, g: m and len(split(m.group(g))) == m.group(g).count(" · ") + 1
+        hours: dict[str, dict] = {}                              # an hour's lines: the last one's place, coins, records
+        for n, (ts, lvl, msg) in enumerate(logs):
             m = SHADOW_LINE.match(msg)
-            cells = [SHADOW_CELL.match(c) for c in m.group(2).split(" · ")] if m else []
-            if not m or not all(cells):
+            if whole(m, 3):
+                h = hours.setdefault(m.group(2), {"coins": [], "now": {}})
+                coin = cfgmod.SERIES.get(m.group(1), m.group(1)).split("-")[0]
+                h["at"], h["coins"] = n, h["coins"] + ([coin] if coin not in h["coins"] else [])
+                h["now"].update((c.group(1), c.group(2)) for c in split(m.group(3)))
+        last = {h["at"]: h for h in hours.values()}
+        out, before = [], None                                   # before: the records as the hour before left them
+        for n, (ts, lvl, msg) in enumerate(logs):
+            if whole(SHADOW_LINE.match(msg), 3):
+                if n not in last:
+                    continue
+                h = last[n]
+                num = lambda v: float(v.replace(",", ""))
+                rows = []
+                for name, v in h["now"].items():
+                    d = None if before is None else round(num(v) - num(before.get(name, "0")), 2)
+                    if d != 0:
+                        rows.append((self.vn(name), "" if d is None else f"{d:+,.2f}", v))
+                head = "shadow: settled " + " ".join(h["coins"]) + ("" if rows else " · no variant changed")
+                out.append((ts, lvl, head, 0, None, 0))
+                nw, dw, vw = (max([len(r[c]) for r in rows] + [0]) for c in range(3))
+                for k, (name, d, v) in enumerate(rows, 1):
+                    out.append((ts, lvl, "", k, [(f"{name:<{nw}}", ""), (f"{d:>{dw}}", "d"), (f"{v:>{vw}}", "now")], len("shadow: ")))
+                before = {**(before or {}), **h["now"]}
+                continue
+            m = SLOT_LINE.match(msg)
+            if not whole(m, 2):
                 out.append((ts, lvl, msg, 0, None, 0)); continue
             head = m.group(1)
             under = head.index(": ") + 2
             row, indent, at, k = [], len(head) + 2, len(head) + 2, 0
-            for c in cells:
+            for c in split(m.group(2)):
                 name, v = self.vn(c.group(1)), c.group(2)
-                n = len(name) + 1 + len(v)
-                if row and at + n > w - 13:                        # full: on to the next row
+                n_ = len(name) + 1 + len(v)
+                if row and at + n_ > w - 13:                       # full: on to the next row
                     out.append((ts, lvl, head if k == 0 else "", k, row, indent))
                     row, indent, at, k = [], under, under, k + 1
-                row.append((name, v)); at += n + 3                 # " · " between
+                row.append((name, v)); at += n_ + 3                # " · " between
             out.append((ts, lvl, head if k == 0 else "", k, row, indent))
         return out
 

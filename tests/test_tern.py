@@ -1729,39 +1729,60 @@ class Tabs(Rig, unittest.TestCase):
                     self.assertIn("in ", row)                                   # when the next slot is
                     self.assertIn("closes", row)
 
-    def test_shadow_log_lines_wrap_aligned(self):
+    def test_an_hours_shadow_lines_are_one_entry(self):
         with tempfile.TemporaryDirectory() as d:
             k, scr = self.setup(d)
             k._command({"op": "rename", "variant": "band90", "name": "high favs"})
-            line = ("shadow: KXETHD-E1 settled · base +234.14 · band90 +98.04 · cap1 +71.67 · band80 +18.27 · late +28.65"
-                    " · tight1 +4.96 · band75 -38.35 · early -38.79 · multi -1,132.43 · calm +47.12")
+            self.sync()
+            line = lambda coin, hour, *v: f"shadow: KX{coin}D-{hour} settled · " + " · ".join(
+                f"{n} {x}" for n, x in zip(("base", "band90", "multi", "calm"), v))
+            logs = [[1.0, "info", line("BTC", "H1", "+10.00", "+5.00", "-1,130.00", "+1.00")],
+                    [2.0, "info", line("ETH", "H1", "+10.00", "+5.00", "-1,132.43", "+1.00")],
+                    [3.0, "info", "paper: something between"],
+                    [4.0, "info", line("BTC", "H2", "+8.50", "+5.00", "-1,132.43", "+1.00") + " · late +2.00"],
+                    [4.5, "info", "live: a line in the middle"],
+                    [5.0, "info", line("ETH", "H2", "+8.50", "+5.00", "-1,100.00", "+1.00") + " · late +2.00"],
+                    [6.0, "info", line("BTC", "H3", "+8.50", "+5.00", "-1,100.00", "+1.00")],
+                    [7.0, "info", "shadow: odd line · no cells"]]
+            rows = scr.log_rows(logs, 104)
+            self.assertEqual([(r[0], r[2], r[3]) for r in rows if not r[3]], [
+                (2.0, "shadow: settled BTC ETH", 0), (3.0, "paper: something between", 0), (4.5, "live: a line in the middle", 0),
+                (5.0, "shadow: settled BTC ETH", 0), (6.0, "shadow: settled BTC · no variant changed", 0),
+                (7.0, "shadow: odd line · no cells", 0)])
+            cells = lambda ts: [[c[0].strip() for c in r[4]] for r in rows if r[0] == ts and r[3]]
+            self.assertEqual(cells(2.0), [["base", "", "+10.00"], ["high favs", "", "+5.00"], ["multi", "", "-1,132.43"],
+                                          ["calm", "", "+1.00"]])              # nothing before it to compare with
+            self.assertEqual(cells(5.0), [["base", "-1.50", "+8.50"], ["multi", "+32.43", "-1,100.00"], ["late", "+2.00", "+2.00"]])
+            self.assertEqual(len({len("".join(c[0] for c in r[4])) for r in rows if r[0] == 5.0 and r[3]}), 1)   # aligned
+            self.assertEqual({r[5] for r in rows if r[3]}, {len("shadow: ")})
             self.press("6")
-            for _ in range(14):                                                # more than the box holds
-                k.log(line)
-            k.log("paper: after it"); scr.flash = ""; self.sync()
-            from tern import dash
-            slot = "paper: 25m slot on KXBTCD-E1 bought · base 5 · band90 12 · cap1 1 · late 3"
-            rows = scr.log_rows([[1.0, "info", slot]], 104)
-            self.assertEqual([r[2] for r in rows], ["paper: 25m slot on KXBTCD-E1 bought"])
-            self.assertEqual([c for r in rows for c in r[4]], [("base", "5"), ("high favs", "12"), ("cap1", "1"), ("late", "3")])
-            self.assertTrue(dash.TRADE_LINE.match(slot))                        # one of the log filter's trades
-            rows = scr.log_rows([[1.0, "info", line], [2.0, "info", "shadow: odd line · no cells"]], 104)
-            self.assertEqual(rows[0][:4], (1.0, "info", "shadow: KXETHD-E1 settled", 0))
-            self.assertEqual([r[3] for r in rows], [0, 1, 2, 0])
-            self.assertEqual([r[5] for r in rows[:3]], [len("shadow: KXETHD-E1 settled") + 2, len("shadow: "), len("shadow: ")])
-            self.assertEqual([c[0] for r in rows[:3] for c in r[4]], ["base", "high favs", "cap1", "band80", "late", "tight1",
-                                                                       "band75", "early", "multi", "calm"])   # all, in order
-            self.assertEqual(len(scr.log_rows([[1.0, "info", line]], 400)), 1)     # a wide screen: one row
-            self.assertEqual(rows[0][4][1], ("high favs", "+98.04"))           # display names
-            self.assertEqual(rows[-1][2:5], ("shadow: odd line · no cells", 0, None))   # not the shape: as it is
+            for ts, lvl, msg in logs[:6]:
+                k.log(msg)
+            scr.flash = ""; self.sync()
             text = self.text()
-            self.assertNotIn("+234.14 · band90", text)
-            lines = text.splitlines()
-            first = next(l for l in lines if "shadow: KXETHD-E1 settled" in l)
-            self.assertIn("settled  base +234.14 · high favs +98.04 · cap1 +71.67", first)
-            under = lines[lines.index(first) + 1]
-            self.assertNotRegex(under, r"\d\d:\d\d")                           # no time on the rows under it
-            self.assertEqual(len(under) - len(under[1:].lstrip()), first.index("KXETHD"))   # aligned under what follows shadow:
+            self.assertEqual(text.count("shadow: settled BTC ETH"), 2)
+            self.assertRegex(text, r"base +-1\.50   now +\+8\.50"); self.assertRegex(text, r"multi +\+32\.43   now -1,100\.00")
+            head = next(l for l in text.splitlines() if "shadow: settled" in l)
+            self.assertIn("now", text)
+            under = text.splitlines()[text.splitlines().index(head) + 1]
+            self.assertEqual(len(under) - len(under[1:].lstrip()), head.index("settled"))
+
+    def test_slot_lines_wrap_aligned(self):
+        from tern import dash
+        with tempfile.TemporaryDirectory() as d:
+            k, scr = self.setup(d)
+            k._command({"op": "rename", "variant": "band90", "name": "high favs"})
+            self.press("6")
+            slot = "paper: 25m slot on KXBTCD-E1 bought · base 5 · band90 12 · cap1 1 · late 3"
+            for _ in range(60):                                                # more than the box holds
+                k.log(slot + " · multi 4 · calm 2 · early 11 · tight1 10 · band75 7")
+            self.sync()
+            self.assertTrue(dash.TRADE_LINE.match(slot))                        # one of the log filter's trades
+            rows = scr.log_rows([[1.0, "info", slot]], 104)
+            self.assertEqual([(r[2], r[3], r[4]) for r in rows], [("paper: 25m slot on KXBTCD-E1 bought", 0,
+                             [("base", "5"), ("high favs", "12"), ("cap1", "1"), ("late", "3")])])
+            rows = scr.log_rows([[1.0, "info", slot + " · multi 4 · calm 2 · early 11 · tight1 10"]], 100)
+            self.assertEqual([(r[3], r[5]) for r in rows], [(0, len("paper: 25m slot on KXBTCD-E1 bought") + 2), (1, len("paper: "))])
             for r in scr.s.ch:                                                  # nothing runs past the box
                 self.assertIn("".join(r)[-1], "│╯╮ ")
             for _ in range(10):

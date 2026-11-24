@@ -77,7 +77,7 @@ line is always at the bottom.
 | ³ ladder | every strike, high to low: bid, ask, probability bar, spread, volume, your position. ★ marks strikes in the rule's band |
 | ⁴ book | the selected variant's money and record, its open positions, and beside them what settled and was filled. `V` switches between paper and live |
 | ⁵ variants | each variant's record and gate progress, ● on the one selected, L on the one live trades, + on the ones you made, and the highlighted one's P&L by hour |
-| ⁶ log | what the engine did |
+| ⁶ log | what the engine did; an hour settling is one entry, with how far it moved each variant and its record now |
 | ⁷ gate | what the selected variant still needs to go live, the live caps, and every variant side by side |
 | ⁸ reports | every record: worked out now, or saved |
 | ⁹ settings | the settings, and what the one picked does |
