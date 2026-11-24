@@ -1439,8 +1439,13 @@ class Tabs(Rig, unittest.TestCase):
                 lit = {n for n, x in zip(dash.BOXES, at) if scr.s.at[0][x + 1] & self.curses.A_REVERSE}
                 self.assertEqual(lit, {name})                                   # the one on screen is the bright one
                 dark = {(scr.s.at[0][x + 1] >> 9) & 0x1FF for n, x in zip(dash.BOXES, at) if n != name}
-                self.assertEqual(dark, {scr.P.t["fill"] + 1})                    # the others all on one fill
-                self.assertEqual(top.count("▏"), len(dash.BOXES) - 1)            # with a line to the left of each
+                self.assertEqual(dark, {scr.P.t["tab"] + 1})                     # the others all on one background,
+                for i, (n, x) in enumerate(zip(dash.BOXES, at)):                # their numbers too
+                    bg = (lambda a: (a >> 9) & 0x1FF)
+                    if n != "help":                                             # (its key is its h)
+                        self.assertEqual(bg(scr.s.at[0][x - 1]), bg(scr.s.at[0][x + 1]))
+                    self.assertEqual(scr.s.ch[0][x + len(n) + (1 if n != "help" else 2)], "─")   # the border joins them
+                self.assertNotIn("▏", top); self.assertNotIn("│", top)
             seen = []
             for key in (9, 9, self.curses.KEY_BTAB, self.curses.KEY_BTAB, self.curses.KEY_BTAB):
                 self.press(key); seen.append(scr.tab)
@@ -1484,7 +1489,7 @@ class Tabs(Rig, unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             k, scr = self.setup(d)
             self.press("2")                                                     # without having seen the ladder
-            self.assertIn("BTC above $", self.text().splitlines()[1])
+            self.assertIn("BTC above $", self.text().splitlines()[2])
 
     def test_the_gate_and_the_help_scroll(self):
         with tempfile.TemporaryDirectory() as d:
@@ -1539,6 +1544,14 @@ class Tabs(Rig, unittest.TestCase):
             self.press(27, 27, "9", 10, "t"); self.assertEqual(scr.P.name, at)  # or a value
             self.press(27, "6"); self.assertIn(f"─theme {scr.P.name}─", self.rows()[1])
 
+    def test_every_box_starts_a_line_under_its_tabs(self):
+        from tern import dash
+        with tempfile.TemporaryDirectory() as d:
+            k, scr = self.setup(d, 31, 104)
+            for key in dash.BOX_KEYS:
+                self.press(key)
+                self.assertEqual("".join(scr.s.ch[1]).strip("│ ▲").replace("│", "").strip(), "", key)
+
     def test_every_box_draws_in_8_colors(self):
         from tern import dash
         with tempfile.TemporaryDirectory() as d:
@@ -1547,7 +1560,8 @@ class Tabs(Rig, unittest.TestCase):
             for key in dash.BOX_KEYS:
                 self.press(key)
                 top = self.rows()[0]
-                self.assertEqual(top.count("│"), len(dash.BOXES) - 1, key)      # a plain line between the tabs
+                self.assertNotIn("│", top)
+                self.assertGreaterEqual(top.count(" ─"), len(dash.BOXES) - 1, key)
             self.press("5", "e")
             self.assertIn("CHANGES", self.text())
 
@@ -2546,7 +2560,7 @@ class OneList(Rig, unittest.TestCase):
             self.press("4")
             self.assertIn("wide on paper", self.text())
             self.press("7")
-            self.assertIn("PAPER CHECKS   for wide", self.text())
+            self.assertIn("PAPER CHECKS   wide needs all of them", self.text())
             import json
             with open(os.path.join(d, "dash.json")) as fh:
                 self.assertEqual(json.load(fh)["variant"], "wide")             # the screen remembers it
@@ -3571,11 +3585,33 @@ class Themes(unittest.TestCase):
         from tern import themes
         for name, t in themes.THEMES.items():
             colors = [c for c in t["border"].values() if c > 15]
-            self.assertTrue(all(themes.contrast(c, themes.BACK) >= 3 for c in colors), name)   # dark text on the bright tab
-            self.assertGreaterEqual(themes.contrast(t["tab"], t["fill"]) if t["tab"] > 15 else 9, 4, name)
-            self.assertGreaterEqual(themes.distance(t["fill"], themes.BACK), 8, name)           # a tab is not the background
+            self.assertTrue(all(themes.contrast(c, themes.BACK) >= 4 for c in colors), name)   # dark text on the bright tab
+            self.assertTrue(all(themes.distance(c, t["tab"]) >= 26 for c in colors), name)      # which is not like the others
+            self.assertGreaterEqual(themes.contrast(t["tab"], themes.BACK), 1.9, name)          # and they are not black
+            self.assertGreaterEqual(themes.contrast(t["tab_text"], t["tab"]), 4, name)
+            self.assertGreaterEqual(themes.distance(t["fill"], themes.BACK), 8, name)
             for a, b in zip(colors, colors[1:]):
                 self.assertNotEqual(a, b, name)                                                 # nor the one next to it
+
+    def test_color_pairs_never_pass_255(self):
+        # curses.color_pair(256) is pair 0: past 255 a pair is drawn as another one, or as no color at all
+        from unittest import mock
+        from tern import dash, themes
+        made = {}
+        with mock.patch.multiple(dash.curses, start_color=lambda: None, use_default_colors=lambda: None, create=True, COLORS=256,
+                                 COLOR_PAIRS=65536, init_pair=lambda n, f, b: made.__setitem__(n, (f, b)), color_pair=lambda n: n << 8):
+            P = dash.Pal()
+            for i, name in enumerate(themes.NAMES):
+                P.set_theme(name); P.new_frame("variants")
+                for fg in range(16, 256):                                      # more than there are
+                    P(fg); P.on(fg, 232)
+                self.assertTrue(P.full)
+                P.new_frame("variants")                                        # it starts over, with the tabs' own
+                a = P.on(themes.THEMES[name]["tab_text"], themes.THEMES[name]["tab"])
+                self.assertEqual(made[(a >> 8) & 0xFF], (themes.THEMES[name]["tab_text"], themes.THEMES[name]["tab"]), name)
+            self.assertLessEqual(max(made), 255)
+            P.new_frame("variants"); first = P(200)
+            P.new_frame("variants"); self.assertEqual(P(200), first)           # the same box keeps its pairs
 
     def test_readable_only_moves_what_needs_it(self):
         from tern import themes

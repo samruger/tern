@@ -113,7 +113,7 @@ class WebPal(dash.Pal):
     def __init__(self):
         self.bg = -1
         self.many = True
-        self.cache = {}
+        self.cache, self.full, self.drawn = {}, False, None
         self.set_theme(None)
 
     def __call__(self, fg: int, bold: bool = False, dim: bool = False) -> int:
@@ -227,8 +227,8 @@ class WebScreen(dash.Screen):
         segs = [s for s in segs if isinstance(s, str) or not set(s[0::2]) & CONTROL_HINTS and s[:2] not in (("e", "dit"), ("s", "ave"))]   # any key piece
         super().box(y, x, h, w, title, color, segs)
 
-    def tab_seg(self, y, x, i, name, color) -> int:
-        end = super().tab_seg(y, x, i, name, color)
+    def tab_seg(self, y, x, i, name, color, lead) -> int:
+        end = super().tab_seg(y, x, i, name, color, lead)
         self.hits.append((y, x, end, dash.BOX_KEYS[i]))   # a click shows that box, as its key does
         return end
 

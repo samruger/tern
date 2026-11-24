@@ -27,6 +27,8 @@ from .engine import live_dir
 
 BLACK, RED, GREEN, YELLOW, BLUE, MAGENTA, CYAN, WHITE = range(8)
 
+PAIRS = 255                                 # the color pairs an attribute can name: curses.color_pair(256) is pair 0
+
 ROW = -1                                    # placeholder attr: "tint me by my row", filled in when drawn
 
 # what each theme role draws as on an 8-color terminal (themes only apply with 256 colors)
@@ -48,7 +50,8 @@ class Pal:
         except curses.error:
             self.bg = BLACK
         self.many = curses.COLORS >= 256
-        self.cache: dict[int | tuple[int, int], int] = {}
+        self.cache: dict[tuple[int, int], int] = {}        # (fg, bg) -> its pair's attribute
+        self.full, self.drawn = False, None                # whether they ran out; the box and theme they are for
         self.set_theme(None)
 
     def set_theme(self, name: str | None) -> None:
@@ -56,16 +59,28 @@ class Pal:
         self.t = themes.get(self.name)
         self.grey = self.t["grey"] if self.many else 8 if curses.COLORS >= 16 else WHITE
 
+    def new_frame(self, box: str) -> None:
+        """Before everything is drawn again: another box or theme starts with all the pairs, as does one that ran out."""
+        if self.full or self.drawn != (box, self.name):
+            self.cache.clear()
+        self.full, self.drawn = False, (box, self.name)
+
+    def pair(self, fg: int, bg: int) -> int:
+        """The attribute for fg on bg. With no pair left, the one made that looks most like it."""
+        if (fg, bg) not in self.cache:
+            n = len(self.cache) + 1
+            if n > min(PAIRS, curses.COLOR_PAIRS - 1):
+                self.full = True
+                like = [k for k in self.cache if k[1] == bg and k[0] > 15]
+                return self.cache[min(like, key=lambda k: themes.distance(k[0], fg))] if like and fg > 15 else curses.A_NORMAL
+            curses.init_pair(n, fg, bg)
+            self.cache[fg, bg] = curses.color_pair(n)
+        return self.cache[fg, bg]
+
     def __call__(self, fg: int, bold: bool = False, dim: bool = False) -> int:
         if self.many:
             fg = self.t["base"].get(fg, fg)
-        if fg not in self.cache:
-            n = len(self.cache) + 1
-            if n >= curses.COLOR_PAIRS:
-                return curses.A_NORMAL
-            curses.init_pair(n, fg, self.bg)
-            self.cache[fg] = curses.color_pair(n)
-        a = self.cache[fg]
+        a = self.pair(fg, self.bg)
         if bold:
             a |= curses.A_BOLD
         if dim:
@@ -78,13 +93,7 @@ class Pal:
         if not self.many:
             return self(fg, bold=bold)
         fg = themes.readable(self.t["base"].get(fg, fg), bg)
-        if (fg, bg) not in self.cache:
-            n = len(self.cache) + 1
-            if n >= curses.COLOR_PAIRS:
-                return self(fg, bold=bold)
-            curses.init_pair(n, fg, bg)
-            self.cache[fg, bg] = curses.color_pair(n)
-        return self.cache[fg, bg] | (curses.A_BOLD if bold else 0)
+        return self.pair(fg, bg) | (curses.A_BOLD if bold else 0)
 
     def row(self, on: bool):
         """What draws a list's row: as P(fg, bold), and on the theme's fill if it is the highlighted one."""
@@ -686,6 +695,8 @@ class Screen:
         a = P(color)
         saved, self.clip = self.clip, None
         tabbed = self.drawing in BOXES
+        if tabbed:                                       # the tabs are on the row over the box's blank first one
+            y, h = y - 1, h + 1
         tl, hz, tr, vt, bl, br = "╭─╮│╰╯"
         self.put(y, x, tl + hz * (w - 2) + tr, a)
         for r in range(1, h - 1):
@@ -694,9 +705,9 @@ class Screen:
         self.put(y + h - 1, x, bl + hz * (w - 2) + br, a)
         cx = x + 3
         if tabbed:
-            cx = x + 2
+            cx, lead = x + 2, w >= sum(len(n) + 4 for n in BOXES) + 3   # wide enough for a space on both sides of the names
             for i, name in enumerate(BOXES):
-                cx = self.tab_seg(y, cx, i, name, color)
+                cx = self.tab_seg(y, cx, i, name, color, lead) + 1        # + 1: the border joins them
         else:
             self.put(y, cx, title, P(WHITE, bold=True)); cx += len(title)
         hy, start = (y + h - 1, x + 2) if tabbed else (y, cx)
@@ -719,19 +730,18 @@ class Screen:
             rx += n + 3
         self.clip = saved
 
-    def tab_seg(self, y: int, x: int, i: int, name: str, color: int) -> int:
-        """One box's tab on the top border: bright in its box's color while that is on screen, else on the theme's fill
-        with a line on its left. Returns where it ends."""
+    def tab_seg(self, y: int, x: int, i: int, name: str, color: int, lead: bool) -> int:
+        """One box's tab on the top border, number and name on one background: its box's color while that is on screen,
+        the theme's tab color for the rest. Returns where it ends."""
         P = self.P
         if name == self.drawing:
-            key = text = line = P(color, bold=True) | curses.A_REVERSE
+            key = text = P(color, bold=True) | curses.A_REVERSE
         elif P.many:
-            bg = P.t["fill"]
-            key, text, line = P.on(P.c("key"), bg, bold=True), P.on(P.t["tab"], bg), P.on(color, bg)
+            key, text = P.on(P.c("key"), P.t["tab"], bold=True), P.on(P.t["tab_text"], P.t["tab"])
         else:
-            key, text, line = P(P.c("key"), bold=True), P(P.grey), P(color)
+            key, text = P(P.c("key"), bold=True), P(P.grey)
         parts = [(SUPER[i], key), (name, text)] if i < len(SUPER) else [(name[0], key), (name[1:], text)]   # h is help's key
-        for t, a in [(" " if name == self.drawing else "▏" if P.many else "│", line), *parts, (" ", text)]:
+        for t, a in [(" " if lead or i >= len(SUPER) else "", text), *parts, (" ", text)]:
             self.put(y, x, t, a); x += len(t)
         return x
 
@@ -1410,7 +1420,7 @@ class Screen:
                                 f"a day's loss {money(L.get('max_daily_loss'))}", P(self.P.grey))
         # the open positions on the left, what settled and was filled on the right; they scroll together
         yy += 2
-        cw = (w - 5) // 2
+        cw = (w - 6) // 2
         left, right = self.book_open(b, cw), self.book_done(b, cw)
         self.put(yy, x + 2, "", 0)
         room = max(0, y + h - 1 - yy)
@@ -1422,7 +1432,7 @@ class Screen:
             self.put(y + h - 2, x + w - 2, "▼", P(YELLOW))
         for j in range(room):
             row = P(P.pick("rows", j / max(1, room - 1)))     # btop-style gradient down the list
-            for lines, cx in ((left, x + 2), (right, x + 3 + cw)):
+            for lines, cx in ((left, x + 2), (right, x + 4 + cw)):
                 for text, attr in lines[j + self.pos_off] if j + self.pos_off < len(lines) else []:
                     self.put(yy + j, cx, text, row if attr == ROW else attr); cx += len(text)
 
@@ -1686,14 +1696,13 @@ class Screen:
 
     def split(self, y: int, x: int, h: int, name: str, lw: int) -> None:
         """The line between a box's two panes."""
-        for r in range(1, h - 1):
+        for r in range(h - 1):
             self.put(y + r, x + lw, "│", self.P(self.P.border(name)))
 
     def gate_panel(self, y, x, h, w) -> None:
         self.box(y, x, h, w, "gate", self.P.border("gate"), PANEL_KEYS["gate"](self))
         lines, room = self.gate_lines(w - 4), h - 2
-        top = 1 if len(lines) < room else 0                # a blank line under the tabs, if there is one to spare
-        self.offs["gate"] = off = self.pane(y + 1 + top, x + 2, room - top, w - 4, lines, self.offs.get("gate", 0))
+        self.offs["gate"] = off = self.pane(y + 1, x + 2, room, w - 4, lines, self.offs.get("gate", 0))
         self.count_lines(y + h - 1, x + 3, off, room, len(lines))
 
     def help_panel(self, y, x, h, w) -> None:
@@ -1706,12 +1715,12 @@ class Screen:
         self.help_rows = {}
         for j, (title, _) in enumerate(secs):
             R = P.row(j == self.help_sel)
-            self.put(y + 2 + j, x + 1, f"  {title.lower()}".ljust(lw - 1), R(P.pick("rows", j / (len(secs) - 1)), bold=j == self.help_sel))
-            self.help_rows[y + 2 + j] = j
+            self.put(y + 1 + j, x + 1, f"  {title.lower()}".ljust(lw - 1), R(P.pick("rows", j / (len(secs) - 1)), bold=j == self.help_sel))
+            self.help_rows[y + 1 + j] = j
         title, lines = secs[self.help_sel]
-        self.put(y + 2, x + lw + 3, title, P(P.c("key"), bold=True))
-        room = h - 5
-        self.offs["help"] = off = self.pane(y + 4, x + lw + 3, room, w - lw - 5, lines, self.offs.get("help", 0))
+        self.put(y + 1, x + lw + 3, title, P(P.c("key"), bold=True))
+        room = h - 4
+        self.offs["help"] = off = self.pane(y + 3, x + lw + 3, room, w - lw - 5, lines, self.offs.get("help", 0))
         self.count_lines(y + h - 1, x + lw + 3, off, room, len(lines))
 
     def settings_panel(self, y, x, h, w, name="settings") -> None:
@@ -1722,12 +1731,12 @@ class Screen:
         lines = self.settings_lines()
         lw = min(max(46, max(map(size, lines)) + 4), w - 32)
         self.split(y, x, h, name, lw)
-        room, n = h - 3, self.set_line
+        room, n = h - 2, self.set_line
         off = max(0, min(self.offs.get("settings", 0), len(lines) - room))
         self.offs["settings"] = off = min(max(off, n - room + 1), max(0, n - 1))   # the one picked, and what's above it
         lines[n] = [*lines[n], (" " * max(0, lw - 2 - size(lines[n])), P.row(True)(WHITE))]
-        self.pane(y + 2, x + 1, room, lw - 2, [[(" ", P.row(i == n)(WHITE))] + l for i, l in enumerate(lines)], off)
-        self.pane(y + 2, x + lw + 3, room, w - lw - 5, self.settings_about(w - lw - 5))
+        self.pane(y + 1, x + 1, room, lw - 2, [[(" ", P.row(i == n)(WHITE))] + l for i, l in enumerate(lines)], off)
+        self.pane(y + 1, x + lw + 3, room, w - lw - 5, self.settings_about(w - lw - 5))
 
     def themes_panel(self, y, x, h, w) -> None:
         """Every theme, with its colors; the highlighted one is in use."""
@@ -1740,6 +1749,8 @@ class Screen:
         sw = min(24, cw - nw - 4)                         # a palette's width: what the column has left
         self.theme_rows = rows = -(-len(names) // cols)   # a blank line between them keeps the palettes apart
         at = names.index(P.name)
+        if rows * 2 - 1 > room:                           # a short screen: the blank line too
+            y, room = y - 1, room + 1
         off = max(0, min(at % rows * 2 - room // 2, rows * 2 - 1 - room))
         for i, name in enumerate(names):
             c, r = divmod(i, rows)
@@ -1888,7 +1899,7 @@ class Screen:
         plain = P(WHITE)
         live, lg = self.live_variant(), st.get("live_gate") or {}
         name = self.vn(self.variant)
-        left: list = [head("PAPER CHECKS", f"   for {name}"), []]
+        left: list = [head("PAPER CHECKS", f"   {name} needs all of them"), []]
         short = {"days": "days traded", "entries": "settled entries", "pnl": "P&L"}
         for c in (st.get("gate") or {}).get("checks", []):
             if c.get("key") not in short:
@@ -1898,25 +1909,24 @@ class Screen:
                 f"{money(have, True)} / ${need:,.0f}"
             left.append([box(c["ok"]), (f"{short[c['key']]:<16}", plain), (f"{txt:>15}  ", P(GREEN if c["ok"] else YELLOW, bold=True)),
                          *self.meter(1.0 if c["ok"] else have / need if need > 0 else 0.0, max(6, lw - 40))])
-        left += [[], [("Live trades a variant only when all of them pass", P(P.grey))]]
         key = cfgmod.KEYFILE_ENV.replace(os.path.expanduser("~"), "~")
         right: list = [head("GO LIVE", "   all three are needed"), [],
                        [box(st.get("keys")), ("Kalshi key present ", plain), (key, P(P.c("ticker")))],
                        [box(st.get("live_enabled")), ("armed with L" + (f", {self.vn(live)}" if st.get("live_enabled") and live else ""), plain)],
-                       [box(st.get("mode") == "live"), ("authenticated" + (f": {st.get('live_error')}" if st.get("live_error") else ""), plain)],
-                       []]
+                       [box(st.get("mode") == "live"), ("authenticated" + (f": {st.get('live_error')}" if st.get("live_error") else ""), plain)]]
+        note: list = []
         if st.get("live_enabled") and not lg.get("ok", True):
             right.append([box(False), (f"live waits: {(lg.get('checks') or [{}])[0].get('name', '')}", P(YELLOW, bold=True))])
         elif live and live != self.variant:
-            right.append([(f"live {'trades' if st.get('live_enabled') else 'is set to'} {self.vn(live)}", P(YELLOW))])
+            note.append((f"   live {'trades' if st.get('live_enabled') else 'is set to'} {self.vn(live)}", P(YELLOW)))
         elif not (st.get("live_cfg") or {}).get("auto_needs_gate", True):
-            right.append([("live.auto_needs_gate is false: the checks are not needed", P(YELLOW))])
+            note.append(("   live.auto_needs_gate is false: the checks are not needed", P(YELLOW)))
         out: list = []
         for j in range(max(len(left), len(right))):
             l, r = (left[j] if j < len(left) else []), (right[j] if j < len(right) else [])
             out.append([*l, (" " * max(0, lw + 3 - sum(len(t) for t, _ in l)), 0), *r])
         out += [[], head("CAPS") + self.rich(f"   ${L.get('capital_usd', 0):,.0f} at risk · ${L.get('max_order_usd', 0):,.0f} per order · "
-                                              f"-${L.get('max_daily_loss', 0):,.0f} a day turns live off")]
+                                              f"-${L.get('max_daily_loss', 0):,.0f} a day turns live off") + note]
         rows = st.get("shadow") or []
         if rows:
             table = shadowmod.table(rows)
@@ -1954,8 +1964,7 @@ class Screen:
         lw = REPORT_LIST_W
         self.box(y, x, h, w, "reports", P.border("reports"), PANEL_KEYS["reports"](self))
         self.rects = {"reports": (y, x, h, lw + 1), "report": (y, x + lw + 1, h, w - lw - 1)}
-        for r in range(1, h - 1):
-            self.put(y + r, x + lw, "│", P(P.border("reports")))
+        self.split(y, x, h, "reports", lw)
         rows: list = []                                   # a heading, "" or an entry: LIVE, then SAVED
         for saved, title in ((False, "LIVE"), (True, "SAVED")):
             these = [r for r in entries if r.saved == saved]
@@ -2340,6 +2349,7 @@ class Screen:
 
     def draw(self) -> None:
         self.s.erase()
+        self.P.new_frame(self.tab)
         H, W = self.s.getmaxyx()
         if W < 100 or H < 30:
             self.put(0, 0, f"tern needs at least 100x30 (now {W}x{H})", self.P(RED, bold=True)); self.s.refresh(); return
@@ -2348,7 +2358,7 @@ class Screen:
         self.pick_strike()
         self.rects[self.tab] = (0, 0, H - 1, W)          # the status line takes the last row
         self.clip, self.drawing = W - 1, self.tab
-        getattr(self, self.tab + "_panel")(0, 0, H - 1, W)
+        getattr(self, self.tab + "_panel")(1, 0, H - 2, W)   # every box starts a blank line under its tabs
         self.clip, self.drawing = None, ""
         self.footer(H, W)
         if self.modal:
