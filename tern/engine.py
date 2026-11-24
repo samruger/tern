@@ -165,7 +165,6 @@ class Desk:
         self.balance: float | None = None
         self.last = collections.defaultdict(float)
         self.shadow = Shadow(runtime, self.cfg.taker_fee)
-        self.shadow.own.keep_filled()
         self._load_state()
         self.rec = Recorder(runtime)
         self.closed: dict[str, dict] = {}      # hourly events that have closed and still owe their results
@@ -175,6 +174,7 @@ class Desk:
         self.names = profmod.Names(runtime)    # profile 1's name, the built-in variants' display names
         if self.shadow.own.damaged:
             self.log("variants.json has something unreadable in it: those variants are not running", "error")
+        self.shadow.own.keep_filled()
         if self._lost(self.cfg.strategy, self.shadow):
             self.log(f"profile 1: {self._lost(self.cfg.strategy, self.shadow)}: paper trades base, live waits for a pick", "error")
         self._profiles_reload(force=True)
@@ -203,6 +203,7 @@ class Desk:
                                              upgrade=True)
                     if p.shadow.own.damaged:
                         self.log(f"profile {p.name}: variants.json has something unreadable in it", "error")
+                    p.shadow.own.keep_filled()
                     if self._lost(p.cfg.strategy, p.shadow):
                         self.log(f"profile {p.name}: {self._lost(p.cfg.strategy, p.shadow)}: its book trades base", "error")
                 else:
@@ -246,6 +247,8 @@ class Desk:
         old = self.cfg
         self.cfg = cfgmod.load(self.runtime, self.cfg)
         if self.cfg is not old:
+            if self.shadow.own.guessed:              # it could not be read when the engine started
+                self.shadow.own.keep_filled(shadowmod.sizes_of(self.cfg))
             for key, was, to in profmod.diff_record(old.strategy, self.cfg.strategy):
                 self.slog.append(key, was, to, bump=True)
                 self.log(f"config: {key} {was} → {to} (settings {self.slog.sv})")
@@ -1110,6 +1113,8 @@ class Desk:
         rule = shadowmod.rule_of(parent, w["cfg"], sh.own)
         try:
             changes = varmod.checked(c.get("rule") or {}, rule)
+            if varmod.same({**rule, **changes}, rule):
+                raise ValueError(f"nothing is different from {self.vname(parent, sh.own)}")
             key = sh.own.add({**rule, **changes}, c.get("name") or "", parent, self.names.shown())
         except ValueError as ex:
             return f"no new variant: {ex}"

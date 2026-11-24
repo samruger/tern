@@ -65,14 +65,22 @@ RETIRED = {
 def own_set(dir: str) -> VariantSet:
     """The variants a profile made itself, from its folder (runtime/ for profile 1). One saved before variants held
     their size gets the one in the folder's config.json."""
+    guessed = False
     try:
         with open(os.path.join(dir, "config.json")) as fh:
             cfg = Config.from_dict(json.load(fh))
+    except FileNotFoundError:
+        cfg = Config()
     except (OSError, ValueError, TypeError, AttributeError):
-        cfg = Config()                           # (as the engine does for the built-in ones, and a profile does not load)
-    return VariantSet(dir, (*VARIANTS, *RETIRED), {"contracts": cfg.strategy.contracts,
-                                                   "max_hour_cost": cfg.strategy.max_hour_cost,
-                                                   "paper_capital": cfg.paper_capital})
+        cfg, guessed = Config(), True
+    return VariantSet(dir, (*VARIANTS, *RETIRED), sizes_of(cfg), guessed)
+
+
+def sizes_of(cfg: Config) -> dict:
+    """A profile's size and paper start, as a variant may hold them (config.json may say anything)."""
+    S = cfg.strategy
+    return {f: max(0.0, min(1e9, v)) for f, v in (("contracts", S.contracts), ("max_hour_cost", S.max_hour_cost),
+                                                   ("paper_capital", cfg.paper_capital))}
 
 
 def params(name: str, S, own: VariantSet | None = None) -> tuple:

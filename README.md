@@ -8,8 +8,8 @@ It paper trades from the start and sends no real order until you arm live.
 <img width="1364" height="668" alt="Page 1: spot and contract charts, strike ladder, book and log" src="docs/screenshots/01-page1-trade.png" />
 
 - **Paper and live books.** Live is off until you arm it, and has its own caps, gate and daily loss limit.
-- **Variants.** Ten built-in versions of the rule run side by side on paper, each with its own record. Make your own from the screen.
-- **Profiles.** Whole copies of the bot with their own variants and settings, compared on the same prices.
+- **Variants.** Ten built-in versions of the rule run side by side on paper, each with its own record. Make your own from the screen: any of their settings, saved as a new variant.
+- **Profiles.** Named groups of variants, each with its own book and records, run side by side on the same prices.
 - **Reports.** Every variant's and profile's record on one screen, live or saved, with a weekly one if you want it.
 - **Runs unattended.** The engine is separate from the screen and can run as a systemd service.
 - **Web screen.** The same screen in a browser, view only.
@@ -110,8 +110,8 @@ Two earlier variants are retired: `stop20` (sell 20¢ under entry) and `arb` (a 
 ### Your own
 
 A variant holds everything about how it trades: band, slots, max spread, coins, entries a strike, most
-volatility, contracts a strike, most an hour and paper start. Once saved it never changes, so a record is always
-one set of settings'. The ones you make belong to the profile you are viewing and are marked `+` in the variants
+volatility, contracts a strike, most an hour and paper start. Once saved it never changes, so a record always
+belongs to one set of settings. The ones you make belong to the profile you are viewing and are marked `+` in the variants
 box. With that box focused:
 
 - **`E` opens the highlighted one's settings** as a draft, built in or your own. Change as many as you like; nothing
@@ -129,13 +129,13 @@ profile's `config.json`. If the variant a profile was set to is missing from `va
 trades `base` and live waits until you pick one. At most 12 in each profile, kept in `variants.json` beside its
 records. One saved before variants held their size (2026-11-23) keeps its profile's, as it traded.
 
-<img width="1364" height="668" alt="E on one of a profile's own variants (as it was before sizes moved in)" src="docs/screenshots/12-variant-rule.png" />
+<img width="1364" height="668" alt="E on one of a profile's own variants: a draft with two changes, not saved yet" src="docs/screenshots/12-variant-rule.png" />
 
 ### Watching one
 
 To look at a variant without trading it, highlight it and press `w`. The book,
 equity, ladder and band then show that variant's shadow record as if it traded
-(on a $1,000 paper start), and the status line says `watching X · trading Y`.
+(on its own paper start), and the status line says `watching X · trading Y`.
 Nothing about what trades changes. `w` again or `v` goes back to the real book.
 
 <img width="1364" height="668" alt="The variants box zoomed to the whole screen, viewing profile 2: the built-in variants and its own, marked +" src="docs/screenshots/03-variants-multi.png" />
@@ -217,7 +217,7 @@ as `*.pre-variants`, and `variants-upgraded` marks it done.
 
 <img width="1364" height="668" alt="The book box, viewing profile 2" src="docs/screenshots/04-book-multi.png" />
 
-<img width="1364" height="668" alt="A profile's settings box, as it was before the variants' settings moved out of it" src="docs/screenshots/05-settings.png" />
+<img width="1364" height="668" alt="The settings box, viewing a profile: the profile's, then the desk's" src="docs/screenshots/05-settings.png" />
 
 ## Paper and live
 
@@ -405,8 +405,8 @@ because they are rewritten every second.
 | `sign.py` | Ed25519 and RSA-PSS signing, PEM/DER parsing |
 | `spot.py` | Coinbase ticker and candles |
 | `shadow.py` | the built-in variants, and every variant's paper record (also each one's gate) |
-| `variants.py` | the variants you make: their rules, names and file |
-| `profiles.py` | profiles: their folders, settings, records and names |
+| `variants.py` | the variants you make: their settings, names and file |
+| `profiles.py` | profiles: their folders, on/off, records and names |
 | `record.py` | writes quotes and results to `runtime/ticks/` |
 | `dash.py` | the curses screen |
 | `themes.py` | the screen's 54 color themes |

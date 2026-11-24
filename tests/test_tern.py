@@ -2416,7 +2416,7 @@ class OwnVariants(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             k = self.desk(d)
             p = self.profile(k)
-            new = lambda name, frm="band80", **kw: k._command({"op": "variant_new", "name": name, "from": frm, **kw})
+            new = lambda name, frm="band80", **kw: k._command({"op": "variant_new", "name": name, "from": frm, "rule": {"cap": 6}, **kw})
             self.assertIn("new variant My Rule", new("My Rule", profile=p.id))
             self.assertEqual(p.shadow.own.active(), ["my-rule"])
             self.assertEqual(p.variant, "base")                                # made, not put in use
@@ -2440,7 +2440,7 @@ class OwnVariants(unittest.TestCase):
     def test_a_deleted_one_settles_stays_on_file_and_never_lends_its_key(self):
         with tempfile.TemporaryDirectory() as d:
             k = self.desk(d)
-            k._command({"op": "variant_new", "name": "x1", "from": "base"})
+            k._command({"op": "variant_new", "name": "x1", "from": "base", "rule": {"cap": 6}})
             k._shadow()
             self.assertTrue(k.shadow.bought("x1"))
             k._command({"op": "variant_delete", "variant": "x1"})
@@ -2450,7 +2450,7 @@ class OwnVariants(unittest.TestCase):
             self.assertIn("x1", {r["v"] for r in k.shadow.rows})
             k.shadow.settle({self.T: True})
             self.assertEqual(k.shadow.summary(["x1"])[0]["entries"], 1)
-            k._command({"op": "variant_new", "name": "x1", "from": "base"})
+            k._command({"op": "variant_new", "name": "x1", "from": "base", "rule": {"cap": 6}})
             self.assertEqual(k.shadow.own.active(), ["x1-2"])
             self.assertEqual(k.shadow.summary(["x1-2"])[0]["entries"], 0)
 
@@ -2459,9 +2459,9 @@ class OwnVariants(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             k = self.desk(d)
             for _ in range(variants.MAX_OWN):
-                k._command({"op": "variant_new", "from": "base"})
+                k._command({"op": "variant_new", "from": "base", "rule": {"cap": 6}})
             self.assertEqual(len(k.shadow.own.active()), variants.MAX_OWN)
-            self.assertIn("at most", k._command({"op": "variant_new", "from": "base"}))
+            self.assertIn("at most", k._command({"op": "variant_new", "from": "base", "rule": {"cap": 6}}))
             self.assertIn("at most", self.edit(k, band_lo=0.8))
             self.assertEqual(k.variant(), "base")
 
@@ -2487,7 +2487,7 @@ class OwnVariants(unittest.TestCase):
             self.assertFalse(k.live_target()["ok"])
             self.assertFalse(k.gate()["passed"])
             self.assertIn("base-2", {r["v"] for r in k.shadow.rows})           # its open entries are not lost
-            k._command({"op": "variant_new", "name": "n", "from": "base"})
+            k._command({"op": "variant_new", "name": "n", "from": "base", "rule": {"cap": 6}})
             self.assertTrue([f for f in os.listdir(d) if f.startswith("variants.json.damaged")])
 
     def test_one_bad_variant_is_skipped_not_run(self):
@@ -2512,7 +2512,7 @@ class OwnVariants(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             k = self.desk(d)
             self.edit(k, band_lo=0.80)
-            k._command({"op": "variant_new", "name": "other", "from": "base"})
+            k._command({"op": "variant_new", "name": "other", "from": "base", "rule": {"cap": 6}})
             p = self.profile(k)
             self.assertEqual((p.variant, p.shadow.own.active()), ("base-2", ["base-2"]))
             k._command({"op": "variant", "name": "base"}); k._command({"op": "variant_delete", "variant": "base-2"})
@@ -2701,7 +2701,7 @@ class ScreenVariants(unittest.TestCase):
     def test_the_variant_under_the_draft_goes_away(self):
         with tempfile.TemporaryDirectory() as d:
             k, p, scr = self.setup(d)
-            k._command({"op": "variant_new", "name": "mine", "from": "late"}); self.sync()
+            k._command({"op": "variant_new", "name": "mine", "from": "late", "rule": {"cap": 6}}); self.sync()
             self.open("mine")
             self.press(self.curses.KEY_RIGHT, "s")
             k._command({"op": "variant_delete", "variant": "mine"}); self.sync()
@@ -2737,7 +2737,7 @@ class ScreenVariants(unittest.TestCase):
     def test_delete_asks_and_refuses(self):
         with tempfile.TemporaryDirectory() as d:
             k, p, scr = self.setup(d)
-            k._command({"op": "variant_new", "name": "mine", "from": "late"})
+            k._command({"op": "variant_new", "name": "mine", "from": "late", "rule": {"cap": 6}})
             self.press("p"); scr.focus = "variants"; self.sync(); self.cmds()
             for name, say in (("base", "built in"), ("late", "built in")):
                 scr.var_sel = name
@@ -2876,7 +2876,7 @@ class VariantReviewFixes(unittest.TestCase):
                         fh.write("{bad" if how == "bad" else "[]")
                 k = self.desk(d)
                 self.assertFalse(k.live_target()["ok"], how)
-                k._command({"op": "variant_new", "name": "n" + how, "from": "band80"})
+                k._command({"op": "variant_new", "name": "n" + how, "from": "band80", "rule": {"cap": 6}})
                 self.assertFalse(k.live_target()["ok"], how)                   # an unrelated change does not lift it
                 self.assertFalse(self.desk(d).live_target()["ok"], how)        # nor does a restart after it
                 self.assertFalse(k.gate()["passed"])
@@ -2903,7 +2903,7 @@ class VariantReviewFixes(unittest.TestCase):
                 fh.write("{bad")
             k = self.desk(d)
             for name in ("", "base-2"):
-                k._command({"op": "variant_new", "name": name, "from": "base"})
+                k._command({"op": "variant_new", "name": name, "from": "base", "rule": {"cap": 6}})
             self.assertNotIn("base-2", k.shadow.own.all)
             self.assertFalse([v for v in k.shadow.own.active() if k.shadow.bought(v)])
             k.shadow.save()
@@ -2974,7 +2974,7 @@ class VariantReviewFixes(unittest.TestCase):
             items = {"base-2": good, "a1": bad(band_lo="0.80"), "a2": bad(band_lo=float("nan")), "a3": bad(band_lo=True),
                      "a4": bad(max_vol="7"), "a5": bad(minutes=[float("inf")]), "a6": bad(cap=0.5), "a7": {**good, "deleted": "no"},
                      "a8": bad(band_lo=0.97), "a9": 5, "Bad Key": good,
-                     "b1": bad(contracts="5"), "b2": bad(contracts=0), "b3": bad(max_hour_cost=None), "b4": bad(paper_capital=-1)}
+                     "b1": bad(contracts="5"), "b2": bad(contracts=-1), "b3": bad(max_hour_cost=None), "b4": bad(paper_capital=-1)}
             with open(path, "w") as fh:
                 json.dump({"variants": items}, fh)
             k = self.desk(d)
@@ -2991,7 +2991,7 @@ class VariantReviewFixes(unittest.TestCase):
                 self.assertTrue(k.shadow.own.damaged, text)
                 for f in [f for f in os.listdir(d) if ".damaged" in f]:
                     os.remove(os.path.join(d, f))
-                k._command({"op": "variant_new", "name": "y", "from": "band80"})
+                k._command({"op": "variant_new", "name": "y", "from": "band80", "rule": {"cap": 6}})
                 self.assertTrue([f for f in os.listdir(d) if ".damaged" in f], text)   # kept, not written over
 
     # 9
@@ -3029,8 +3029,8 @@ class VariantReviewFixes(unittest.TestCase):
         from tern import __main__ as cli, config as cfgmod
         with tempfile.TemporaryDirectory() as d, mock.patch.object(cfgmod, "RUNTIME", d):
             k = self.desk(d)
-            k._command({"op": "variant_new", "name": "twelve-chars", "from": "base"})
-            k._command({"op": "variant_new", "name": "x1", "from": "base"})
+            k._command({"op": "variant_new", "name": "twelve-chars", "from": "base", "rule": {"cap": 6}})
+            k._command({"op": "variant_new", "name": "x1", "from": "base", "rule": {"cap": 6}})
             k._shadow(); k.shadow.settle({self.T: True})
             k._command({"op": "variant_delete", "variant": "x1"})
             out = io.StringIO()
@@ -3048,6 +3048,201 @@ class VariantReviewFixes(unittest.TestCase):
             k._command({"op": "live_profile", "profile": p.id})
             self.press("p"); scr.focus = "variants"; scr.var_sel = "base"; self.sync()
             self.assertIn("in use on paper · live trades profile 2's rule", self.text())
+
+
+class VariantSettingsReview(unittest.TestCase):
+    """Findings from the code review of the draft-and-save work (2026-11-23)."""
+    T, desk, profile = EngineProfiles.T, EngineProfiles.desk, EngineProfiles.profile
+    setup, sync, text, press, cmds, view2 = (ScreenProfiles.setup, ScreenProfiles.sync, ScreenProfiles.text,
+                                             ScreenProfiles.press, ScreenProfiles.cmds, ScreenProfiles.view2)
+    run_cmds, open, row = ScreenVariants.run_cmds, ScreenVariants.open, ScreenVariants.row
+
+    def old_file(self, d, *keys, **config):
+        """variants.json from before sizes, in d, and config.json with the given strategy values."""
+        import json
+        from tern import config as cfgmod
+        cfg = cfgmod.Config()
+        for f, v in config.items():
+            setattr(cfg if f == "paper_capital" else cfg.strategy, f, v)
+        cfgmod.save(cfg, d)
+        rule = {"band_lo": 0.8, "band_hi": 0.9, "minutes": [25], "max_spread": 0.02, "series": ["KXBTCD"], "cap": None, "max_vol": None}
+        v = {k: {"rule": rule, "title": k, "from": "base", "made": 1, "deleted": False} for k in keys}
+        with open(os.path.join(d, "variants.json"), "w") as fh:
+            json.dump({"variants": v}, fh)
+
+    def saved(self, d):
+        import json
+        with open(os.path.join(d, "variants.json")) as fh:
+            return {k: v["rule"].get("contracts") for k, v in json.load(fh)["variants"].items()}
+
+    # 1
+    def test_a_number_typed_on_a_row_that_has_none_does_nothing(self):
+        with tempfile.TemporaryDirectory() as d:
+            k, p, scr = self.setup(d)
+            self.open()
+            for key in ("minutes", "series"):
+                self.row(key); self.press("2", "0", 10)                        # (enter turns the choice on or off)
+                self.assertIsNone(scr.set_buf)
+                self.assertTrue(all(isinstance(v, list) for v in scr.draft.values()), scr.draft)
+            self.press(27); self.press("e")
+            scr.set_sel = [r.key for r in scr.set_rows()].index("alerts")
+            self.press("1")
+            self.assertEqual((scr.set_buf, scr.overlay, self.cmds()), (None, "settings", []))
+
+    # 2, 9
+    def test_a_save_still_on_its_way_never_closes_another_draft(self):
+        with tempfile.TemporaryDirectory() as d:
+            k, p, scr = self.setup(d)
+            self.open()
+            self.press(self.curses.KEY_RIGHT, "s", *"mine", 10)                # sent, not answered yet
+            [c] = self.cmds()
+            self.press(27)
+            self.assertNotIn("nothing was saved", scr.flash)
+            self.assertIn("being saved", scr.flash)
+            scr.var_sel = "band90"; self.press("E", self.curses.KEY_RIGHT)
+            k.results[c["id"]] = k._command(c); self.sync()
+            self.assertEqual((scr.overlay, scr.edit_var, scr.draft), ("settings", "band90", {"band_lo": 0.91}))
+            self.assertEqual(k.shadow.own.active(), ["mine"])
+
+    def test_changes_made_after_the_save_stay_open(self):
+        with tempfile.TemporaryDirectory() as d:
+            k, p, scr = self.setup(d)
+            self.open()
+            self.press(self.curses.KEY_RIGHT, "s", *"mine", 10)
+            [c] = self.cmds()
+            self.press(self.curses.KEY_RIGHT)
+            k.results[c["id"]] = k._command(c); self.sync()
+            self.assertEqual((scr.edit_var, scr.draft), ("band80", {"band_lo": 0.82}))
+
+    def test_a_slow_answer_still_closes_the_box_it_saved(self):
+        from unittest import mock
+        import time
+        with tempfile.TemporaryDirectory() as d:
+            k, p, scr = self.setup(d)
+            self.open()
+            self.press(self.curses.KEY_RIGHT, "s", 10)
+            [c] = self.cmds()
+            real = time.time
+            with mock.patch.object(time, "time", lambda: real() + 12):
+                self.sync()
+                self.press("s")
+                self.assertIsNone(scr.modal)                                   # no second save while one is on its way
+                k.results[c["id"]] = k._command(c); self.sync()
+            self.assertEqual((scr.overlay, scr.draft, k.shadow.own.active()), (None, {}, ["band80-2"]))
+
+    def test_no_answer_at_all_lets_it_be_saved_again(self):
+        from unittest import mock
+        import time
+        with tempfile.TemporaryDirectory() as d:
+            k, p, scr = self.setup(d)
+            self.open()
+            self.press(self.curses.KEY_RIGHT, "s", 10); self.cmds()
+            real = time.time
+            with mock.patch.object(time, "time", lambda: real() + 20):
+                self.sync()
+                self.assertIn("no answer", scr.flash)
+                self.press("s")
+                self.assertEqual((scr.modal["type"], scr.draft), ("vname", {"band_lo": 0.81}))
+
+    def test_viewing_another_profile_while_one_is_saved_does_not_block_the_next_save(self):
+        with tempfile.TemporaryDirectory() as d:
+            k, p, scr = self.setup(d)
+            self.open()
+            self.press(self.curses.KEY_RIGHT, "s", *"mine", 10)
+            [c] = self.cmds()
+            self.press(27); scr.focus = "profiles"; scr.prof_sel = p.id; self.press(10)
+            self.assertEqual(scr.profile, p.id)
+            k.results[c["id"]] = k._command(c); self.sync()
+            self.assertEqual((k.shadow.own.active(), scr.var_new), (["mine"], None))
+            self.open("base"); self.press(self.curses.KEY_RIGHT, "s")
+            self.assertEqual(scr.modal["type"], "vname")
+
+    # 3
+    def test_nothing_is_saved_through_an_engine_older_than_the_screen(self):
+        with tempfile.TemporaryDirectory() as d:
+            k, p, scr = self.setup(d)
+            self.open()
+            self.press(self.curses.KEY_RIGHT)
+            for v in scr.st["variants"]:
+                v["rule"].pop("contracts")
+            scr.key(ord("s"))
+            self.assertIsNone(scr.modal); self.assertIn("older than this screen", scr.flash)
+            scr.key(27); scr.key(9); scr.key(ord("r"))
+            self.assertIsNone(scr.overlay); self.assertIn("older than this screen", scr.flash)
+            self.assertEqual(self.cmds(), [])
+
+    # 4
+    def test_a_copy_without_a_change_is_refused(self):
+        with tempfile.TemporaryDirectory() as d:
+            k, p, scr = self.setup(d)
+            k.cfg.strategy.minutes = [10, 15, 20, 25]; self.sync()
+            for rule in (None, {}, {"band_lo": 0.75}, {"minutes": [25, 20, 15, 10]}):
+                self.assertIn("no new variant", k._command({"op": "variant_new", "from": "base", "rule": rule}))
+            self.assertEqual(k.shadow.own.all, {})
+            self.open("base")
+            self.row("minutes"); scr.set_sub = scr.set_choices(scr.set_rows()[scr.set_sel]).index(10)
+            self.press(" "); self.assertEqual(scr.draft, {"minutes": [25, 20, 15]})
+            self.press(" "); self.assertEqual(scr.draft, {})                   # off and on again: not a change
+
+    # 5
+    def test_an_unreadable_config_never_settles_a_variants_size(self):
+        with tempfile.TemporaryDirectory() as d:
+            self.old_file(d, "mine", contracts=20.0)
+            path = os.path.join(d, "config.json")
+            with open(path) as fh:
+                good = fh.read()
+            with open(path, "w") as fh:
+                fh.write(good[:40])
+            k = self.desk(d)
+            self.assertEqual(self.saved(d), {"mine": None})                    # nothing written from a guess
+            k._command({"op": "variant_new", "name": "n2", "from": "base", "rule": {"cap": 1}})
+            self.assertEqual(self.saved(d), {"mine": None, "n2": 5.0})         # nor by another change
+            with open(path, "w") as fh:
+                fh.write(good)
+            k._reload_cfg(force=True)                                          # readable again
+            self.assertEqual((k.shadow.own.rule("mine")["contracts"], self.saved(d)["mine"]), (20.0, 20.0))
+
+    # 6
+    def test_a_size_of_nothing_in_config_still_loads_and_buys_nothing(self):
+        for bad in (0.0, 0.5, -3.0):
+            with tempfile.TemporaryDirectory() as d:
+                self.old_file(d, "mine", contracts=bad)
+                k = self.desk(d)
+                self.assertEqual((k.shadow.own.active(), k.shadow.own.damaged), (["mine"], False), bad)
+                k._shadow()
+                self.assertEqual(k.shadow.rows, [])
+        with tempfile.TemporaryDirectory() as d:
+            self.old_file(d, "mine", max_hour_cost=float("inf"))
+            self.assertEqual(self.desk(d).shadow.own.active(), ["mine"])
+
+    # 7
+    def test_a_draft_never_moves_to_another_profile(self):
+        with tempfile.TemporaryDirectory() as d:
+            k, p, scr = self.setup(d)
+            self.view2(); self.open("base")
+            self.press(self.curses.KEY_RIGHT, "s")
+            k._command({"op": "profile_delete", "profile": p.id}); self.sync()
+            self.assertEqual((scr.profile, scr.overlay, scr.edit_var, scr.draft, scr.modal), (None, None, None, {}, None))
+
+    # 8
+    def test_one_bad_entry_does_not_keep_the_others_from_their_own_size(self):
+        import json
+        with tempfile.TemporaryDirectory() as d:
+            self.old_file(d, "mine", contracts=5.0)
+            path = os.path.join(d, "variants.json")
+            with open(path) as fh:
+                j = json.load(fh)
+            j["variants"]["bad1"] = 5
+            with open(path, "w") as fh:
+                json.dump(j, fh)
+            k = self.desk(d)
+            self.assertTrue(any("unreadable in it" in m for _, _, m in k.logs))
+            kept = [f for f in os.listdir(d) if f.startswith("variants.json.damaged")]
+            self.assertEqual(len(kept), 1)                                     # the file as it was is kept
+            k.cfg.strategy.contracts = 20.0
+            from tern import config as cfgmod
+            cfgmod.save(k.cfg, d)
+            self.assertEqual(self.desk(d).shadow.own.rule("mine")["contracts"], 5.0)
 
 
 class Net(unittest.TestCase):

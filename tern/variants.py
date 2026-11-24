@@ -144,10 +144,8 @@ def why_bad(rule) -> str:
         return "its entries a strike is not a count"
     if rule["max_vol"] is not None and not (num(rule["max_vol"]) and rule["max_vol"] > 0):
         return "its most volatility is not a number"
-    if not (num(rule["contracts"]) and rule["contracts"] >= 1):
-        return "its contracts a strike is not a count"
-    if not all(num(rule[f]) and rule[f] > 0 for f in ("max_hour_cost", "paper_capital")):
-        return "its most an hour or paper start is not a number"
+    if not all(num(rule[f]) and rule[f] >= 0 for f in SIZES):      # (a size of 0, config.json's only, buys nothing)
+        return "its size or paper start is not a number"
     return ""
 
 
@@ -170,16 +168,18 @@ def _loaded(key, d, sizes: dict) -> dict | None:
 
 class VariantSet:
     """A profile's own variants. reserved: the names shadow.py holds (built in and retired). sizes: its profile's
-    contracts, most an hour and paper start, for variants saved before they held their own."""
+    contracts, most an hour and paper start, for variants saved before they held their own; guessed: the profile's
+    config.json could not be read, so sizes are the defaults and are never saved as those variants' own."""
 
-    def __init__(self, dir: str, reserved=(), sizes: dict | None = None):
+    def __init__(self, dir: str, reserved=(), sizes: dict | None = None, guessed: bool = False):
         self.path = os.path.join(dir, FILE)
         self.reserved = tuple(reserved)
         self.all: dict[str, dict] = {}           # key -> {rule, title, from, made, deleted}
         self.changes = 0                         # goes up with every change: the engine's summaries cache on it
         self.by: dict[str, str] = {}             # variant -> the id of the command that made it, since the start
         self.used = lambda: set()                # keys that have records (Shadow sets it): never given to another
-        self.filled = False                      # some got their size from sizes: keep_filled() saves that
+        self.unsized: dict[str, list] = {}       # variant -> the fields it got from sizes: keep_filled() saves them
+        self.guessed = guessed
         self.damaged = False                     # something in the file would not load: save() keeps a copy of it
         try:
             with open(self.path) as fh:
@@ -187,18 +187,23 @@ class VariantSet:
             sizes = {**{"contracts": 5.0, "max_hour_cost": 60.0, "paper_capital": 1000.0}, **(sizes or {})}
             got = {k: _loaded(k, v, sizes) for k, v in items.items() if k not in self.reserved}
             self.all = {k: v for k, v in got.items() if v is not None}
-            self.filled = any(not set(SIZES) <= set(items[k]["rule"]) for k in self.all)
+            self.unsized = {k: fs for k in self.all if (fs := [f for f in SIZES if f not in items[k]["rule"]])}
             self.damaged = len(self.all) != len(items)
         except FileNotFoundError:
             pass
         except (OSError, ValueError, KeyError, AttributeError, TypeError):
             self.damaged = True
 
-    def keep_filled(self) -> None:
-        """The engine's, once: sizes filled in from the profile are the variants' own from now on."""
-        if self.filled and not self.damaged:     # (a damaged file is only written over by a change)
-            self.save()
-        self.filled = False
+    def keep_filled(self, sizes: dict | None = None) -> None:
+        """The engine's, once: sizes filled in from the profile are the variants' own from now on. sizes: the
+        profile's, when its config.json can be read again after a start when it could not."""
+        if sizes is not None and self.guessed:
+            for k, fs in self.unsized.items():
+                if k in self.all:
+                    self.all[k]["rule"].update({f: sizes[f] for f in fs})
+            self.guessed = False
+        if self.unsized and not self.guessed:
+            self.save()                          # (what would not load is kept in a copy, as with any change)
 
     def save(self) -> None:
         if self.damaged:                         # something in it would not load: never write over the only copy
@@ -208,8 +213,14 @@ class VariantSet:
             except OSError:
                 pass
             self.damaged = False
+        out = self.all
+        if self.guessed:                         # a guess is not saved: the next start fills it from config.json
+            out = {k: {**v, "rule": {f: x for f, x in v["rule"].items() if f not in self.unsized.get(k, ())}}
+                   for k, v in self.all.items()}
+        else:
+            self.unsized = {}
         with open(self.path + ".tmp", "w") as fh:
-            json.dump({"variants": self.all}, fh, indent=1)
+            json.dump({"variants": out}, fh, indent=1)
         os.replace(self.path + ".tmp", self.path)
         self.changes += 1
 

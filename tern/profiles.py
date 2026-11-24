@@ -1,11 +1,12 @@
-"""Profiles: whole copies of the desk on paper, run side by side with it.
+"""Profiles: named groups of variants on paper, run side by side with the desk.
 
 Profile 1 is the desk itself (runtime/), with its paper book, live, the gate and its variant records; nothing
-here moves or rewrites its files. Each other profile is a folder under runtime/profiles/ with its own
-settings (config.json: only its strategy and paper start are used), its own variants (variants.json, as
-runtime/ may have), its own record for every variant it runs (shadow.json, shadow-settled.jsonl, as runtime/
-has), and a log of every settings change (settings-log.jsonl). The engine runs every enabled profile's variants on the same snapshot it trades
-profile 1 on, so a difference between profiles comes from their settings, not from timing.
+here moves or rewrites its files. Each other profile is a folder under runtime/profiles/ with a config.json
+(the strategy and paper start its built-in variants use, and the variant its book trades), its own variants
+(variants.json, as runtime/ may have: each holds everything about how it trades), its own record for every
+variant it runs (shadow.json, shadow-settled.jsonl, as runtime/ has), and a log of every settings change
+(settings-log.jsonl). The engine runs every enabled profile's variants on the same snapshot it trades profile 1
+on, so a difference between profiles comes from their variants, not from timing.
 
 A profile never sends an order itself. Its "book" is the record of the variant it picked, shown on its paper
 start. When d makes it the live profile (config live.profile), the engine's live book trades its rule, once
@@ -246,8 +247,6 @@ class Profile:
         rows = p.shadow.rows
         p.shadow.rows = [r for r in rows if isinstance(r, dict) and all(k in r for k in ROW_KEYS)]
         p.shadow.dirty = p.shadow.dirty or len(p.shadow.rows) != len(rows)
-        if upgrade:
-            p.shadow.own.keep_filled()
         return p
 
     def save_meta(self) -> None:

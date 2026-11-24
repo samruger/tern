@@ -402,8 +402,7 @@ HELP_KEYS = [
                    ("D", "delete it (type delete); kept on disk"),
                    ("N", "rename the highlighted profile, or (in the"),
                    ("", "variants box) a variant: its record keeps"),
-                   ("", "its own name"),
-                   ("", "every change logged (tern report)")]),
+                   ("", "its own name")]),
      ("engine", [("S", "stop (asks y) / start the engine"),
                  ("h ?", "this help"),
                  ("q", "close the screen; the engine keeps going")]),
@@ -546,7 +545,8 @@ class Screen:
         self.edit_var: str | None = None       # E: the variant the box is open on (None: the settings box, e)
         self.draft: dict = {}                  # E: field -> value changed there and not saved
         self.set_back: int | None = None       # the settings row to go back to after E
-        self.var_new: tuple | None = None      # a draft was sent to be saved: (the command's id, when, which profile)
+        self.edit_prof: str | None = None      # ... and the profile it was opened in
+        self.var_new: dict | None = None       # a draft was sent to be saved: cid, and its profile, variant and draft
         self.set_sent: dict[str, tuple] = {}   # key -> (value, time) sent but not yet in the status
         self.log_filter = "all"                # what the log box shows: LOG_FILTERS
         self.ov_off, self.ov_room, self.ov_len = 0, 1, 0   # its scroll: first line shown, lines that fit, lines in all
@@ -619,10 +619,12 @@ class Screen:
             res = (self.st.get("results") or {}).get(cid)
             if res:
                 self.say(res); self.pending.pop(cid)
-                if self.var_new and self.var_new[0] == cid and ": new variant " not in res:
-                    self.var_new = None                  # refused: the draft stays open
+                if self.var_new and self.var_new["cid"] == cid:
+                    self.var_new = None                  # refused (the draft stays open), or saved in a profile not shown now
             elif time.time() - self.pending[cid] > 15:
                 self.say("no answer from the engine (is it running? press S)"); self.pending.pop(cid)
+                if self.var_new and self.var_new["cid"] == cid:
+                    self.var_new = None
 
     def apply_profile(self) -> None:
         """self.st from self.raw: as is for profile 1, through profile_overlay for another. A profile that is
@@ -635,20 +637,19 @@ class Screen:
             self.save_prefs(); self.write_view()
             self.say("that profile is gone: back to profile 1")
         self.st = profile_overlay(raw, self.profile) if self.profile else raw
-        if self.var_new:                             # a draft was saved: highlight the new variant, close the box
-            cid, when, prof = self.var_new
-            new = next((v["name"] for v in self.st.get("variants") or [] if v.get("by") == cid), None)
-            if prof != self.profile or time.time() - when > 10:
-                self.var_new = None
-            elif new:
+        if self.var_new and self.var_new["profile"] == self.profile:
+            vn = self.var_new                        # a draft was saved: highlight the new variant, close its box
+            new = next((v["name"] for v in self.st.get("variants") or [] if v.get("by") == vn["cid"]), None)
+            if new:
                 self.var_new, self.var_sel = None, new
-                if self.edit_var:
-                    self.close_settings()
-        if self.edit_var and self.st.get("variants") and self.vrow(self.edit_var) is None:
+                if (self.edit_var, self.edit_prof, self.draft) == (vn["variant"], vn["profile"], vn["draft"]):
+                    self.close_settings()            # (not one opened since, or changed since)
+        if self.edit_var and (self.edit_prof != self.profile or
+                              self.st.get("variants") and self.vrow(self.edit_var) is None):
+            self.say("that variant is gone" + (": the changes were not saved" if self.draft else ""))
             self.close_settings()                    # deleted meanwhile, or another profile is shown
             if (self.modal or {}).get("type") == "vname":
                 self.modal = None
-            self.say("that variant is gone: nothing was saved")
 
     def pname(self) -> str:
         return self.st.get("profile_name") or "profile 1"
@@ -1421,7 +1422,7 @@ class Screen:
     def open_settings(self, variant: str | None = None) -> None:
         """e: the settings box (this profile, the desk, the screen). E: the same box on one variant, as a draft."""
         self.overlay, self.set_buf, self.edit_var, self.draft = "settings", None, variant, {}
-        self.set_sub = 0
+        self.edit_prof, self.set_sub = self.profile, 0
         if variant is not None:
             self.set_back, self.set_sel = self.set_sel, 0
 
@@ -1447,7 +1448,9 @@ class Screen:
     def save_draft(self) -> None:
         """s in E's box: asks for a name, then the draft becomes a new variant."""
         if self.var_new:
-            self.say("saving…"); return
+            self.say("the last save has not been answered yet"); return
+        if self.older_engine(self.edit_var):
+            return
         if not self.draft:
             self.say("nothing is changed yet: there is nothing to save"); return
         self.modal = {"type": "vname", "title": "save as a new variant", "color": CYAN, "buf": "", "max": varmod.NAME_MAX,
@@ -1457,12 +1460,22 @@ class Screen:
                                 "It starts with an empty record. What trades stays as it is: enter uses it.",
                                 f"name, up to {varmod.NAME_MAX} characters (enter alone picks one, esc goes back):", "> "]}
 
+    def older_engine(self, name: str | None) -> bool:
+        """Whether the engine's status is from before variants held their size: it would save a copy without the changes."""
+        rule = (self.vrow(name) or {}).get("rule")
+        if rule is None or self.st.get("profile_wait") or "contracts" in rule:
+            return False
+        self.say("the engine running is older than this screen: restart it (S, S)")
+        return True
+
     def rule_coin(self) -> None:
         """r: E on the variant in use, with the coin on screen flipped in the draft."""
         name = self.active()
         have = None if self.st.get("profile_wait") else ((self.vrow(name) or {}).get("rule") or {}).get("series")
         if name is None or have is None:
             self.say("no value from the engine yet"); return
+        if self.older_engine(name):
+            return
         want = [c for c in cfgmod.SERIES if (c in have) != (c == self.series)]
         if not want:
             self.say("at least one of the coins stays on"); return
@@ -2503,7 +2516,8 @@ class Screen:
                 edge = self.set_value("rule." + other) if other else None
                 if edge is not None and (value >= edge if row.name == "band_lo" else value <= edge):
                     self.say(f"{row.label} must stay {'below' if row.name == 'band_lo' else 'above'} {edge * 100:.0f}¢"); return
-            if value == self.rule_now(row.name):
+            now = self.rule_now(row.name)
+            if value == now or row.kind in ("slots", "coins") and now is not None and sorted(value) == sorted(now):
                 self.draft.pop(row.name, None)       # back to what it was
             else:
                 self.draft[row.name] = value
@@ -2589,14 +2603,18 @@ class Screen:
         elif ch in (10, 13, curses.KEY_ENTER):
             self.set_buf = ""
         elif ord("0") <= ch <= ord("9"):
-            self.set_buf = chr(ch)
+            if row.kind in ("usd", "n", "p", "cap"):      # the rest have nothing to type
+                self.set_buf = chr(ch)
         elif not self.edit_var:                           # esc, e or anything else closes it
             self.close_settings()
         elif ch == ord("s"):
             self.save_draft()
         elif ch == 27:                                    # a draft goes only with esc, not with a stray key
-            if self.draft:
-                self.say("changes thrown away: nothing was saved")
+            vn = self.var_new
+            if vn and (self.edit_var, self.draft) == (vn["variant"], vn["draft"]):
+                self.say("closed: it is being saved")
+            elif self.draft:
+                self.say("changes thrown away" + ("" if vn else ": nothing was saved"))
             self.close_settings()
 
     def logs_shown(self) -> list:
@@ -2686,7 +2704,8 @@ class Screen:
                 if ch in (10, 13, curses.KEY_ENTER):
                     if m["type"] == "vname":
                         cid = self.send(name=m["buf"].strip(), **m["cmd"])
-                        self.var_new = (cid, time.time(), self.profile) if cid else None
+                        self.var_new = {"cid": cid, "profile": self.profile, "variant": m["cmd"]["from"],
+                                        "draft": m["cmd"]["rule"]} if cid else None
                     elif m["type"] == "pname":
                         self.send(op="profile_new", name=m["buf"].strip())
                     elif m["type"] == "rename":

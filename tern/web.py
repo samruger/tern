@@ -218,13 +218,9 @@ class WebScreen(dash.Screen):
         if self.set_rows()[self.set_sel].key == "screen.log":
             return out                           # this row really is saved at once
         for line in out:                         # its "saved at once" hints don't hold here
-            if isinstance(line, list) and len(line) == 1 and "makes a new variant" in line[0][0]:
-                t = line[0][0]
-                line[0] = (t.replace("makes a new variant", "view only here").ljust(len(t)), line[0][1])
             if isinstance(line, list) and len(line) == 1 and "saved at once" in line[0][0]:
                 t = line[0][0]
-                line[0] = (t.replace("saved at once, logged", "view only here").replace("saved at once", "view only here")
-                           .ljust(len(t)), line[0][1])
+                line[0] = (t.replace("saved at once", "view only here").ljust(len(t)), line[0][1])
         return out
 
     def read(self) -> None:
