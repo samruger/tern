@@ -1044,6 +1044,28 @@ class Shadows(unittest.TestCase):
             sh.settle({"KXBTCD-H1-T1": True, "KXSOLD-H1-T1": True})
             self.assertEqual(sh.summary(["multi"])[0]["hours"], 1)         # two coins in one hour are one hour
 
+    def test_summary_is_worked_out_again_only_when_the_records_change(self):
+        from tern.shadow import Shadow
+        with tempfile.TemporaryDirectory() as d:
+            sh = Shadow(d)
+            row = lambda i, v="base", pnl=1.0: {"v": v, "event": f"KXBTCD-H{i}", "pnl": pnl, "n": 5, "fee": 0.1, "close": float(i)}
+            for i in range(12):
+                sh._count(row(i))
+            calls, real = [], sh._summarize
+            sh._summarize = lambda name, sv: calls.append((name, sv)) or real(name, sv)
+            first = sh.summary()
+            n = len(calls)
+            self.assertEqual(n, len(sh.order()))
+            first[0]["pnl"] = 999; first[0]["extra"] = 1                       # a caller's copy is its own
+            again = sh.summary(); sh.summary(["base"])
+            self.assertEqual((len(calls), again[0]["pnl"], "extra" in again[0]), (n, 12.0, False))
+            sh._count(row(12, pnl=-3.0))                                       # settled: counted at once
+            self.assertEqual((sh.summary(["base"])[0]["pnl"], sh.summary(["base"])[0]["entries"]), (9.0, 13))
+            sh.rows.append({"v": "base", "event": "KXBTCD-H99", "close": 99.0, "ticker": "x"}); sh.changes += 1
+            self.assertEqual(sh.summary(["base"])[0]["open"], 1)               # bought: open at once
+            self.assertEqual(sh.summary(["base"], sv=0)[0]["entries"], 13)     # each settings period on its own
+            self.assertEqual(sh.summary(["base"], sv=7)[0]["entries"], 0)
+
     def test_a_variant_can_be_watched_as_if_it_traded(self):
         from tern.config import Strategy
         from tern.shadow import Shadow

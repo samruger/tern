@@ -171,6 +171,7 @@ class Shadow:
         self.fees: dict[str, float] = {}           # variant -> entry fees paid on settled rows
         self.dirty = False
         self.changes = 0                           # goes up whenever rows are added or settled: summaries cache on it
+        self._sums: tuple[int, dict] = (-1, {})    # (changes, (variant, settings version) -> its summary row) since then
         try:
             with open(self.open_path) as fh:
                 d = json.load(fh)
@@ -205,6 +206,7 @@ class Shadow:
 
     # ------------------------------------------------------------ bookkeeping
     def _count(self, r: dict) -> None:
+        self.changes += 1
         a = self.agg.setdefault(r["v"], {}).setdefault(r["event"], [0.0, 0.0, 0, 0, 0])
         b = self.by_sv.setdefault((r["v"], r.get("sv", 0)), {}).setdefault(r["event"], [0.0, 0.0, 0, 0, 0])
         for x in (a, b):
@@ -321,32 +323,41 @@ class Shadow:
 
     def summary(self, names: list[str] | None = None, sv: int | None = None) -> list[dict]:
         """One record per variant. hours counts distinct closing hours; curve is the cumulative P&L
-        after each of the last 240 of them, oldest first. With sv, only rows made under that settings version."""
-        out = []
+        after each of the last 240 of them, oldest first. With sv, only rows made under that settings version.
+        The engine asks every second: a row is worked out again only when the records have changed."""
+        if self._sums[0] != self.changes:
+            self._sums = (self.changes, {})
+        have, out = self._sums[1], []
         for name in names or self.order():
-            ev = self.agg.get(name, {}) if sv is None else self.by_sv.get((name, sv), {})
-            by_hour: dict[str, float] = {}
-            for e, a in ev.items():
-                by_hour[hour_of(e)] = by_hour.get(hour_of(e), 0.0) + a[0]
-            hours = list(by_hour.values())
-            pnl, n = sum(hours), sum(a[1] for a in ev.values())
-            entries, wins, stops = (sum(a[i] for a in ev.values()) for i in (2, 3, 4))
-            t = None
-            if len(hours) >= 10:
-                m = pnl / len(hours)
-                sd = math.sqrt(sum((x - m) ** 2 for x in hours) / (len(hours) - 1))
-                t = m / (sd / math.sqrt(len(hours))) if sd else None
-            when = {}
-            for e in ev:
-                when[hour_of(e)] = max(when.get(hour_of(e), 0.0), self.closes.get(e, 0.0))
-            curve, run = [], 0.0
-            for h in sorted(by_hour, key=lambda h: when[h]):
-                run += by_hour[h]; curve.append(round(run, 2))
-            out.append({"name": name, "entries": entries, "open": sum(1 for r in self.rows if r["v"] == name and (sv is None or r.get("sv", 0) == sv)),
-                        "contracts": n, "pnl": pnl, "per_contract": pnl / n if n else None,
-                        "win": wins / entries if entries else None, "stops": stops, "hours": len(hours), "t": t,
-                        "curve": curve[-240:]})
+            if (name, sv) not in have:
+                have[name, sv] = self._summarize(name, sv)
+            r = have[name, sv]
+            out.append({**r, "curve": list(r["curve"])})
         return out
+
+    def _summarize(self, name: str, sv: int | None) -> dict:
+        ev = self.agg.get(name, {}) if sv is None else self.by_sv.get((name, sv), {})
+        by_hour: dict[str, float] = {}
+        for e, a in ev.items():
+            by_hour[hour_of(e)] = by_hour.get(hour_of(e), 0.0) + a[0]
+        hours = list(by_hour.values())
+        pnl, n = sum(hours), sum(a[1] for a in ev.values())
+        entries, wins, stops = (sum(a[i] for a in ev.values()) for i in (2, 3, 4))
+        t = None
+        if len(hours) >= 10:
+            m = pnl / len(hours)
+            sd = math.sqrt(sum((x - m) ** 2 for x in hours) / (len(hours) - 1))
+            t = m / (sd / math.sqrt(len(hours))) if sd else None
+        when = {}
+        for e in ev:
+            when[hour_of(e)] = max(when.get(hour_of(e), 0.0), self.closes.get(e, 0.0))
+        curve, run = [], 0.0
+        for h in sorted(by_hour, key=lambda h: when[h]):
+            run += by_hour[h]; curve.append(round(run, 2))
+        return {"name": name, "entries": entries, "open": sum(1 for r in self.rows if r["v"] == name and (sv is None or r.get("sv", 0) == sv)),
+                    "contracts": n, "pnl": pnl, "per_contract": pnl / n if n else None,
+                    "win": wins / entries if entries else None, "stops": stops, "hours": len(hours), "t": t,
+                    "curve": curve[-240:]}
 
     def view(self, name: str, rec: dict, mids: dict, strikes: dict, start: float) -> dict:
         """A variant's shadow record shaped like a book, so the screen can show it as if it traded:
