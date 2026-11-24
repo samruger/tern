@@ -3157,6 +3157,18 @@ class VariantSettingsReview(unittest.TestCase):
             self.open("base"); self.press(self.curses.KEY_RIGHT, "s")
             self.assertEqual(scr.modal["type"], "vname")
 
+    def test_the_gate_column_says_the_pnl_it_needs(self):
+        with tempfile.TemporaryDirectory() as d:
+            k, p, scr = self.setup(d)
+            self.press("p")
+            for need, say in ((100, "P&L<$100"), (-50, "✓P&L"), (0, "P&L<$0")):
+                k.cfg.gate.min_pnl = need
+                k.shadow.agg = {}; k.shadow.recent = {}
+                k.shadow._count({"v": "base", "event": "E-1", "pnl": 73.78 if need else -1.0, "n": 5, "fee": 0.1, "close": 1,
+                                 "ticker": "E-1-T1", "side": "yes", "cost": 0.8, "ts": 1.0, "slot": 25})
+                self.sync()
+                self.assertIn(say, next(l for l in self.text().splitlines() if " base " in l and "d " in l))
+
     # 3
     def test_nothing_is_saved_through_an_engine_older_than_the_screen(self):
         with tempfile.TemporaryDirectory() as d:

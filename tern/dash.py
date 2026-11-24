@@ -1307,7 +1307,8 @@ class Screen:
                     have = c["have"]
                     txt = ({"days": "days", "entries": "ent", "pnl": "P&L"}[c["key"]] if c["ok"] else
                            f"{have:.1f}/{c['need']:g}d" if c["key"] == "days" else
-                           f"{have}/{c['need']}" if c["key"] == "entries" else "P&L<0")
+                           f"{have}/{c['need']}" if c["key"] == "entries" else
+                           f"P&L<{'-' if c['need'] < 0 else ''}${abs(c['need']):g}")
                     txt = ("✓" if c["ok"] else "") + txt
                     self.put(yy, cx, txt + " ", P(GREEN if c["ok"] else YELLOW) | base)
                     cx += len(txt) + 1
