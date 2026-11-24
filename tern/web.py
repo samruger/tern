@@ -49,8 +49,8 @@ NAMED = {"ArrowUp": curses.KEY_UP, "ArrowDown": curses.KEY_DOWN, "ArrowLeft": cu
 VIEW_KEYS = set("12345678pjktTcvwgeoh?") | {"ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "PageUp", "PageDown",
                                        "Tab", "BackTab"}
 CONTROL_KEYS = {"q": "quit", "Q": "quit", "S": "engine start/stop", "s": "saving a report", "R": "paper reset", "L": "live",
-                "r": "rule coins", "Enter": "picking a variant", "N": "renaming",
-                "n": "making a variant or profile", "E": "changing a rule", "D": "deleting"}
+                "r": "changing a variant", "Enter": "picking a variant", "N": "renaming",
+                "n": "making a profile", "E": "changing a variant", "D": "deleting"}
 # border hints whose key changes something: not drawn on the web (the profiles box keeps ⏎: it only views)
 CONTROL_HINTS = {"r", "L", "R", "s", "S", "q", "⏎", "space", "n", "d", "D", "N", "E"}
 # what a hint on a border sends when clicked

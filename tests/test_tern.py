@@ -286,7 +286,7 @@ class Commands(unittest.TestCase):
         return k
 
     def series(self, **kw):
-        return {"op": "series", "series": "KXETHD", **kw}
+        return {"op": "set", "key": "alerts", "value": False, **kw}
 
     def test_manual_orders_are_gone(self):
         with tempfile.TemporaryDirectory() as d:
@@ -306,7 +306,7 @@ class Commands(unittest.TestCase):
             k._commands()
             self.assertIn("too old", k.results["old"])
             self.assertIn("too old", k.results["stamped"])
-            self.assertIn("coins BTC → BTC ETH", k.results["new"])
+            self.assertIn("desktop alerts: on → off", k.results["new"])
             self.assertEqual(os.listdir(k.cmd_dir), [])
 
     def test_strikes_and_prices_read_right_for_every_coin(self):
@@ -318,8 +318,7 @@ class Commands(unittest.TestCase):
     def test_unknown_series_is_ignored_not_fatal(self):
         with tempfile.TemporaryDirectory() as d:
             k = self.desk(d)
-            self.assertIn("unknown series", k._command({"op": "series", "series": "KXFAKED"}))
-            self.assertEqual(k.cfg.strategy.series, ["KXBTCD"])
+            self.assertIn("unknown command", k._command({"op": "series", "series": "KXFAKED"}))
             k.cfg.strategy.series = ["KXFAKED"]; k.view = {"series": "KXFAKED", "ticker": None}
             k.last["cfg"] = __import__("time").time()
             k._read_view = lambda: None
@@ -356,9 +355,9 @@ class Commands(unittest.TestCase):
             from tern import config
             self.assertIn("25 → 40", k._command({"op": "set", "key": "live.max_order_usd", "value": 40}))
             self.assertEqual(config.load(d).live.max_order_usd, 40.0)
-            self.assertIn("5 → 3", k._command({"op": "set", "key": "strategy.contracts", "value": 3}))
-            self.assertEqual(k.cfg.strategy.contracts, 3.0)
-            self.assertIn("next reset", k._command({"op": "set", "key": "paper_capital", "value": 2000}))
+            for key, v in (("strategy.contracts", 3), ("strategy.max_hour_cost", 50), ("paper_capital", 2000), ("strategy.band_lo", 0.8)):
+                self.assertIn("not set", k._command({"op": "set", "key": key, "value": v}), key)   # a variant's
+            self.assertEqual((k.cfg.strategy, k.cfg.paper_capital), (config.Strategy(), 1000.0))
             self.assertIn("not set", k._command({"op": "set", "key": "live.enabled", "value": 1}))
             self.assertIn("not set", k._command({"op": "set", "key": "live.capital_usd", "value": -5}))
             self.assertIn("not set", k._command({"op": "set", "key": "live.capital_usd", "value": "100"}))
@@ -1453,13 +1452,11 @@ class EngineProfiles(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             k = self.desk(d)
             self.assertEqual(k.slog.sv, 1)
-            k._command({"op": "set", "key": "strategy.contracts", "value": 7})
-            self.assertEqual(k.slog.sv, 2)
             k._command({"op": "set", "key": "live.capital_usd", "value": 50})
-            self.assertEqual(k.slog.sv, 2)                                     # not a record field: logged only
-            k._command({"op": "series", "series": "KXETHD"})
-            self.assertEqual(k.slog.sv, 2)                                     # a new variant, not a settings period
-            self.assertEqual((k.cfg.strategy.variant, k.cfg.strategy.series), ("base-2", ["KXBTCD"]))
+            self.assertEqual(k.slog.sv, 1)                                     # not a record field: logged only
+            k._command({"op": "variant_new", "from": "base", "rule": {"series": ["KXBTCD", "KXETHD"]}})
+            self.assertEqual(k.slog.sv, 1)                                     # a new variant, not a settings period
+            self.assertEqual((k.cfg.strategy.variant, k.cfg.strategy.series), ("base", ["KXBTCD"]))
             path = os.path.join(d, "config.json")
             with open(path) as fh:
                 c = json.load(fh)
@@ -1467,11 +1464,11 @@ class EngineProfiles(unittest.TestCase):
             with open(path, "w") as fh:
                 json.dump(c, fh)
             k._reload_cfg(force=True)
-            self.assertEqual(k.slog.sv, 3)
+            self.assertEqual(k.slog.sv, 2)
             self.assertEqual([x["key"] for x in k.slog.lines()],
-                             ["strategy.contracts", "live.capital_usd", "variant", "rule.series", "strategy.band_lo"])
+                             ["live.capital_usd", "variant", "rule.series", "strategy.band_lo"])
             k._shadow()
-            self.assertEqual({r.get("sv") for r in k.shadow.rows}, {3})
+            self.assertEqual({r.get("sv") for r in k.shadow.rows}, {2})
 
 
 class ProfileReviewFixes(unittest.TestCase):
@@ -1559,12 +1556,11 @@ class ProfileCommands(unittest.TestCase):
             self.assertIn("off", k._command({"op": "profile_enable", "profile": p.id, "on": False}))
             self.assertFalse(p.enabled)
             self.assertEqual(p.log.sv, 1)                                      # on/off is not a settings period
-            msg = k._command({"op": "profile_set", "profile": p.id, "key": "strategy.band_lo", "value": 0.82})
-            self.assertIn("new variant base-2", msg)                           # a rule change is a new variant
-            self.assertEqual((p.cfg.strategy.band_lo, p.cfg.strategy.variant), (0.75, "base-2"))
-            self.assertEqual(p.shadow.own.rule("base-2")["band_lo"], 0.82)
-            self.assertIn("not changed", k._command({"op": "profile_set", "profile": p.id, "key": "strategy.band_lo", "value": 0.99}))
-            self.assertIn("settings 2", k._command({"op": "profile_set", "profile": p.id, "key": "strategy.contracts", "value": 9}))
+            before = repr(p.cfg)
+            for key, v in (("strategy.band_lo", 0.82), ("strategy.contracts", 9), ("strategy.max_hour_cost", 9),
+                           ("paper_capital", 500), ("rule.contracts", 9), ("nope", 1), (None, 1)):
+                self.assertIn("not a profile setting", k._command({"op": "profile_set", "profile": p.id, "key": key, "value": v}))
+            self.assertEqual((repr(p.cfg), p.shadow.own.all), (before, {}))    # how it trades is its variants'
             for c in ({"op": "profile_set", "profile": "1", "key": "strategy.band_lo", "value": 0.8},
                       {"op": "profile_enable", "profile": "1", "on": False}, {"op": "profile_delete", "profile": "1"}):
                 self.assertIn("profile 1", k._command(c))
@@ -1794,37 +1790,48 @@ class ScreenProfiles(unittest.TestCase):
             k._command({"op": "live_profile", "profile": p.id}); self.sync()
             self.press(self.curses.KEY_DOWN, 10)                               # view the live profile
             self.assertEqual(scr.profile, p.id); self.cmds()
-            self.press(9, "r")                                                 # ETH into its coins: asks first
+            scr.focus, scr.var_sel = "variants", "band90"
+            self.press(10)                                                     # another variant for it: asks first
             self.assertIn("LIVE PROFILE", self.text())
             self.press(27)
             self.assertEqual(self.cmds(), [])
-            self.press("r", *"live", 10)
+            self.press(10, *"live", 10)
             [c] = self.cmds()
-            self.assertEqual((c["op"], c["profile"], c["series"]), ("series", p.id, "KXETHD"))
+            self.assertEqual((c["op"], c["profile"], c["value"]), ("profile_set", p.id, "band90"))
 
-    def test_profile_settings_send_profile_set(self):
+    def test_a_profiles_settings_are_the_profiles_and_the_desks(self):
         with tempfile.TemporaryDirectory() as d:
             k, p, scr = self.setup(d)
-            self.view2(); self.cmds()
             self.press("e")
-            self.assertIn("band low", self.text())
-            self.assertNotIn("most at risk", self.text())                      # no live rows on a profile
+            desk = [r.key for r in scr.set_rows()]
+            self.press(27); self.view2(); self.cmds()
+            self.press("e")
             rows = [r.key for r in scr.set_rows()]
-            self.assertIn("built in: a change makes a new variant", self.text())
-            scr.set_sel = rows.index("rule.band_lo")
-            self.press(self.curses.KEY_RIGHT)
-            c = self.cmds()
-            self.assertEqual([(x["op"], x["profile"], x["key"], "variant" in x) for x in c],
-                             [("variant_rule", p.id, "band_lo", False)])       # no name: the one in use when it arrives
-            self.assertAlmostEqual(c[0]["value"], 0.56)
-            scr.set_sel = rows.index("rule.minutes")
-            self.press(" ")                                                    # the first slot (30) turns on
-            c = self.cmds()
-            self.assertEqual(c[0]["key"], "minutes")
-            self.assertEqual(c[0]["value"], [30, 25, 20, 15, 10])
-            scr.set_sel = rows.index("strategy.variant")
-            self.press(self.curses.KEY_RIGHT)
-            self.assertEqual(self.cmds()[0]["value"], "band90")
+            self.assertEqual(rows, ["enabled"] + desk)                         # the same desk rows under every profile
+            self.assertFalse([x for x in rows if x.startswith(("rule.", "strategy.")) or x == "paper_capital"])
+            self.assertIn("PROFILE  profile 2", self.text())
+            self.assertIn("LIVE  every profile's", self.text())
+            self.press(" ")
+            [c] = self.cmds()
+            self.assertEqual((c["op"], c["profile"], c["key"], c["value"]), ("profile_set", p.id, "enabled", False))
+
+    def test_a_live_limit_raised_under_another_profile_asks_while_armed(self):
+        with tempfile.TemporaryDirectory() as d:
+            k, p, scr = self.setup(d)
+            k.cfg.live.enabled = True; self.sync()
+            self.view2(); self.cmds()
+            self.assertFalse(scr.st["live_enabled"])                           # (the view of a profile says paper)
+            self.press("e")
+            rows = [r.key for r in scr.set_rows()]
+            for key, ch in (("live.capital_usd", self.curses.KEY_RIGHT), ("gate.min_entries", self.curses.KEY_LEFT)):
+                scr.set_sel = rows.index(key)
+                self.press(ch)
+                self.assertEqual(scr.modal["type"], "setlive", key)
+                self.press(27)
+            self.assertEqual(self.cmds(), [])
+            scr.set_sel = rows.index("live.capital_usd")
+            self.press(self.curses.KEY_LEFT)                                   # lowering it does not
+            self.assertEqual([(c["op"], c["key"], c["value"]) for c in self.cmds()], [("set", "live.capital_usd", 95)])
 
     def test_desk_settings_show_under_a_profile_and_change_the_desk(self):
         from tern import config as cfgmod
@@ -1836,7 +1843,7 @@ class ScreenProfiles(unittest.TestCase):
             for key in ("alerts", "web.enabled", "web.port", "web.network"):
                 self.assertEqual(rows.count(key), 1, key)
                 self.assertEqual(scr.set_value(key), cfgmod.get_setting(k.cfg, key))   # the desk's value
-            self.assertFalse([key for key in rows if key.startswith(("live.", "gate."))])
+            self.assertEqual(scr.set_value("live.capital_usd"), k.cfg.live.capital_usd)
             self.assertEqual(rows[-1], "screen.log")
             scr.set_sel = rows.index("web.port"); scr.draw()
             self.assertIn("web screen now", self.text())
@@ -1871,16 +1878,21 @@ class ScreenProfiles(unittest.TestCase):
             scr.key(10)                                                        # view it; the engine hasn't answered yet
             self.assertTrue(scr.st.get("profile_wait"))
             self.cmds()
-            for key in ("r",):
-                scr.key(ord(key))
+            scr.key(ord("r"))
+            self.assertIsNone(scr.overlay)
+            self.assertIn("no value", scr.flash)
             scr.key(ord("e"))
+            scr.set_sel = [r.key for r in scr.set_rows()].index("enabled")
+            scr.key(ord(" ")); scr.key(27)
+            scr.focus, scr.var_sel = "variants", "base"
+            scr.key(ord("E")); scr.draw()
             rows = [r.key for r in scr.set_rows()]
             for key, ch in (("rule.minutes", ord(" ")), ("rule.series", ord(" ")), ("rule.cap", self.curses.KEY_RIGHT),
-                            ("rule.band_lo", self.curses.KEY_RIGHT), ("strategy.variant", self.curses.KEY_RIGHT)):
+                            ("rule.band_lo", self.curses.KEY_RIGHT), ("rule.contracts", self.curses.KEY_RIGHT)):
                 scr.set_sel = rows.index(key)
                 scr.key(ch)
-            self.assertEqual(self.cmds(), [])
-            self.assertIn("no value", scr.flash)
+            scr.key(ord("s"))
+            self.assertEqual((self.cmds(), scr.draft, scr.modal), ([], {}, None))
 
     def test_live_keys_refuse_on_profiles(self):
         with tempfile.TemporaryDirectory() as d:
@@ -2226,8 +2238,8 @@ class Pages(unittest.TestCase):
             self.assertIsNone(scr.modal)
             self.assertIn("profiles box's", scr.flash)
             self.press("n")
-            self.assertEqual(scr.modal["type"], "vname")                       # n is a new variant there
-            self.press(27)
+            self.assertIsNone(scr.modal)                                       # E is how a variant is made
+            self.assertIn("E opens", scr.flash)
             self.assertEqual(self.cmds(), [])
             scr.focus = "profiles"
             self.press(" ")
@@ -2249,69 +2261,121 @@ class Pages(unittest.TestCase):
 
 
 class OwnVariants(unittest.TestCase):
-    """Variants made on the screen: each profile's own, one rule a record, the built-in ones never change."""
+    """Variants made on the screen: each profile's own, one set of settings a record, none changes once saved."""
     T, desk, profile = EngineProfiles.T, EngineProfiles.desk, EngineProfiles.profile
 
-    def edit(self, k, key, value, **kw):
-        return k._command({"op": "variant_rule", "key": key, "value": value, **kw})
+    def edit(self, k, use=True, frm="base", name="", profile="1", **rule):
+        """Save frm's settings with changes as a new variant (s in E's box), and put it in use (enter)."""
+        msg = k._command({"op": "variant_new", "from": frm, "name": name, "profile": profile, "rule": rule})
+        if use and ": new variant " in msg:
+            key = (k._profile(profile).shadow if profile != "1" else k.shadow).own.active()[-1]
+            k._command({"op": "variant", "name": key} if profile == "1" else
+                       {"op": "profile_set", "profile": profile, "key": "strategy.variant", "value": key})
+        return msg
 
-    def test_changing_a_built_in_makes_one_new_variant_and_the_book_moves(self):
+    def test_saving_a_draft_makes_one_new_variant_and_changes_nothing_that_trades(self):
         from tern import shadow
         with tempfile.TemporaryDirectory() as d:
             k = self.desk(d)
             p = self.profile(k)
-            k._command({"op": "profile_set", "profile": p.id, "key": "strategy.variant", "value": "band80"})
-            before = shadow.rule_of("band80", p.cfg.strategy, p.shadow.own)
-            for v in (0.81, 0.82, 0.83):                                       # stepping makes one copy, not three
-                self.edit(k, "band_lo", v, profile=p.id)
+            before = shadow.rule_of("band80", p.cfg, p.shadow.own)
+            msg = self.edit(k, use=False, frm="band80", profile=p.id, band_lo=0.83, contracts=9, max_hour_cost=45, paper_capital=250)
+            for want in ("new variant band80-2, from band80", "band low 80¢ → 83¢", "contracts a strike 5 → 9", "most an hour $60 → $45",
+                         "paper start $1,000 → $250", "enter in variants uses it"):
+                self.assertIn(want, msg)
             self.assertEqual(p.shadow.own.active(), ["band80-2"])
-            self.assertEqual(p.variant, "band80-2")
-            self.assertEqual(p.shadow.own.rule("band80-2"), {**before, "band_lo": 0.83})
-            self.assertEqual(shadow.rule_of("band80", p.cfg.strategy, p.shadow.own), before)
+            self.assertEqual(p.variant, "base")                                # enter is what puts it in use
+            want = {**before, "band_lo": 0.83, "contracts": 9.0, "max_hour_cost": 45.0, "paper_capital": 250.0}
+            self.assertEqual(p.shadow.own.rule("band80-2"), want)
+            self.assertEqual(shadow.rule_of("band80", p.cfg, p.shadow.own), before)
             self.assertEqual(p.log.sv, 1)                                      # no settings period: the record is new
             self.assertEqual((k.variant(), k.shadow.own.all), ("base", {}))    # profile 1 has no part in it
-            self.assertEqual(self.desk(d).profiles[0].variant, "band80-2")     # kept across a restart
+            p = self.desk(d).profiles[0]                                       # kept across a restart
+            self.assertEqual((p.variant, p.shadow.own.rule("band80-2")), ("base", want))
 
-    def test_one_that_bought_something_is_copied_not_changed(self):
-        with tempfile.TemporaryDirectory() as d:
-            k = self.desk(d, bid="0.80", ask="0.81")
-            p = self.profile(k)
-            self.edit(k, "band_lo", 0.78, profile=p.id)
-            k._shadow()
-            self.assertTrue(p.shadow.bought("base-2"))
-            msg = self.edit(k, "band_hi", 0.90, profile=p.id)
-            self.assertIn("new variant base-3", msg)
-            self.assertEqual(p.shadow.own.rule("base-2")["band_hi"], 0.95)
-            self.assertEqual((p.variant, p.shadow.own.rule("base-3")["band_hi"]), ("base-3", 0.90))
-            self.assertFalse(p.shadow.bought("base-3"))
-
-    def test_editing_one_not_in_use_leaves_the_book_and_one_session_makes_one_copy(self):
+    def test_the_band_may_move_past_where_it_was(self):
         with tempfile.TemporaryDirectory() as d:
             k = self.desk(d)
-            for v in (0.81, 0.82):
-                self.edit(k, "band_lo", v, variant="band80", session="a")
-            self.assertEqual(k.variant(), "base")
-            self.assertEqual(k.shadow.own.active(), ["band80-2"])
-            self.assertEqual(k.shadow.own.rule("band80-2")["band_lo"], 0.82)
-            self.edit(k, "band_lo", 0.85, variant="band80", session="b")       # the box opened again on band80
-            self.assertEqual(k.shadow.own.active(), ["band80-2", "band80-3"])
+            self.edit(k, frm="band75", band_lo=0.85, band_hi=0.90)             # 75-80: each end alone would be refused
+            self.assertEqual([k.shadow.own.rule("band75-2")[f] for f in ("band_lo", "band_hi")], [0.85, 0.90])
+
+    def test_each_variant_buys_at_its_own_size_and_hourly_limit(self):
+        with tempfile.TemporaryDirectory() as d:
+            k = self.desk(d, bid="0.80", ask="0.81")
+            for n, hour in ((2, 60), (9, 60), (50, 10)):
+                self.edit(k, use=n == 9, contracts=n, max_hour_cost=hour)
+            k._shadow(); k._auto()
+            got = {r["v"]: r["n"] for r in k.shadow.rows}
+            self.assertEqual([got[v] for v in ("base", "base-2", "base-3", "base-4")], [5, 2, 9, 12])   # $10 buys 12 at 81c
+            self.assertEqual(k.paper.pos[self.T]["q"], 9)                      # the paper book: the one in use
+            self.assertEqual(k._strat("base-2", k.cfg.strategy, k.shadow.own)["contracts"], 2)
+
+    def test_paper_start_is_the_variants(self):
+        import json
+        with tempfile.TemporaryDirectory() as d:
+            k = self.desk(d); k.seeded.add(self.T)
+            self.edit(k, paper_capital=250)
+            self.assertEqual(k.paper.start, 1000)                              # waits for R
+            self.assertIn("$250.00", k._command({"op": "reset_paper"}))
+            self.assertEqual((k.paper.start, k.paper.cash), (250, 250))
+            k._status()
+            with open(os.path.join(k.fast, "status.json")) as fh:
+                st = json.load(fh)
+            self.assertEqual([st["views"][v]["start"] for v in ("base", "base-2")], [1000, 250])
+            self.assertEqual(st["profiles"][0]["rule"]["paper_capital"], 250)
+
+    def test_variants_saved_before_sizes_get_their_profiles_once(self):
+        import json
+        with tempfile.TemporaryDirectory() as d:
+            k = self.desk(d)
+            p = self.profile(k, contracts=19, max_hour_cost=100)
+            p.set("paper_capital", 100)
+            self.edit(k, use=False, profile=p.id, band_lo=0.80); self.edit(k, use=False, profile=p.id, band_lo=0.81)
+            p.shadow.own.delete("base-3", used=True)
+            path = os.path.join(p.dir, "variants.json")
+            with open(path) as fh:
+                old = json.load(fh)
+            for v in old["variants"].values():
+                for f in ("contracts", "max_hour_cost", "paper_capital"):
+                    del v["rule"][f]
+            with open(path, "w") as fh:
+                json.dump(old, fh)
+            from tern import shadow
+            own = shadow.own_set(p.dir)                                        # a report reads it: writes nothing
+            with open(path) as fh:
+                self.assertEqual(json.load(fh), old)
+            self.assertEqual((own.active(), own.deleted(), own.damaged), (["base-2"], ["base-3"], False))
+            p = self.desk(d).profiles[0]                                       # the engine keeps them
+            p.set("strategy.contracts", 3)                                     # (a later change of the profile's is not theirs)
+            for key in ("base-2", "base-3"):
+                rule = self.desk(d).profiles[0].shadow.own.rule(key)
+                self.assertEqual([rule[f] for f in ("contracts", "max_hour_cost", "paper_capital")], [19, 100, 100])
+
+    def test_commands_from_an_older_screen_change_nothing(self):
+        with tempfile.TemporaryDirectory() as d:
+            k = self.desk(d)
+            for op in ("variant_rule", "series"):
+                self.assertIn("unknown command", k._command({"op": op, "key": "band_lo", "value": 0.8, "series": "KXETHD"}))
+            self.assertEqual((k.shadow.own.all, k.variant()), ({}, "base"))
 
     def test_bad_changes_make_nothing(self):
         with tempfile.TemporaryDirectory() as d:
             k = self.desk(d)
-            for key, v in (("band_lo", 0.96), ("band_lo", True), ("band_lo", float("nan")), ("minutes", []), ("minutes", [12]),
-                           ("series", ["KXFAKED"]), ("cap", 9), ("nope", 1), ("band_lo", 0.75), (None, 1), ("max_spread", "x")):
-                msg = self.edit(k, key, v)
-                self.assertTrue("not changed" in msg or "already" in msg, (key, v, msg))
-            self.assertIn("unknown variant", self.edit(k, "band_lo", 0.8, variant="gone"))
-            self.assertIn("no profile", self.edit(k, "band_lo", 0.8, profile="gone"))
+            for rule in ({"band_lo": 0.96}, {"band_lo": True}, {"band_lo": float("nan")}, {"minutes": []}, {"minutes": [12]},
+                         {"series": ["KXFAKED"]}, {"cap": 9}, {"nope": 1}, {"max_spread": "x"}, {"band_lo": 0.8, "band_hi": "x"},
+                         {"band_lo": 0.9, "band_hi": 0.8}, {"contracts": 0}, {"contracts": 101}, {"contracts": "5"},
+                         {"contracts": True}, {"max_hour_cost": 4}, {"paper_capital": 1}, {"paper_capital": float("nan")},
+                         {"contracts": 9, "cap": 9}, [1], "x"):
+                msg = k._command({"op": "variant_new", "from": "base", "rule": rule})
+                self.assertIn("no new variant", msg, rule)
+            self.assertIn("unknown variant", self.edit(k, frm="gone", band_lo=0.8))
+            self.assertIn("no profile", self.edit(k, profile="gone", use=False, band_lo=0.8))
             self.assertEqual((k.shadow.own.all, k.variant()), ({}, "base"))
 
     def test_own_variant_buys_by_its_own_rule_and_slots_in_shadow_and_book(self):
         with tempfile.TemporaryDirectory() as d:
             k = self.desk(d, bid="0.58", ask="0.60", close=5 * 60 - 1)         # 59c at 5 minutes: neither is base's
-            self.edit(k, "band_lo", 0.55)
-            self.edit(k, "minutes", [5])
+            self.edit(k, band_lo=0.55, minutes=[5])
             k._shadow(); k._auto()
             self.assertEqual({r["v"] for r in k.shadow.rows}, {"base-2"})
             self.assertEqual({r["slot"] for r in k.shadow.rows}, {5})
@@ -2320,11 +2384,11 @@ class OwnVariants(unittest.TestCase):
     def test_caps_are_the_rules_own(self):
         with tempfile.TemporaryDirectory() as d:
             k = self.desk(d)
-            self.edit(k, "cap", 1); self.edit(k, "max_vol", 7.6)
+            self.edit(k, cap=1, max_vol=7.6)
             S = k._strat(k.variant(), k.cfg.strategy, k.shadow.own)
             self.assertEqual((S["cap"], S["max_vol"]), (1, 7.6))
-            self.edit(k, "cap", 0)
-            self.assertIsNone(k.shadow.own.rule("base-2")["cap"])
+            self.edit(k, frm="base-2", cap=0)
+            self.assertEqual((k.shadow.own.rule("base-3")["cap"], k.shadow.own.rule("base-2")["cap"]), (None, 1))
 
     def test_new_rename_delete(self):
         with tempfile.TemporaryDirectory() as d:
@@ -2376,7 +2440,7 @@ class OwnVariants(unittest.TestCase):
                 k._command({"op": "variant_new", "from": "base"})
             self.assertEqual(len(k.shadow.own.active()), variants.MAX_OWN)
             self.assertIn("at most", k._command({"op": "variant_new", "from": "base"}))
-            self.assertIn("at most", self.edit(k, "band_lo", 0.8))
+            self.assertIn("at most", self.edit(k, band_lo=0.8))
             self.assertEqual(k.variant(), "base")
 
     def test_the_gate_judges_the_new_variants_own_record(self):
@@ -2385,14 +2449,14 @@ class OwnVariants(unittest.TestCase):
             k.cfg.gate.min_days, k.cfg.gate.min_entries, k.cfg.gate.min_pnl = 0, 0, -1000
             k.shadow._count({"v": "base", "event": "E-1", "pnl": 5.0, "n": 5, "fee": 0.1, "close": 1})
             self.assertTrue(k.gate()["passed"])
-            self.edit(k, "band_lo", 0.80)
+            self.edit(k, band_lo=0.80)
             g = k.gate()
             self.assertEqual((g["variant"], g["passed"]), ("base-2", False))   # nothing settled yet
 
     def test_unreadable_variants_file_never_lets_live_trade_base(self):
         with tempfile.TemporaryDirectory() as d:
             k = self.desk(d)
-            self.edit(k, "band_lo", 0.80)
+            self.edit(k, band_lo=0.80)
             k._shadow(); k.shadow.save()
             self.assertIn("base-2", {r["v"] for r in k.shadow.rows})
             with open(os.path.join(d, "variants.json"), "w") as fh:
@@ -2408,7 +2472,7 @@ class OwnVariants(unittest.TestCase):
         import json
         with tempfile.TemporaryDirectory() as d:
             k = self.desk(d)
-            self.edit(k, "band_lo", 0.80)
+            self.edit(k, band_lo=0.80)
             path = os.path.join(d, "variants.json")
             with open(path) as fh:
                 j = json.load(fh)
@@ -2425,11 +2489,11 @@ class OwnVariants(unittest.TestCase):
     def test_a_new_profile_brings_the_variant_profile_1_trades(self):
         with tempfile.TemporaryDirectory() as d:
             k = self.desk(d)
-            self.edit(k, "band_lo", 0.80)
+            self.edit(k, band_lo=0.80)
             k._command({"op": "variant_new", "name": "other", "from": "base"})
             p = self.profile(k)
             self.assertEqual((p.variant, p.shadow.own.active()), ("base-2", ["base-2"]))
-            self.edit(k, "band_lo", 0.82)
+            k._command({"op": "variant", "name": "base"}); k._command({"op": "variant_delete", "variant": "base-2"})
             self.assertEqual(p.shadow.own.rule("base-2")["band_lo"], 0.80)     # a copy, not shared
 
     def test_report_lists_own_variants(self):
@@ -2438,7 +2502,7 @@ class OwnVariants(unittest.TestCase):
         from tern import __main__ as cli, config as cfgmod
         with tempfile.TemporaryDirectory() as d, mock.patch.object(cfgmod, "RUNTIME", d):
             k = self.desk(d)
-            self.edit(k, "band_lo", 0.80)
+            self.edit(k, band_lo=0.80)
             k._shadow(); k.shadow.settle({self.T: True})
             def run(*argv):
                 out = io.StringIO()
@@ -2530,7 +2594,7 @@ class RuleUpgrade(unittest.TestCase):
 
 
 class ScreenVariants(unittest.TestCase):
-    """n, E and D in the variants box, and the rule rows, on a real engine's status."""
+    """E and D in the variants box, r, and the draft E opens, on a real engine's status."""
     T, desk, profile = EngineProfiles.T, EngineProfiles.desk, EngineProfiles.profile
     setup, sync, text, press, cmds, view2 = (ScreenProfiles.setup, ScreenProfiles.sync, ScreenProfiles.text,
                                              ScreenProfiles.press, ScreenProfiles.cmds, ScreenProfiles.view2)
@@ -2538,74 +2602,115 @@ class ScreenVariants(unittest.TestCase):
     def run_cmds(self):
         out = self.cmds()
         for c in out:
-            self.k._command(c)
+            self.k.results[c["id"]] = self.k._command(c)
         self.sync()
         return out
 
-    def test_new_opens_its_rule_and_changes_go_into_it(self):
+    def open(self, name="band80"):
+        """E on a variant, page 2."""
+        if self.scr.page == 1:
+            self.press("p")
+        self.scr.focus, self.scr.var_sel = "variants", name
+        self.cmds()
+        self.press("E")
+
+    def row(self, key):
+        self.scr.set_sel = [r.name for r in self.scr.set_rows()].index(key)
+
+    def test_a_draft_is_saved_once_as_a_new_variant(self):
         with tempfile.TemporaryDirectory() as d:
             k, p, scr = self.setup(d)
-            self.press("p"); scr.focus = "variants"; self.cmds()
-            scr.var_sel = "band80"
-            self.press("n", *"mine", 10)
+            self.open()
+            self.assertEqual([r.group for r in scr.set_rows() if r.group], ["RULE", "SIZE", "PAPER"])
+            self.assertIn("RULE  band80  built in", self.text())
+            self.press(self.curses.KEY_RIGHT, self.curses.KEY_RIGHT)           # band low is the first row
+            self.row("contracts"); self.press("1", "9", 10)
+            self.row("max_hour_cost"); self.press(self.curses.KEY_RIGHT)
+            self.row("series"); scr.set_sub = 1; self.press(" ")
+            self.assertEqual(self.cmds(), [])                                  # nothing is sent until s
+            self.assertEqual(scr.draft, {"band_lo": 0.82, "contracts": 19.0, "max_hour_cost": 65, "series": ["KXBTCD", "KXETHD"]})
+            for want in ("80¢ → 82¢ *", "5 → 19 *", "$60 → $65 *", "4 changes, not saved", "save as new"):
+                self.assertIn(want, self.text())
+            self.press("s")
+            for want in ("save as a new variant", "band low  80¢ → 82¢", "coins  BTC → BTC ETH"):
+                self.assertIn(want, self.text())
+            self.press(*"mine", 10)
             [c] = self.run_cmds()
             self.assertEqual((c["op"], c["from"], c["name"], c["profile"]), ("variant_new", "band80", "mine", "1"))
-            self.assertEqual((scr.overlay, scr.edit_var, scr.var_sel), ("settings", "mine", "mine"))
-            self.assertIn("no entries yet: changes go into it", self.text())
-            self.press(self.curses.KEY_RIGHT); self.run_cmds()                 # band low is the first row
-            self.assertEqual(k.shadow.own.rule("mine")["band_lo"], 0.81)
+            rule = k.shadow.own.rule("mine")
+            self.assertEqual([rule[f] for f in ("band_lo", "band_hi", "contracts", "max_hour_cost", "series")],
+                             [0.82, 0.90, 19, 65, ["KXBTCD", "KXETHD"]])
             self.assertEqual((k.variant(), k.shadow.own.active()), ("base", ["mine"]))
-            self.press(27)
-            self.assertEqual((scr.overlay, scr.edit_var), (None, None))
+            self.assertEqual((scr.overlay, scr.edit_var, scr.draft, scr.var_sel), (None, None, {}, "mine"))
             self.assertIn("+mine", self.text())
-
-    def test_editing_a_built_in_goes_on_with_the_copy(self):
-        with tempfile.TemporaryDirectory() as d:
-            k, p, scr = self.setup(d)
-            self.press("p"); scr.focus = "variants"; self.cmds()
-            scr.var_sel = "band80"
-            self.press("E")
-            self.assertIn("built in: a change makes a new variant", self.text())
-            self.press(self.curses.KEY_RIGHT, self.curses.KEY_RIGHT)           # two steps before the engine answers
-            self.run_cmds()
-            self.assertEqual((scr.edit_var, scr.var_sel), ("band80-2", "band80-2"))
-            self.press(self.curses.KEY_RIGHT); self.run_cmds()
-            self.assertEqual(k.shadow.own.active(), ["band80-2"])
-            self.assertEqual(k.shadow.own.rule("band80-2")["band_lo"], 0.83)
-            self.assertEqual(k.variant(), "base")
-
-    def test_settings_rows_change_the_one_in_use_on_both_kinds_of_profile(self):
-        with tempfile.TemporaryDirectory() as d:
-            k, p, scr = self.setup(d)
-            for view in (False, True):
-                if view:
-                    self.view2()
-                self.cmds()
-                self.press("e")
-                rows = [r.key for r in scr.set_rows()]
-                scr.set_sel = rows.index("rule.band_hi")
-                self.press(self.curses.KEY_LEFT, self.curses.KEY_LEFT)
-                self.run_cmds()
-                own = (p if view else k).shadow.own
-                self.assertEqual(own.active(), ["base-2"])
-                self.assertEqual(scr.active(), "base-2")
-                self.assertIn("base-2", self.text())
-                self.press(27)
-            self.assertEqual(k.shadow.own.rule("base-2")["band_hi"], 0.93)
-            self.assertEqual(p.shadow.own.rule("base-2")["band_hi"], 0.63)     # 65 was this profile's
-
-    def test_book_trades_picks_own_variants_and_the_rule_rows_follow(self):
-        with tempfile.TemporaryDirectory() as d:
-            k, p, scr = self.setup(d)
-            k._command({"op": "variant_new", "name": "mine", "from": "late"}); self.sync(); self.cmds()
-            self.press("e")
-            rows = [r.key for r in scr.set_rows()]
-            scr.set_sel = rows.index("strategy.variant")
-            self.press(self.curses.KEY_LEFT)                                   # one back from base: the last, mine
-            self.assertEqual(scr.set_value("rule.minutes"), [15, 10])          # at once, before the engine answers
+            self.press(10)                                                     # enter uses it
             [c] = self.run_cmds()
-            self.assertEqual((c["op"], c["name"]), ("variant", "mine"))
-            self.assertEqual(k.variant(), "mine")
+            self.assertEqual((c["op"], k.variant()), ("variant", "mine"))
+
+    def test_esc_throws_the_draft_away_and_other_keys_do_not(self):
+        with tempfile.TemporaryDirectory() as d:
+            k, p, scr = self.setup(d)
+            self.open()
+            self.press("s")
+            self.assertIsNone(scr.modal); self.assertIn("nothing is changed", scr.flash)
+            self.press(self.curses.KEY_RIGHT, self.curses.KEY_LEFT)
+            self.assertEqual(scr.draft, {})                                    # back where it was: not a change
+            self.press(self.curses.KEY_RIGHT, "e", "q", "x", "p")
+            self.assertEqual((scr.overlay, scr.draft), ("settings", {"band_lo": 0.81}))
+            self.press("s", 27)                                                # out of the name: back in the draft
+            self.assertEqual((scr.modal, scr.draft), (None, {"band_lo": 0.81}))
+            self.press(27)
+            self.assertEqual((scr.overlay, scr.edit_var, scr.draft), (None, None, {}))
+            self.assertIn("thrown away", scr.flash)
+            self.assertEqual((self.cmds(), k.shadow.own.all), ([], {}))
+            self.press("E")
+            self.assertIn("80¢ ", self.text()); self.assertEqual(scr.draft, {})
+
+    def test_a_refused_save_keeps_the_draft(self):
+        with tempfile.TemporaryDirectory() as d:
+            k, p, scr = self.setup(d)
+            self.open()
+            self.press(self.curses.KEY_RIGHT, "s", *"late", 10); self.run_cmds()   # a name already taken
+            self.assertIn("already a variant's name", scr.flash)
+            self.assertEqual((scr.overlay, scr.edit_var, scr.draft, scr.var_new), ("settings", "band80", {"band_lo": 0.81}, None))
+            self.press("s", *"later", 10); self.run_cmds()
+            self.assertEqual((k.shadow.own.active(), scr.overlay), (["later"], None))
+
+    def test_the_variant_under_the_draft_goes_away(self):
+        with tempfile.TemporaryDirectory() as d:
+            k, p, scr = self.setup(d)
+            k._command({"op": "variant_new", "name": "mine", "from": "late"}); self.sync()
+            self.open("mine")
+            self.press(self.curses.KEY_RIGHT, "s")
+            k._command({"op": "variant_delete", "variant": "mine"}); self.sync()
+            self.assertEqual((scr.overlay, scr.edit_var, scr.draft, scr.modal), (None, None, {}, None))
+            self.assertIn("gone", scr.flash)
+
+    def test_a_profiles_variant_is_saved_in_that_profile(self):
+        with tempfile.TemporaryDirectory() as d:
+            k, p, scr = self.setup(d)
+            self.view2(); self.open("base")
+            self.row("paper_capital"); self.press(self.curses.KEY_LEFT, "s", 10)
+            [c] = self.run_cmds()
+            self.assertEqual((c["profile"], p.shadow.own.active(), k.shadow.own.all), (p.id, ["base-2"], {}))
+            self.assertEqual(p.shadow.own.rule("base-2")["paper_capital"], 900)
+
+    def test_r_opens_the_one_in_use_with_the_coin_flipped(self):
+        with tempfile.TemporaryDirectory() as d:
+            k, p, scr = self.setup(d)
+            k.cfg.live.enabled = True; self.sync(); self.cmds()                # armed: still nothing to ask, nothing is sent
+            self.press("r")
+            self.assertIn("at least one", scr.flash); self.assertIsNone(scr.overlay)   # BTC is its only coin
+            self.press(9, "r")                                                 # ETH
+            self.assertEqual((scr.edit_var, scr.draft, scr.modal), ("base", {"series": ["KXBTCD", "KXETHD"]}, None))
+            self.assertEqual(self.cmds(), [])
+            self.press("s", 10); self.run_cmds()
+            self.assertEqual((k.variant(), k.shadow.own.rule("base-2")["series"]), ("base", ["KXBTCD", "KXETHD"]))
+            for had in ([], ["KXBTCD", "KXFOOD"]):
+                k.cfg.strategy.series = list(had); self.sync()
+                self.press("r")
+                self.assertEqual(scr.draft["series"], [c for c in had if c != "KXFOOD"] + ["KXETHD"])
+                self.press(27)
 
     def test_delete_asks_and_refuses(self):
         with tempfile.TemporaryDirectory() as d:
@@ -2622,57 +2727,50 @@ class ScreenVariants(unittest.TestCase):
             self.press("D", "y"); self.run_cmds()
             self.assertEqual(k.shadow.own.active(), [])
 
-    def test_armed_live_asks_before_the_rule_it_trades_changes(self):
+    def test_armed_live_asks_when_enter_changes_what_it_trades_and_a_save_does_not(self):
         with tempfile.TemporaryDirectory() as d:
             k, p, scr = self.setup(d)
             k.cfg.live.enabled = True; self.sync()
-            self.press("e"); self.cmds()
-            rows = [r.key for r in scr.set_rows()]
-            for key in ("rule.band_lo", "strategy.variant"):
-                scr.set_sel = rows.index(key)
-                self.press(self.curses.KEY_RIGHT)
-                self.assertEqual(scr.modal["type"], "livecmd")
-                self.press(27)
-                self.assertEqual(self.cmds(), [])
+            self.open("base")                                                  # what live trades
+            self.row("max_hour_cost"); self.press(self.curses.KEY_RIGHT, "s", *"more", 10)
+            self.run_cmds()
+            self.assertEqual((k.variant(), k.shadow.own.active(), scr.modal), ("base", ["more"], None))
+            self.press(10)                                                     # enter on it
+            self.assertEqual(scr.modal["title"], "SWITCH LIVE VARIANT")
             self.press(27)
-            self.press(9, "r")                                                 # so does r: ETH into the rule's coins
-            self.assertEqual(scr.modal["type"], "livecmd")
-            self.press(*"live", 10)
-            [c] = self.run_cmds()
-            self.assertEqual((c["op"], c["series"]), ("series", "KXETHD"))
-            self.press("p"); scr.focus = "variants"; scr.var_sel = "band80"    # not what live trades: no question
-            self.press("E", self.curses.KEY_RIGHT)
-            self.assertIsNone(scr.modal)
-            self.assertEqual(len(self.run_cmds()), 1)
+            self.assertEqual((self.cmds(), k.variant()), ([], "base"))
 
     def test_help_says_the_rule_in_use_and_the_variant_keys(self):
         with tempfile.TemporaryDirectory() as d:
             k, p, scr = self.setup(d)
-            for key, v in (("band_lo", 0.69), ("band_hi", 0.83), ("cap", 1)):
-                k._command({"op": "variant_rule", "key": key, "value": v})
-            k._command({"op": "rename", "variant": "base-2", "name": "mine"}); self.sync()
+            k._command({"op": "variant_new", "from": "base", "name": "mine", "rule": {"band_lo": 0.69, "band_hi": 0.83, "cap": 1,
+                                                                                      "contracts": 7, "paper_capital": 300}})
+            k._command({"op": "variant", "name": "mine"}); self.sync()
             text = " ".join(" ".join(l if isinstance(l, str) else "".join(t for t, _ in l) for l in scr.help_lines(120)).split())
             for want in ("With mine, the variant in use", "mid is 69-83c", "1 a strike an hour", "the base rule (75-95c",
-                         "new variant: a copy", "change the highlighted variant's rule", "marked +", "tern report --profile NAME"):
+                         "7 contracts a strike", "starts at $300", "draft: s saves a new variant", "marked +", "tern report --profile NAME"):
                 self.assertIn(want, text)
 
     def test_off_can_be_stepped_and_typed(self):
         with tempfile.TemporaryDirectory() as d:
             k, p, scr = self.setup(d)
-            self.press("e"); self.cmds()
-            rows = [r.key for r in scr.set_rows()]
-            scr.set_sel = rows.index("rule.cap")
-            self.press(self.curses.KEY_RIGHT); self.run_cmds()
-            self.assertEqual(k.shadow.own.rule("base-2")["cap"], 1)
-            self.press(self.curses.KEY_LEFT); self.run_cmds()
-            self.assertIsNone(k.shadow.own.rule("base-2")["cap"])
-            scr.set_sel = rows.index("rule.max_vol")
-            self.press("7", ".", "6", 10); self.run_cmds()
-            self.assertEqual(k.shadow.own.rule("base-2")["max_vol"], 7.6)
-            scr.set_sel = rows.index("rule.band_lo")
+            self.open("base")
+            self.row("cap")
+            self.press(self.curses.KEY_RIGHT); self.assertEqual(scr.draft, {"cap": 1})
+            self.assertIn("off → 1 *", self.text())
+            self.press(self.curses.KEY_LEFT); self.assertEqual(scr.draft, {})
+            self.row("max_vol")
+            self.press("7", ".", "6", 10); self.assertEqual(scr.draft, {"max_vol": 7.6})
+            self.row("band_lo")
             self.press("9", "7", 10)                                           # over band high: refused on the screen
-            self.assertEqual(self.cmds(), [])
             self.assertIn("below 95", scr.flash)
+            self.row("contracts")
+            for typed in ("0", "101"):
+                self.press(*typed, 10)
+                self.assertIn("must be 1 to 100", scr.flash)
+            self.assertEqual(scr.draft, {"max_vol": 7.6})
+            self.press("s", 10); self.run_cmds()
+            self.assertEqual(k.shadow.own.rule("base-2")["max_vol"], 7.6)
 
 
 class VariantReviewFixes(unittest.TestCase):
@@ -2746,7 +2844,8 @@ class VariantReviewFixes(unittest.TestCase):
             for how in ("bad", "list", "gone"):
                 k = self.desk(d)
                 k._command({"op": "variant", "name": "base"})
-                k._command({"op": "variant_rule", "key": "band_lo", "value": 0.80})
+                k._command({"op": "variant_new", "from": "base", "rule": {"band_lo": 0.80}})
+                k._command({"op": "variant", "name": k.shadow.own.active()[-1]})
                 path = os.path.join(d, "variants.json")
                 if how == "gone":
                     os.remove(path)
@@ -2775,7 +2874,7 @@ class VariantReviewFixes(unittest.TestCase):
     def test_a_lost_variants_key_and_record_are_never_taken_over(self):
         with tempfile.TemporaryDirectory() as d:
             k = self.desk(d)
-            k._command({"op": "variant_rule", "key": "band_lo", "value": 0.78})
+            k._command({"op": "variant_new", "from": "base", "rule": {"band_lo": 0.78}})
             k._shadow(); k.shadow.save()
             self.assertTrue(k.shadow.bought("base-2"))
             with open(os.path.join(d, "variants.json"), "w") as fh:
@@ -2792,39 +2891,17 @@ class VariantReviewFixes(unittest.TestCase):
             self.assertEqual(k.shadow.summary(["base-2"])[0]["entries"], 1)
 
     # 4, 6, 8, 10
-    def test_r_changes_only_the_rule_in_use(self):
+    def test_pending_values_do_not_follow_to_another_profile(self):
         with tempfile.TemporaryDirectory() as d:
             k, p, scr = self.setup(d)
-            self.press("p"); scr.focus = "variants"; scr.var_sel = "band80"; self.cmds()
-            self.press("E")
-            scr.set_sel = [r.key for r in scr.set_rows()].index("rule.series"); scr.set_sub = 1
-            for c in (" ", 27, 9, 9, "r"):                                     # ETH into band80's copy, then SOL, r
-                scr.key(ord(c) if isinstance(c, str) else c)
-            self.run_cmds()
-            self.assertEqual(k.shadow.own.rule("band80-2")["series"], ["KXBTCD", "KXETHD"])
-            self.assertEqual(k.shadow.own.rule(k.variant())["series"], ["KXBTCD", "KXSOLD"])
-
-    def test_r_with_no_coins_or_one_tern_does_not_know(self):
-        for had in ([], ["KXBTCD", "KXFOOD"]):
-            with tempfile.TemporaryDirectory() as d:
-                k, p, scr = self.setup(d)
-                k.cfg.strategy.series = list(had); self.sync(); self.cmds()
-                self.press(9, "r")                                             # ETH
-                self.run_cmds()
-                self.assertEqual(k.shadow.own.rule(k.variant())["series"], [c for c in had if c != "KXFOOD"] + ["KXETHD"])
-
-    def test_pending_values_do_not_follow_to_another_profile_or_variant(self):
-        with tempfile.TemporaryDirectory() as d:
-            k, p, scr = self.setup(d)
-            self.press("e")
+            self.view2(); scr.key(ord("e"))
             rows = [r.key for r in scr.set_rows()]
-            for key in ("strategy.contracts", "strategy.variant"):
+            for key in ("enabled", "live.contracts"):
                 scr.set_sel = rows.index(key); scr.key(self.curses.KEY_RIGHT)  # sent, not answered
             scr.key(27)
-            scr.page, scr.focus, scr.prof_sel = 2, "profiles", p.id
+            scr.focus, scr.prof_sel = "profiles", "1"
             scr.draw(); scr.view_profile()
-            self.assertNotIn("strategy.contracts", scr.set_sent)
-            self.assertNotIn("strategy.variant", scr.set_sent)
+            self.assertEqual(list(scr.set_sent), ["live.contracts"])           # the desk's is whichever profile is shown
 
     # 5
     def test_a_damaged_shadow_json_does_not_stop_the_conversion(self):
@@ -2856,9 +2933,9 @@ class VariantReviewFixes(unittest.TestCase):
             k = self.desk(d)
             k.cfg.strategy.minutes = [25, 20]
             self.assertIn("no new variant", k._command({"op": "variant_new", "name": "x", "from": "late"}))
-            self.assertIn("not changed", k._command({"op": "variant_rule", "key": "band_lo", "value": 0.8, "variant": "late"}))
+            self.assertIn("no new variant", k._command({"op": "variant_new", "from": "late", "rule": {"band_lo": 0.8}}))
             self.assertEqual(k.shadow.own.all, {})
-            k._command({"op": "variant_rule", "key": "minutes", "value": [10], "variant": "late"})   # this gives it one
+            k._command({"op": "variant_new", "from": "late", "rule": {"minutes": [10]}})   # this gives it one
             self.assertEqual(self.desk(d).shadow.own.active(), ["late-2"])
 
     # 7, 14
@@ -2866,7 +2943,7 @@ class VariantReviewFixes(unittest.TestCase):
         import json
         with tempfile.TemporaryDirectory() as d:
             k = self.desk(d)
-            k._command({"op": "variant_rule", "key": "band_lo", "value": 0.80})
+            k._command({"op": "variant_new", "from": "base", "rule": {"band_lo": 0.80}})
             path = os.path.join(d, "variants.json")
             with open(path) as fh:
                 good = json.load(fh)["variants"]["base-2"]
@@ -2874,7 +2951,8 @@ class VariantReviewFixes(unittest.TestCase):
                 return {**good, "rule": {**good["rule"], **rule}}
             items = {"base-2": good, "a1": bad(band_lo="0.80"), "a2": bad(band_lo=float("nan")), "a3": bad(band_lo=True),
                      "a4": bad(max_vol="7"), "a5": bad(minutes=[float("inf")]), "a6": bad(cap=0.5), "a7": {**good, "deleted": "no"},
-                     "a8": bad(band_lo=0.97), "a9": 5, "Bad Key": good}
+                     "a8": bad(band_lo=0.97), "a9": 5, "Bad Key": good,
+                     "b1": bad(contracts="5"), "b2": bad(contracts=0), "b3": bad(max_hour_cost=None), "b4": bad(paper_capital=-1)}
             with open(path, "w") as fh:
                 json.dump({"variants": items}, fh)
             k = self.desk(d)
@@ -2899,14 +2977,15 @@ class VariantReviewFixes(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             k, p, scr = self.setup(d)
             k.cfg.strategy.minutes = [25, 20, 12]; self.sync()
-            self.press("e"); self.cmds()
+            self.press("p"); scr.focus, scr.var_sel = "variants", "base"; self.cmds()
+            self.press("E")
             row = next(r for r in scr.set_rows() if r.key == "rule.minutes")
             scr.set_sel = scr.set_rows().index(row)
             self.assertIn(12, scr.set_choices(row))
             scr.set_sub = scr.set_choices(row).index(10)
-            self.press(" "); self.run_cmds()
+            self.press(" ", "s", 10); self.run_cmds()
             self.assertEqual(k.shadow.own.rule("base-2")["minutes"], [25, 20, 12, 10])
-            self.assertIn("not changed", k._command({"op": "variant_rule", "key": "minutes", "value": [25, 13]}))
+            self.assertIn("no new variant", k._command({"op": "variant_new", "from": "base", "rule": {"minutes": [25, 13]}}))
 
     # 11
     def test_a_viewed_profile_with_an_unknown_variant_has_a_working_settings_box(self):
@@ -2915,20 +2994,12 @@ class VariantReviewFixes(unittest.TestCase):
             p.cfg.strategy.variant = "gone"; self.sync()
             self.view2(); self.press("e")
             self.assertNotIn("older than this screen", self.text())
-            self.assertEqual(scr.set_value("rule.band_lo"), 0.55)
             self.press(27); scr.focus = "variants"; scr.var_sel = "base"; self.cmds()
+            self.press("E"); self.assertEqual(scr.set_value("rule.band_lo"), 0.55); self.press(27)
             self.press(10); self.run_cmds()                                    # enter on base is not "already in use"
             self.assertEqual(p.cfg.strategy.variant, "base")
 
     # 12
-    def test_a_refused_new_variant_opens_nothing(self):
-        with tempfile.TemporaryDirectory() as d:
-            k, p, scr = self.setup(d)
-            self.press("p"); scr.focus = "variants"; scr.var_sel = "band80"; self.cmds()
-            self.press("n", *"late", 10); self.run_cmds()                      # a name already taken
-            self.press(9, "r"); self.run_cmds()                                # makes base-2
-            self.assertEqual((k.shadow.own.active(), scr.overlay), (["base-2"], None))
-
     # 13
     def test_report_columns_line_up(self):
         import contextlib, io

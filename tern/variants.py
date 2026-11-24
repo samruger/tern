@@ -1,9 +1,9 @@
 """Your own variants: complete rules made on the screen, kept per profile (profile 1 is the desk).
 
-A variant here is a whole rule: band, slots, spread, coins, and the two optional caps. It borrows nothing from
-the profile's settings (those hold its size and budget). shadow.TABLE's variants are built in and never change
-from the screen. A variant that has bought anything never changes either: changing one of those makes a new
-variant with the change, with an empty record (engine._rule_edit), so a record is always one rule's.
+A variant here is everything about how it trades: band, slots, spread, coins, the two optional caps, contracts a
+strike, most an hour and its paper start. It borrows nothing from the profile. shadow.TABLE's variants are built
+in. No variant ever changes once it is saved: E on the screen opens one as a draft, and saving that draft makes a
+new variant with an empty record (engine._variant_new), so a record is always one rule's.
 
 They are in variants.json beside the profile's records. A variant that bought something and was then deleted
 stays listed there as deleted: its open entries still settle and its key is never used again.
@@ -26,7 +26,7 @@ NAME_MAX = 12                                    # a variant's key and display n
 KEY = re.compile(r"[a-z][a-z0-9-]{0,11}")
 SLOT_CHOICES = (30, 25, 20, 15, 10, 5)           # minutes before the close a rule may enter at
 
-# The rule rows of the settings box and of E in the variants box. Values are the rule's own; 0 is "off" in a cap.
+# The rows of E in the variants box. Values are the variant's own; 0 is "off" in a cap.
 RULE_SETTINGS = [
     Setting("rule", "band_lo", "band low", 0.50, 0.98, 0.01, kind="p", group="RULE",
             what="the favorite's mid must be at least this"),
@@ -41,7 +41,14 @@ RULE_SETTINGS = [
             what="most entries on one strike in an hour; off: one at every slot"),
     Setting("rule", "max_vol", "most volatility", 0, 50, 0.1, kind="cap",
             what="skip a slot when the coin's last hour moved more than this (bp a minute); off: never skip"),
+    Setting("rule", "contracts", "contracts a strike", 1, 100, 1, kind="n", group="SIZE",
+            what="contracts it buys per strike per slot ($ P&L scales with it; live has its own, in settings)"),
+    Setting("rule", "max_hour_cost", "most an hour", 5, 2_000, 5,
+            what="$ it may put into one coin's hour, on paper and live"),
+    Setting("rule", "paper_capital", "paper start", 100, 1_000_000, 100, group="PAPER",
+            what="the cash its paper book starts with; profile 1's paper book takes it at a reset (R)"),
 ]
+SIZES = ("contracts", "max_hour_cost", "paper_capital")   # what variants saved before 2026-11-23 evening took from their profile
 RULE = {r.name: r for r in RULE_SETTINGS}
 FIELDS = tuple(RULE)
 
@@ -68,6 +75,8 @@ def check(field: str, value, rule: dict):
     if r.kind == "cap":
         value = int(value) if field == "cap" else round(float(value), 1)
         return value or None
+    if r.kind == "n":
+        return float(int(value))
     value = round(float(value), 2)
     if field == "band_lo" and value >= rule["band_hi"]:
         raise ValueError(f"band low must stay below band high ({rule['band_hi'] * 100:.0f}¢)")
@@ -76,11 +85,23 @@ def check(field: str, value, rule: dict):
     return value
 
 
-def as_rule(params: tuple) -> dict:
-    """shadow.params()'s tuple as a rule."""
+def checked(changes, rule: dict) -> dict:
+    """A whole draft, as it will be stored, or ValueError. The band's two ends are judged by where both end up."""
+    if not isinstance(changes, dict):
+        raise ValueError("the changes are not a list of settings")
+    ends = {**rule, **{f: changes[f] for f in ("band_lo", "band_hi") if f in changes}}
+    try:
+        return {f: check(f, v, ends) for f, v in changes.items()}
+    except TypeError:                            # the other end of the band is not a number
+        raise ValueError("the band must be two numbers") from None
+
+
+def as_rule(params: tuple, contracts: float, max_hour_cost: float, paper_capital: float) -> dict:
+    """shadow.params()'s tuple, with the size and the paper start, as a rule."""
     lo, hi, cap, mins, spread, coins, mvol = params
     return {"band_lo": lo, "band_hi": hi, "minutes": list(mins), "max_spread": spread, "series": list(coins),
-            "cap": cap, "max_vol": mvol}
+            "cap": cap, "max_vol": mvol, "contracts": contracts, "max_hour_cost": max_hour_cost,
+            "paper_capital": paper_capital}
 
 
 def same(a: dict, b: dict) -> bool:
@@ -96,6 +117,7 @@ def describe(rule: dict) -> str:
         out.append(f"{rule['cap']} a strike")
     if rule.get("max_vol"):
         out.append(f"vol ≤{rule['max_vol']:g}")
+    out.append(f"{rule['contracts']:g}/strike · ${rule['max_hour_cost']:g}/h")
     return " · ".join(out)
 
 
@@ -122,12 +144,21 @@ def why_bad(rule) -> str:
         return "its entries a strike is not a count"
     if rule["max_vol"] is not None and not (num(rule["max_vol"]) and rule["max_vol"] > 0):
         return "its most volatility is not a number"
+    if not (num(rule["contracts"]) and rule["contracts"] >= 1):
+        return "its contracts a strike is not a count"
+    if not all(num(rule[f]) and rule[f] > 0 for f in ("max_hour_cost", "paper_capital")):
+        return "its most an hour or paper start is not a number"
     return ""
 
 
-def _loaded(key, d) -> dict | None:
-    """One variant from variants.json, or None when it can't be used. Its name and dates are only for show."""
-    if not (isinstance(key, str) and KEY.fullmatch(key) and isinstance(d, dict)) or why_bad(d.get("rule")):
+def _loaded(key, d, sizes: dict) -> dict | None:
+    """One variant from variants.json, or None when it can't be used. Its name and dates are only for show.
+    sizes: what one saved before variants held their size and paper start gets."""
+    if not (isinstance(key, str) and KEY.fullmatch(key) and isinstance(d, dict)):
+        return None
+    if isinstance(d.get("rule"), dict):
+        d = {**d, "rule": {**sizes, **d["rule"]}}
+    if why_bad(d.get("rule")):
         return None
     if not isinstance(d.get("deleted", False), bool):
         return None
@@ -138,27 +169,36 @@ def _loaded(key, d) -> dict | None:
 
 
 class VariantSet:
-    """A profile's own variants. reserved: the names shadow.py holds (built in and retired)."""
+    """A profile's own variants. reserved: the names shadow.py holds (built in and retired). sizes: its profile's
+    contracts, most an hour and paper start, for variants saved before they held their own."""
 
-    def __init__(self, dir: str, reserved=()):
+    def __init__(self, dir: str, reserved=(), sizes: dict | None = None):
         self.path = os.path.join(dir, FILE)
         self.reserved = tuple(reserved)
         self.all: dict[str, dict] = {}           # key -> {rule, title, from, made, deleted}
         self.changes = 0                         # goes up with every change: the engine's summaries cache on it
-        self.moved: dict[tuple, str] = {}        # (edit session, variant) -> the copy that session made of it
         self.by: dict[str, str] = {}             # variant -> the id of the command that made it, since the start
         self.used = lambda: set()                # keys that have records (Shadow sets it): never given to another
+        self.filled = False                      # some got their size from sizes: keep_filled() saves that
         self.damaged = False                     # something in the file would not load: save() keeps a copy of it
         try:
             with open(self.path) as fh:
                 items = json.load(fh)["variants"]
-            got = {k: _loaded(k, v) for k, v in items.items() if k not in self.reserved}
+            sizes = {**{"contracts": 5.0, "max_hour_cost": 60.0, "paper_capital": 1000.0}, **(sizes or {})}
+            got = {k: _loaded(k, v, sizes) for k, v in items.items() if k not in self.reserved}
             self.all = {k: v for k, v in got.items() if v is not None}
+            self.filled = any(not set(SIZES) <= set(items[k]["rule"]) for k in self.all)
             self.damaged = len(self.all) != len(items)
         except FileNotFoundError:
             pass
         except (OSError, ValueError, KeyError, AttributeError, TypeError):
             self.damaged = True
+
+    def keep_filled(self) -> None:
+        """The engine's, once: sizes filled in from the profile are the variants' own from now on."""
+        if self.filled and not self.damaged:     # (a damaged file is only written over by a change)
+            self.save()
+        self.filled = False
 
     def save(self) -> None:
         if self.damaged:                         # something in it would not load: never write over the only copy
@@ -232,15 +272,6 @@ class VariantSet:
         self.save()
         return key
 
-    def set(self, key: str, field: str, value) -> tuple[object, object]:
-        """Change one field of a variant's rule: (was, now). The caller knows it has bought nothing."""
-        rule = self.all[key]["rule"]
-        value = check(field, value, rule)
-        was, rule[field] = rule[field], value
-        if was != value:
-            self.save()
-        return was, value
-
     def rename(self, key: str, to: str, taken=()) -> tuple[str, str]:
         to = clean(to) or key
         self._free(to, but=key, taken=taken)
@@ -254,5 +285,4 @@ class VariantSet:
             self.all[key]["deleted"] = True
         else:
             del self.all[key]
-        self.moved = {k: v for k, v in self.moved.items() if v != key}
         self.save()

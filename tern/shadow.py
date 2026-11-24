@@ -18,7 +18,7 @@ import time
 from collections import deque
 
 from .book import taker_fee
-from .config import SERIES
+from .config import SERIES, Config
 from .strategy import due_slot, signals
 from .variants import VariantSet, as_rule, describe
 
@@ -63,8 +63,16 @@ RETIRED = {
 
 
 def own_set(dir: str) -> VariantSet:
-    """The variants a profile made itself, from its folder (runtime/ for profile 1)."""
-    return VariantSet(dir, (*VARIANTS, *RETIRED))
+    """The variants a profile made itself, from its folder (runtime/ for profile 1). One saved before variants held
+    their size gets the one in the folder's config.json."""
+    try:
+        with open(os.path.join(dir, "config.json")) as fh:
+            cfg = Config.from_dict(json.load(fh))
+    except (OSError, ValueError, TypeError, AttributeError):
+        cfg = Config()                           # (as the engine does for the built-in ones, and a profile does not load)
+    return VariantSet(dir, (*VARIANTS, *RETIRED), {"contracts": cfg.strategy.contracts,
+                                                   "max_hour_cost": cfg.strategy.max_hour_cost,
+                                                   "paper_capital": cfg.paper_capital})
 
 
 def params(name: str, S, own: VariantSet | None = None) -> tuple:
@@ -95,9 +103,22 @@ def too_wild(mvol: float | None, v: float | None) -> bool:
     return mvol is not None and (v is None or v > mvol)
 
 
-def rule_of(name: str, S, own: VariantSet | None = None) -> dict:
-    """A variant's whole rule (variants.FIELDS), built in or own."""
-    return as_rule(params(name, S, own))
+def size_of(name: str, S, own: VariantSet | None = None) -> tuple[float, float]:
+    """(contracts a strike, most an hour) for a variant: an own one's are its own, a built-in one's are S's."""
+    mine = own.rule(name) if own is not None and name not in VARIANTS else None
+    return (mine["contracts"], mine["max_hour_cost"]) if mine is not None else (S.contracts, S.max_hour_cost)
+
+
+def start_of(name: str, cfg: Config, own: VariantSet | None = None) -> float:
+    """A variant's paper start."""
+    mine = own.rule(name) if own is not None and name not in VARIANTS else None
+    return mine["paper_capital"] if mine is not None else cfg.paper_capital
+
+
+def rule_of(name: str, cfg: Config, own: VariantSet | None = None) -> dict:
+    """Everything about how a variant trades (variants.FIELDS), built in or own. cfg: its profile's."""
+    S = cfg.strategy
+    return as_rule(params(name, S, own), *size_of(name, S, own), start_of(name, cfg, own))
 
 
 def desc_of(name: str, own: VariantSet | None = None) -> str:
@@ -217,7 +238,7 @@ class Shadow:
         return ORDER + self.own.active()
 
     def bought(self, name: str) -> bool:
-        """Whether a variant has any entry, open or settled: its rule then never changes."""
+        """Whether a variant has any entry, open or settled: its rule is then kept when it is deleted."""
         return bool(self.agg.get(name)) or any(r["v"] == name for r in self.rows)
 
     # ------------------------------------------------------------ each engine step
@@ -234,6 +255,7 @@ class Shadow:
         series = event.split("-", 1)[0]
         for name in self.order():
             lo, hi, cap, mins, spread, coins, mvol = params(name, S, self.own)
+            size, hour = size_of(name, S, self.own)
             if slot not in mins or series not in coins or too_wild(mvol, vol):
                 continue
             mine = [r for r in self.rows if r["v"] == name and r["event"] == event]
@@ -245,7 +267,7 @@ class Shadow:
                 if cap is not None and held.get(s["ticker"], 0) >= cap:
                     continue
                 unit = s["price"] if s["delta_sign"] > 0 else 1 - s["price"]
-                n = float(int(min(S.contracts, s["size"], max(0.0, (S.max_hour_cost - spent) / max(unit, 1e-6)))))
+                n = float(int(min(size, s["size"], max(0.0, (hour - spent) / max(unit, 1e-6)))))
                 if n < 1:
                     continue
                 fee = self._fee(n, s["price"])

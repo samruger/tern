@@ -29,8 +29,8 @@ class Strategy:
     band_hi: float = 0.95
     minutes: list = field(default_factory=lambda: [25, 20, 15, 10])  # entry slots, minutes before the close
     max_spread: float = 0.02
-    contracts: float = 5.0                     # per strike per slot
-    max_hour_cost: float = 60.0                # dollars the rule may put into one hourly event
+    contracts: float = 5.0                     # per strike per slot; this and the next are the built-in variants'
+    max_hour_cost: float = 60.0                # dollars a variant may put into one hourly event (own ones hold theirs)
     variant: str = "base"                      # the shadow variant paper and live trade (shadow.VARIANTS); set from
                                                # the screen's variants box. Live needs that variant's own record past the gate.
 
@@ -42,7 +42,7 @@ class Live:
     max_order_usd: float = 25.0    # largest single live order the rule may send
     max_daily_loss: float = 30.0   # live loss since local midnight that cancels everything and returns to paper
     auto_needs_gate: bool = True   # the rule trades live only after its paper record passes the gate
-    contracts: float = 5.0         # contracts live buys per strike per slot (paper uses strategy.contracts)
+    contracts: float = 5.0         # contracts live buys per strike per slot (paper: the variant's)
     profile: str = "1"             # the profile whose rule live trades (d in the screen's profiles box); "1" is the
                                    # desk. Its variant must pass the gate on that profile's own record.
 
@@ -65,7 +65,7 @@ class Web:
 
 @dataclass
 class Config:
-    paper_capital: float = 1_000.0
+    paper_capital: float = 1_000.0 # the built-in variants' paper start
     taker_fee: float = 0.07        # Kalshi: ceil(0.07 * C * P * (1-P)) per order, to the cent
     view_strikes: int = 15         # rows in the ladder
     alerts: bool = True            # desktop notifications (notify-send) for live events, errors, engine stop
@@ -143,13 +143,7 @@ SETTINGS = [
     Setting("live", "max_daily_loss", "daily loss limit", 1, 5_000, 5, risk=+1,
             what="live loss since local midnight that turns live off"),
     Setting("live", "contracts", "contracts a strike", 1, 100, 1, kind="n", risk=+1,
-            what="contracts live buys per strike per slot; paper and the variants' records keep their own size"),
-    Setting("strategy", "contracts", "contracts a strike", 1, 100, 1, kind="n", group="PAPER",
-            what="contracts paper and the variants' records buy per strike per slot ($ P&L scales with it)"),
-    Setting("strategy", "max_hour_cost", "most an hour", 5, 2_000, 5,
-            what="$ the rule may put into one hourly event (paper, live and the variants' records)"),
-    Setting("", "paper_capital", "paper start", 100, 1_000_000, 100,
-            what="the paper book's starting cash; takes effect at the next reset (R)"),
+            what="contracts live buys per strike per slot; on paper each variant has its own"),
     Setting("gate", "min_days", "days of hours traded", 1, 90, 1, kind="n", risk=-1, group="GATE",
             what="hours the variant in use has traded on paper, in days, before live may trade it"),
     Setting("gate", "min_entries", "settled entries", 10, 10_000, 50, kind="n", risk=-1,

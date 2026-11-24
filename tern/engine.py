@@ -164,8 +164,9 @@ class Desk:
         self.foreign: list[str] = []
         self.balance: float | None = None
         self.last = collections.defaultdict(float)
-        self._load_state()
         self.shadow = Shadow(runtime, self.cfg.taker_fee)
+        self.shadow.own.keep_filled()
+        self._load_state()
         self.rec = Recorder(runtime)
         self.closed: dict[str, dict] = {}      # hourly events that have closed and still owe their results
         # profile 1's settings changes, from now on; a profile's are in its own folder (profiles.py)
@@ -276,7 +277,7 @@ class Desk:
                 except OSError:
                     pass
                 self.log(f"{os.path.basename(path)} unreadable ({ex}); kept as {os.path.basename(keep)}", "error")
-        self.paper = Book.from_dict(st["paper"]) if st.get("paper") else Book("paper", self.cfg.paper_capital)
+        self.paper = Book.from_dict(st["paper"]) if st.get("paper") else Book("paper", self._start())
         self.live = Book.from_dict(st["live"]) if st.get("live") else Book("live", 0.0)
         # History is kept in append-only files beside state.json, so a save writes what is new and not
         # the whole record. A state.json from before that still holds the lists: they seed the files once.
@@ -709,6 +710,10 @@ class Desk:
         v = self.cfg.strategy.variant
         return v if shadowmod.known(v, self.shadow.own) else "base"
 
+    def _start(self) -> float:
+        """What the paper book starts with: the paper start of the variant it trades."""
+        return shadowmod.start_of(self.variant(), self.cfg, self.shadow.own)
+
     @staticmethod
     def _lost(S, shadow) -> str:
         """Why the variant a profile was set to can't be what it trades, or "". Its paper then falls back to base;
@@ -753,6 +758,7 @@ class Desk:
 
     def _auto_book(self, book, S, var: str, now: float, own=None) -> None:
         lo, hi, cap, mins, spread, coins, mvol = shadowmod.params(var, S, own)
+        contracts, hour = shadowmod.size_of(var, S, own)
         for series in coins:
             e = self.events.get(series)
             if not e or not e["markets"] or now - e["fetched"] > 10:
@@ -784,8 +790,8 @@ class Desk:
                 unit = s["price"] if s["delta_sign"] > 0 else 1 - s["price"]
                 # whole contracts, no more than the quote shows: paper is sized exactly as the shadow record
                 # sizes it; live has its own size (live.contracts)
-                size = self.cfg.live.contracts if book is self.live else S.contracts
-                n = float(int(min(size, s["size"], max(0.0, (S.max_hour_cost - spent) / max(unit, 1e-6)))))
+                size = self.cfg.live.contracts if book is self.live else contracts
+                n = float(int(min(size, s["size"], max(0.0, (hour - spent) / max(unit, 1e-6)))))
                 if n < 1:
                     continue                     # a cheaper favorite further on may still fit (as in shadow)
                 try:
@@ -988,15 +994,6 @@ class Desk:
             self.last["bal"] = 0
             self.day = {}                        # the daily loss counts from now: a same-day KILL must not fire again at once
             return "live armed: authenticating with Kalshi (the daily loss limit counts from now)"
-        if op == "series":
-            s = c["series"]
-            if s not in cfgmod.SERIES:
-                return f"unknown series {s!r} (known: {', '.join(cfgmod.SERIES)})"
-            w = self._who(c.get("profile"))
-            if isinstance(w, str):
-                return w
-            lst = [x for x in shadowmod.params(w["variant"], w["S"], w["shadow"].own)[5] if x in cfgmod.SERIES]
-            return self._rule_edit(w, "series", [x for x in lst if x != s] if s in lst else lst + [s])
         if op == "variant":
             name = c.get("name")
             if not shadowmod.known(name, self.shadow.own):
@@ -1013,15 +1010,11 @@ class Desk:
                        f" · live waits: {vn(name)} has not passed the gate"
             self.log(msg, "warn" if self.mode == "live" else "info")
             return msg
-        if op in ("variant_new", "variant_rule", "variant_delete"):
+        if op in ("variant_new", "variant_delete"):
             w = self._who(c.get("profile"))
             if isinstance(w, str):
                 return w
-            if op == "variant_new":
-                return self._variant_new(w, c)
-            if op == "variant_delete":
-                return self._variant_delete(w, c.get("variant"))
-            return self._rule_edit(w, c.get("key"), c.get("value"), c.get("variant"), c.get("session"))
+            return self._variant_new(w, c) if op == "variant_new" else self._variant_delete(w, c.get("variant"))
         if op == "live_profile":
             return self._live_profile(c.get("profile"))
         if op == "set":
@@ -1036,10 +1029,10 @@ class Desk:
             if was != v:
                 self.slog.append(key, was, v, bump=key in profmod.RECORD_KEYS)
             r = cfgmod.setting(key)
-            label = {"live": "live ", "gate": "gate ", "web": "web ", "strategy": "paper " if r.name == "contracts" else ""}.get(r.sec, "") + r.label
+            label = {"live": "live ", "gate": "gate ", "web": "web "}.get(r.sec, "") + r.label
             label = "web screen" if key == "web.enabled" else label
             show = (lambda x: "on" if x else "off") if r.kind == "bool" else (lambda x: f"{x:g}")
-            msg = f"{label}: {show(was)} → {show(v)}" + (" (the paper book starts there at the next reset)" if key == "paper_capital" else "")
+            msg = f"{label}: {show(was)} → {show(v)}"
             if r.sec == "web" and was != v and (key == "web.enabled" or self.cfg.web.enabled):
                 msg += " · " + webctl.apply(self.cfg.web)
                 if key == "web.port":
@@ -1051,7 +1044,7 @@ class Desk:
         if op and op.startswith("profile_"):
             return self._profile_command(op, c)
         if op == "reset_paper":
-            self.paper = Book("paper", self.cfg.paper_capital); self.auto = []; self.auto_done = []
+            self.paper = Book("paper", self._start()); self.auto = []; self.auto_done = []
             for name in ("paper-trades.jsonl", "paper-curve.jsonl", RULE_LOG):   # its history goes with it
                 try:
                     os.remove(os.path.join(self.runtime, name))
@@ -1060,7 +1053,7 @@ class Desk:
             self.slots = {k: v for k, v in self.slots.items() if not k.startswith("paper|")}
             self.hour_cost = {k: v for k, v in self.hour_cost.items() if not k.startswith("paper|")}
             self.taken = {k: v for k, v in self.taken.items() if not k.startswith("paper|")}
-            return f"paper reset to ${self.cfg.paper_capital:,.2f}"
+            return f"paper reset to ${self.paper.start:,.2f}"
         return f"unknown command {op!r}"
 
     def _live_profile(self, pid) -> str:
@@ -1100,81 +1093,36 @@ class Desk:
     def _who(self, pid) -> "dict | str":
         """Profile pid ("1" or none: the desk) as the variant commands see it, or why there is none."""
         if pid in (None, "", "1"):
-            return {"id": "1", "name": self.names.profile, "S": self.cfg.strategy, "shadow": self.shadow,
-                    "log": self.slog, "variant": self.variant(), "p": None}
+            return {"id": "1", "name": self.names.profile, "cfg": self.cfg, "shadow": self.shadow,
+                    "log": self.slog, "variant": self.variant()}
         p = self._profile(pid)
         if p is None:
             return f"no profile {pid!r}"
-        return {"id": p.id, "name": p.name, "S": p.cfg.strategy, "shadow": p.shadow, "log": p.log,
-                "variant": p.variant, "p": p}
-
-    def _use(self, w: dict, name: str) -> None:
-        if w["p"] is not None:
-            w["p"].set("strategy.variant", name)
-        else:
-            self.cfg.strategy.variant = name; cfgmod.save(self.cfg, self.runtime)
-
-    def _live_note(self, w: dict, name: str) -> str:
-        """What a change to the variant a profile trades means for live, when that profile is the live one and armed."""
-        if not (self.mode == "live" or self.cfg.live.enabled) or self.live_target()["id"] != w["id"]:
-            return ""
-        ok = self.checks(name, w["shadow"].summary([name])[0])["passed"] or not self.cfg.live.auto_needs_gate
-        return " · live trades it from the next slot" if ok else \
-            f" · live waits: {self.vname(name, w['shadow'].own)} has not passed the gate"
+        return {"id": p.id, "name": p.name, "cfg": p.cfg, "shadow": p.shadow, "log": p.log,
+                "variant": p.variant}
 
     def _variant_new(self, w: dict, c: dict) -> str:
-        """n in the variants box: a copy of a variant's rule, under its own name, with an empty record."""
+        """s in E's box: a variant's settings with the draft's changes, saved as a new variant with an empty record.
+        Nothing that trades changes: enter in the variants box puts it in use."""
         sh, parent = w["shadow"], c.get("from") or w["variant"]
         if not shadowmod.known(parent, sh.own):
             return f"no new variant: unknown variant {parent!r}"
+        rule = shadowmod.rule_of(parent, w["cfg"], sh.own)
         try:
-            key = sh.own.add(shadowmod.rule_of(parent, w["S"], sh.own), c.get("name") or "", parent, self.names.shown())
+            changes = varmod.checked(c.get("rule") or {}, rule)
+            key = sh.own.add({**rule, **changes}, c.get("name") or "", parent, self.names.shown())
         except ValueError as ex:
             return f"no new variant: {ex}"
         sh.changes += 1
         sh.own.by[key] = str(c.get("id", ""))
         w["log"].append("variant", parent, key, bump=False)
-        return f"{w['name']}: new variant {sh.own.title(key)}, {self.vname(parent, sh.own)}'s rule with an empty record"
-
-    def _rule_edit(self, w: dict, field, value, name=None, session=None) -> str:
-        """Change one field of a variant's rule: the one in use, or `name`. A built-in variant, or one that has
-        bought anything, is never changed: the change goes into a new copy of it. The book moves to the copy when
-        the variant was the one in use. session: one opening of the screen's rule box, whose further changes to
-        `name` go to the copy it already made, not to another."""
-        sh, own = w["shadow"], w["shadow"].own
-        name = name or w["variant"]
-        while (session, name) in own.moved:
-            name = own.moved[(session, name)]
-        if not shadowmod.known(name, own):
-            return f"not changed: unknown variant {name!r}"
-        rule = shadowmod.rule_of(name, w["S"], own)
-        try:
-            v = varmod.check(field, value, rule)
-        except (ValueError, TypeError) as ex:
-            return f"not changed: {ex}"
-        label = varmod.RULE[field].label
-        if v == rule[field]:
-            return f"{self.vname(name, own)}: {label} is already {profmod.show('rule.' + field, v)}"
-        what = f"{label} {profmod.show('rule.' + field, rule[field])} → {profmod.show('rule.' + field, v)}"
-        key, copied = name, name not in own.all or sh.bought(name)
-        if copied:
-            try:
-                key = own.add({**rule, field: v}, "", name, self.names.shown())
-            except ValueError as ex:
-                return f"not changed: {ex}"
-            if session is not None:
-                own.moved[(session, name)] = key
-            w["log"].append("variant", name, key, bump=False)
-        else:
-            own.set(key, field, v)
-        w["log"].append("rule." + field, rule[field], v, bump=False)
-        sh.changes += 1
-        used = name == w["variant"]
-        if copied and used:
-            self._use(w, key)
-        was, now = self.vname(name, own), self.vname(key, own)
-        msg = f"{w['name']}: " + (f"new variant {now} ({was} stays as it is): {what}" if copied else f"{now}: {what}")
-        return msg + (" · in use now" if copied and used else "") + (self._live_note(w, key) if used else "")
+        what = []
+        for f, v in changes.items():
+            if v != rule[f]:
+                w["log"].append("rule." + f, rule[f], v, bump=False)
+                what.append(f"{varmod.RULE[f].label} {profmod.show('rule.' + f, rule[f])} → {profmod.show('rule.' + f, v)}")
+        return f"{w['name']}: new variant {sh.own.title(key)}, from {self.vname(parent, sh.own)}" + \
+            (": " + ", ".join(what) if what else "") + " · enter in variants uses it"
 
     def _variant_delete(self, w: dict, name) -> str:
         """D in the variants box: one of the profile's own stops running. Its entries stay on file."""
@@ -1245,7 +1193,7 @@ class Desk:
             except ValueError as ex:
                 return f"no new profile: {ex}"
             self.profiles.append(p)
-            return f"{p.name} made: profile 1's settings and the variant it trades, empty records, running from the next slot (settings 1)"
+            return f"{p.name} made: the variant profile 1 trades and the built-in ones, empty records, running from the next slot (settings 1)"
         if pid == "1":
             return {"profile_enable": "profile 1 always runs: it holds the paper book and live",
                     "profile_delete": "profile 1 can't be deleted: it holds the paper book and live",
@@ -1268,8 +1216,8 @@ class Desk:
             return f"{p.name} " + ("on: enters from the next slot" if p.enabled else "off: no new entries; open ones still settle") + live
         if op == "profile_set":
             key = c.get("key")
-            if key in profmod.RULE_KEYS:         # a rule is a variant's
-                return self._rule_edit(self._who(p.id), profmod.RULE_KEYS[key], c.get("value"))
+            if key not in profmod.SCREEN_KEYS:   # how it trades is its variants'
+                return f"{p.name}: not set: {key!r} is not a profile setting"
             try:
                 was, now = p.set(key, c.get("value"))
             except ValueError as ex:
@@ -1281,34 +1229,29 @@ class Desk:
 
     def _summary(self, p: "profmod.Profile") -> list[dict]:
         """A profile's variant summaries, recomputed only when its records change (status is written every step)."""
-        key = (p.shadow.changes, p.shadow.own.changes, p.variant, repr(p.cfg.strategy))
+        key = (p.shadow.changes, p.shadow.own.changes, p.variant, repr(p.cfg.strategy), p.cfg.paper_capital)
         if getattr(p, "_sum", (None,))[0] != key:
             lost = self._lost(p.cfg.strategy, p.shadow)
-            p._sum = (key, [{**r, **self._vinfo(r["name"], p.cfg.strategy, p.shadow.own), "active": r["name"] == p.variant,
+            p._sum = (key, [{**r, **self._vinfo(r["name"], p.cfg, p.shadow.own), "active": r["name"] == p.variant,
                              **({"lost": lost} if lost and r["name"] == p.variant else {})}
                             for r in p.shadow.summary()])
         return p._sum[1]
 
     @staticmethod
-    def _vinfo(name: str, S, own) -> dict:
+    def _vinfo(name: str, cfg, own) -> dict:
         """What the screen needs to know of a variant besides its record: its rule, and whether it is the
-        profile's own (then its display name and what it was copied from)."""
-        out = {"desc": shadowmod.desc_of(name, own), "rule": shadowmod.rule_of(name, S, own), "own": name in own.all}
+        profile's own (then its display name, what it was made from and the id of the command that made it)."""
+        out = {"desc": shadowmod.desc_of(name, own), "rule": shadowmod.rule_of(name, cfg, own), "own": name in own.all}
         if out["own"]:
-            out.update(title=own.title(name), parent=own.all[name]["from"], by=own.by.get(name, ""),
-                       moved=[s for (s, _), k in own.moved.items() if k == name][-3:])
+            out.update(title=own.title(name), parent=own.all[name]["from"], by=own.by.get(name, ""))
         return out
 
     def _profile_rows(self, variants: list[dict], looked: set | None = None) -> list[dict]:
         """One row per profile for the screen's profiles box, profile 1 first. Only a profile someone is
         looking at carries its variants' curves."""
-        def rule(cfg, variant, own) -> dict:         # the rule its book trades, at its size
-            S = cfg.strategy
-            return {**shadowmod.rule_of(variant, S, own), "contracts": S.contracts, "max_hour_cost": S.max_hour_cost,
-                    "paper_capital": cfg.paper_capital}
         live = str(self.cfg.live.profile or "1")
         out = [{"id": "1", "name": self.names.profile, "enabled": True, "variant": self.variant(), "sv": self.slog.sv,
-                "created": 0, "variants": variants, "rule": rule(self.cfg, self.variant(), self.shadow.own), "live": live == "1",
+                "created": 0, "variants": variants, "rule": shadowmod.rule_of(self.variant(), self.cfg, self.shadow.own), "live": live == "1",
                 "gate_passed": next((v["gate"]["passed"] for v in variants if v.get("active") and v.get("gate")), False)}]
         def one(p):
             rows = self._summary(p)
@@ -1316,7 +1259,7 @@ class Desk:
             if p.id not in (looked or set()):
                 rows = [{k: v for k, v in r.items() if k != "curve"} for r in rows]
             out.append({"id": p.id, "name": p.name, "enabled": p.enabled, "variant": p.variant, "sv": p.log.sv,
-                        "created": p.created, "rule": rule(p.cfg, p.variant, p.shadow.own), "variants": rows, "live": live == p.id,
+                        "created": p.created, "rule": shadowmod.rule_of(p.variant, p.cfg, p.shadow.own), "variants": rows, "live": live == p.id,
                         "gate_passed": self.checks(p.variant, rec)["passed"]})
         self._each_profile(one, "status")
         return out
@@ -1324,19 +1267,18 @@ class Desk:
     def _pview(self, p: "profmod.Profile", mids: dict, strikes: dict) -> dict:
         """What the screen needs to show one profile: every variant as a book on its paper start, its settings."""
         rows = {r["name"]: r for r in self._summary(p)}
-        return {"views": {n: {**p.shadow.view(n, r, mids, strikes, p.cfg.paper_capital),
+        return {"views": {n: {**p.shadow.view(n, r, mids, strikes, shadowmod.start_of(n, p.cfg, p.shadow.own)),
                               "strategy": self._strat(n, p.cfg.strategy, p.shadow.own)} for n, r in rows.items()},
                 "strategy": self._strat(p.variant, p.cfg.strategy, p.shadow.own),
-                "settings": {r.key: (p.enabled if r.key == "enabled" else p.variant if r.key == "strategy.variant" else
-                                     profmod._get(p.cfg, r.key))
-                             for r in profmod.PROFILE_SETTINGS if r.sec != "rule"},   # (a rule's are in its variant's row)
+                "settings": {"enabled": p.enabled, "strategy.variant": p.variant},   # (how it trades is in its variants' rows)
                 "gate": self.checks(p.variant, rows[p.variant]),
                 "log": p.log.lines()[-20:]}
 
     @staticmethod
     def _strat(name: str, S, own=None) -> dict:
         lo, hi, cap, mins, spread, coins, mvol = shadowmod.params(name, S, own)
-        return {**S.__dict__, "variant": name, "band_lo": lo, "band_hi": hi, "cap": cap,
+        contracts, hour = shadowmod.size_of(name, S, own)
+        return {**S.__dict__, "variant": name, "contracts": contracts, "max_hour_cost": hour, "band_lo": lo, "band_hi": hi, "cap": cap,
                 "minutes": mins, "max_spread": spread, "series": coins, "max_vol": mvol}
 
     # ------------------------------------------------------------ status
@@ -1390,7 +1332,7 @@ class Desk:
         gate = gate or self.gate()
         shadow = self.shadow.summary()
         lost = self._lost(self.cfg.strategy, self.shadow)
-        variants = [{**r, **self._vinfo(r["name"], self.cfg.strategy, self.shadow.own), "active": r["name"] == self.variant(),
+        variants = [{**r, **self._vinfo(r["name"], self.cfg, self.shadow.own), "active": r["name"] == self.variant(),
                      **({"lost": lost} if lost and r["name"] == self.variant() else {}),
                      "gate": self.checks(r["name"], r)} for r in shadow]
 
@@ -1399,7 +1341,7 @@ class Desk:
         strategy = strat(self.variant())
         # every variant as if it traded, for the screen's watch view (w): its shadow record shaped like a book
         strikes = {t: m.get("strike") for t, m in self.meta.items()}
-        views = {r["name"]: {**self.shadow.view(r["name"], r, mids, strikes, self.cfg.paper_capital),
+        views = {r["name"]: {**self.shadow.view(r["name"], r, mids, strikes, shadowmod.start_of(r["name"], self.cfg, self.shadow.own)),
                              "strategy": strat(r["name"])} for r in shadow}
         st = {"heartbeat": now, "stopped": stopped, "pid": os.getpid(), "mode": self.mode, "live_enabled": self.cfg.live.enabled,
               "live_error": self.live_error, "keys": self._has_keys(now), "balance": self.balance,

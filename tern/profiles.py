@@ -44,28 +44,16 @@ RECORD_KEYS = ("strategy.band_lo", "strategy.band_hi", "strategy.minutes", "stra
                "strategy.series", "strategy.contracts", "strategy.max_hour_cost")
 
 
-def _paper(key: str) -> Setting:
-    r = cfgmod.setting(key)
-    assert r is not None, key
-    return Setting(r.sec, r.name, r.label, r.lo, r.hi, r.step, r.kind, 0, r.what, "PAPER" if key == "strategy.contracts" else "")
-
-
-# "book trades": the settings box's first row for every profile, profile 1 included
-VARIANT_SETTING = Setting("strategy", "variant", "book trades", kind="variant", group="BOOK",
+# what the book trades: enter in the variants box, not a row of the settings box
+VARIANT_SETTING = Setting("strategy", "variant", "book trades", kind="variant",
                           what="the variant whose rule this profile trades; every variant keeps running")
-
-# The settings box's rows for profiles 2+. No live or gate rows: those are profile 1's, and live's caps and size
-# stay its own even when d makes a profile the live one (its rule is then what live trades).
+# A profile's own rows in the settings box (profile 1 has none: it always runs). How it trades is in its variants.
 PROFILE_SETTINGS = [
-    VARIANT_SETTING,
-    *varmod.RULE_SETTINGS,
-    _paper("strategy.contracts"),
-    _paper("strategy.max_hour_cost"),
-    _paper("paper_capital"),
     Setting("", "enabled", "running", kind="bool", group="PROFILE",
             what="off: no new entries, and the hours while off don't count; open ones still settle"),
 ]
-# The rule the built-in variants start from, in config.json. The screen never changes these (a rule changed
+SCREEN_KEYS = ("enabled", "strategy.variant")    # all of a profile the screen may set (profile_set)
+# The rule, size and paper start of the built-in variants, in config.json. The screen never changes these (a change
 # there is a new variant); a hand edit still does, and is logged.
 BASE_RULE = [
     Setting("strategy", "band_lo", "band low", 0.50, 0.98, 0.01, kind="p", group="RULE",
@@ -78,8 +66,10 @@ BASE_RULE = [
             what="widest bid-ask spread a strike may have"),
     Setting("strategy", "series", "coins", kind="coins",
             what="the coins the rule trades (multi trades all of them); at least one stays on"),
+    *(Setting("strategy" if n != "paper_capital" else "", n, r.label, r.lo, r.hi, r.step, r.kind, what=r.what)
+      for n, r in varmod.RULE.items() if n in varmod.SIZES),
 ]
-PSET = {r.key: r for r in PROFILE_SETTINGS + BASE_RULE}
+PSET = {r.key: r for r in [*PROFILE_SETTINGS, VARIANT_SETTING, *varmod.RULE_SETTINGS, *BASE_RULE]}
 RULE_KEYS = {f"strategy.{f}": f for f in ("band_lo", "band_hi", "minutes", "max_spread", "series")}
 
 ROW_KEYS = ("v", "ts", "event", "close", "ticker", "side", "n", "cost", "fee", "slot")   # an open row needs every one
@@ -256,6 +246,8 @@ class Profile:
         rows = p.shadow.rows
         p.shadow.rows = [r for r in rows if isinstance(r, dict) and all(k in r for k in ROW_KEYS)]
         p.shadow.dirty = p.shadow.dirty or len(p.shadow.rows) != len(rows)
+        if upgrade:
+            p.shadow.own.keep_filled()
         return p
 
     def save_meta(self) -> None:
@@ -462,7 +454,7 @@ def upgrade_rules(dir: str) -> list[str]:
                 shutil.copy2(P(n) + OLD, P(n))
     with open(P("config.json")) as fh:
         cfg = Config.from_dict(json.load(fh))    # unreadable: leave everything (the load that follows says so)
-    S, std, log = cfg.strategy, Strategy(), SettingsLog(P("settings-log.jsonl"))
+    S, std, log = cfg.strategy, Strategy(contracts=cfg.strategy.contracts, max_hour_cost=cfg.strategy.max_hour_cost), SettingsLog(P("settings-log.jsonl"))
     lines = [ln for ln in log.lines() if isinstance(ln.get("sv"), int)]
     own = own_set(dir)
     standard = all(getattr(S, f) == getattr(std, f) for f in RULE_KEYS.values())
@@ -487,7 +479,7 @@ def upgrade_rules(dir: str) -> list[str]:
     def under(name: str, sv) -> dict | None:
         """A built-in variant's rule in settings version sv, when the log says one that can run."""
         try:
-            rule = rule_of(name, Strategy(**{**std.__dict__, **at[sv]}))
+            rule = rule_of(name, Config(paper_capital=cfg.paper_capital, strategy=Strategy(**{**std.__dict__, **at[sv]})))
             return None if varmod.why_bad(rule) else rule
         except (TypeError, ValueError, KeyError):
             return None
@@ -511,7 +503,7 @@ def upgrade_rules(dir: str) -> list[str]:
         if not isinstance(name, str) or name not in VARIANTS or not isinstance(sv, int) or sv not in at:
             return name
         rule = under(name, sv)
-        if rule is None or varmod.same(rule, rule_of(name, std)):
+        if rule is None or varmod.same(rule, rule_of(name, Config(paper_capital=cfg.paper_capital, strategy=std))):
             return name
         for k in made.get(name, []):
             if varmod.same(own.all[k]["rule"], rule):
