@@ -16,6 +16,14 @@ def taker_fee(n: float, p: float, rate: float = 0.07) -> float:
     return math.ceil(round(rate * abs(n) * p * (1 - p) * 100, 6)) / 100
 
 
+def afford(n: float, unit: float, price: float, cash: float, rate: float = 0.07) -> float:
+    """The most whole contracts, up to n, that cash pays for at unit each with the fee of one order at price."""
+    k = int(max(0.0, min(n, cash / max(unit, 1e-6))))
+    while k > 0 and k * unit + taker_fee(k, price, rate) > cash + 1e-9:
+        k -= 1
+    return float(k)
+
+
 class Book:
     def __init__(self, name: str, cash: float):
         self.name = name

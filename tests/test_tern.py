@@ -3257,6 +3257,130 @@ class VariantSettingsReview(unittest.TestCase):
             self.assertEqual(self.desk(d).shadow.own.rule("mine")["contracts"], 5.0)
 
 
+class CashLimit(unittest.TestCase):
+    """No variant, and not the paper book, buys more than the cash it has left."""
+    T, desk, profile = EngineProfiles.T, EngineProfiles.desk, EngineProfiles.profile
+    setup, sync, text, press, cmds, view2 = (ScreenProfiles.setup, ScreenProfiles.sync, ScreenProfiles.text,
+                                             ScreenProfiles.press, ScreenProfiles.cmds, ScreenProfiles.view2)
+
+    def test_afford(self):
+        from tern.book import afford, taker_fee
+        for cash, unit, want in ((100, 0.81, 100), (4.10, 0.81, 4), (4.05, 0.81, 4), (0.80, 0.81, 0), (0, 0.5, 0), (-9, 0.5, 0), (1e9, 0.5, 100)):
+            n = afford(100, unit, unit, cash, 0.07)
+            self.assertLessEqual(n, want)
+            self.assertTrue(n == 0 or n * unit + taker_fee(n, unit, 0.07) <= cash + 1e-9, (cash, n))
+            self.assertTrue(n == 100 or (n + 1) * unit + taker_fee(n + 1, unit, 0.07) > cash + 1e-9, (cash, n))   # and no fewer
+
+    def new(self, k, pid="1", **rule):
+        k._command({"op": "variant_new", "from": "base", "profile": pid, "rule": rule})
+
+    def ms(self, n, ask="0.81"):
+        m = {"floor_strike": 100.0, "yes_bid_dollars": f"{float(ask) - 0.01:.2f}", "yes_ask_dollars": ask, "yes_bid_size_fp": "500",
+             "yes_ask_size_fp": "500", "status": "active"}
+        return [{**m, "ticker": f"{{}}-T{i}", "floor_strike": 100.0 + i} for i in range(n)]
+
+    def step(self, sh, cfg, ev, n, slot=25, now=1000.0):
+        ms = [{**m, "ticker": m["ticker"].format(ev)} for m in self.ms(n)]
+        sh.step(ev, now, ms, cfg.strategy, now - slot * 60 + 1, paper=cfg.paper_capital)
+
+    def spent(self, sh, v):
+        return sum(r["n"] * r["cost"] + r["fee"] for r in sh.rows if r["v"] == v)
+
+    def test_every_coin_and_slot_shares_one_cash(self):
+        with tempfile.TemporaryDirectory() as d:
+            k = self.desk(d)
+            self.new(k, contracts=19, max_hour_cost=100, paper_capital=100, series=["KXBTCD", "KXETHD", "KXSOLD"])
+            for c in ("KXBTCD", "KXETHD", "KXSOLD"):
+                self.step(k.shadow, k.cfg, c + "-H1", 4)
+                self.step(k.shadow, k.cfg, c + "-H1", 4, slot=20)
+            self.assertLessEqual(self.spent(k.shadow, "base-2"), 100)
+            self.assertGreater(self.spent(k.shadow, "base-2"), 98.5)            # it uses what it has: fewer contracts, not none
+            self.assertAlmostEqual(k.shadow.cash("base-2", 100), 100 - self.spent(k.shadow, "base-2"))
+
+    def test_wins_and_losses_change_what_it_can_spend(self):
+        with tempfile.TemporaryDirectory() as d:
+            k = self.desk(d)
+            self.new(k, contracts=100, max_hour_cost=500, paper_capital=100)
+            for pnl, want in ((-60.0, 40), (-50.0, 0), (1000.0, 500)):          # 40 left, then under water, then plenty (the hour's limit)
+                k.shadow._count({"v": "base-2", "event": f"E{pnl}", "pnl": pnl, "n": 1, "fee": 0, "close": 1.0})
+                ev = f"KXBTCD-{pnl}"
+                self.step(k.shadow, k.cfg, ev, 9)
+                got = sum(r["n"] * r["cost"] + r["fee"] for r in k.shadow.rows if r["v"] == "base-2" and r["event"] == ev)
+                if want < 500:
+                    self.assertLessEqual(got, want)
+                self.assertGreaterEqual(got, want - 1.5)
+                k.shadow.rows = [r for r in k.shadow.rows if r["event"] != ev]
+
+    def test_settling_gives_the_money_back(self):
+        with tempfile.TemporaryDirectory() as d:
+            k = self.desk(d)
+            self.new(k, contracts=100, max_hour_cost=500, paper_capital=100)
+            self.step(k.shadow, k.cfg, "KXBTCD-H1", 2)
+            self.assertLess(k.shadow.cash("base-2", 100), 1.5)
+            k.shadow.settle({r["ticker"]: True for r in k.shadow.rows})
+            self.assertGreater(k.shadow.cash("base-2", 100), 100)
+
+    def test_built_in_variants_use_the_profiles_paper_start(self):
+        with tempfile.TemporaryDirectory() as d:
+            k = self.desk(d)
+            p = self.profile(k, contracts=100, max_hour_cost=500)
+            p.set("paper_capital", 100)
+            k._shadow()                                                        # through the engine: 100 at 81c is $81, then the quote's 50
+            p.step("KXETHD-H1", 5000.0, [{**m, "ticker": m["ticker"].format("KXETHD-H1")} for m in self.ms(9)], 5000.0 - 25 * 60 + 1, None)
+            for v in p.shadow.order():
+                self.assertLessEqual(self.spent(p.shadow, v), 100, v)
+            self.assertGreater(self.spent(p.shadow, "multi"), 98)
+            self.assertTrue(k.shadow.rows)                                     # profile 1's has its own
+
+    def test_the_paper_book_buys_within_its_cash_and_live_is_untouched(self):
+        with tempfile.TemporaryDirectory() as d:
+            k = self.desk(d)
+            self.new(k, contracts=40, max_hour_cost=500)
+            k._command({"op": "variant", "name": "base-2"})
+            k.paper.cash = 10.0
+            k._auto()
+            self.assertEqual(k.paper.pos[self.T]["q"], 12)                     # 12 at 81c is $9.72 + a 13c fee
+            self.assertGreaterEqual(k.paper.cash, 0)
+            k.slots = {}; k._auto()
+            self.assertEqual(k.paper.pos[self.T]["q"], 12)                     # nothing left: no more
+            sent = []
+            k._exec = lambda book, t, delta, *a: sent.append((book.name, delta))
+            k.slots, k.live.cash = {}, 0.0
+            from tern.engine import Desk
+            k._auto_book(k.live, k.cfg.strategy, "base-2", __import__("time").time(), k.shadow.own)
+            self.assertEqual(sent, [("live", k.cfg.live.contracts)])           # (live's own caps are checked in _exec)
+
+    def test_closing_the_other_side_needs_no_cash(self):
+        with tempfile.TemporaryDirectory() as d:
+            k = self.desk(d)
+            k.paper.trade(self.T, -5, 0.20, 0.0, {"event": "KXBTCD-E1"}, "auto")   # holds 5 NO
+            k.paper.cash = 0.0
+            k._auto()
+            self.assertNotIn(self.T, {t for t, p in k.paper.pos.items() if p["q"]})
+
+    def test_the_variants_box_says_when_one_is_out_of_cash(self):
+        with tempfile.TemporaryDirectory() as d:
+            k, p, scr = self.setup(d)
+            self.new(k, paper_capital=100)
+            k.shadow._count({"v": "base-2", "event": "E1", "pnl": -99.9, "n": 1, "fee": 0, "close": 1.0, "ticker": "E1-T1",
+                             "side": "yes", "cost": 0.8, "ts": 1.0, "slot": 25})
+            self.press("p"); scr.focus = "variants"
+            scr.var_sel = "base-2"; self.sync()
+            self.assertIn("base-2 has $0.10 left: it buys nothing", self.text())
+            scr.var_sel = "band90"; self.sync()
+            self.assertNotIn("buys nothing", self.text())
+
+    def test_a_note_in_the_settings_log_heads_its_period(self):
+        from tern import reports
+        with tempfile.TemporaryDirectory() as d:
+            k = self.desk(d)
+            p = self.profile(k)
+            p.log.append("note", None, "cash limit on", bump=True)
+            p.shadow.save()
+            out = "\n".join(reports._periods(p.shadow, p.log.lines(), p.log.sv))
+            self.assertRegex(out, r"settings 2, .*: cash limit on")
+
+
 class Net(unittest.TestCase):
     """The kept-open HTTPS connections, against a fake connection class."""
 

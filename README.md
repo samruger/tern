@@ -125,7 +125,8 @@ box. With that box focused:
 `r` on any coin's view opens the variant in use with that coin turned on or off in the draft. Live's contracts a
 strike and its limits are in settings (`e`); it uses its variant's most an hour. Profile 1's paper book takes the
 paper start of the variant in use at a reset (`R`). Built-in variants take their size and paper start from their
-profile's `config.json`. If the variant a profile was set to is missing from `variants.json`, its paper book
+profile's `config.json`. No variant buys more than the cash it has left: its paper start, plus its settled P&L, less
+what its open entries cost. It buys fewer contracts when that is all it can pay for, and nothing when it is out. If the variant a profile was set to is missing from `variants.json`, its paper book
 trades `base` and live waits until you pick one. At most 12 in each profile, kept in `variants.json` beside its
 records. One saved before variants held their size (2026-11-23) keeps its profile's, as it traded.
 
@@ -222,7 +223,7 @@ as `*.pre-variants`, and `variants-upgraded` marks it done.
 ## Paper and live
 
 Paper fills at the touch, limited to the size shown there, and pays the taker
-fee rounded up per order, as Kalshi charges. Paper always runs the rule, even
+fee rounded up per order, as Kalshi charges. It never spends more than its cash. Paper always runs the rule, even
 while live is on, so its record keeps growing.
 
 **Going live:** press `L` and type `live`. That sets `live.enabled` in the
@@ -428,6 +429,7 @@ The major ones, newest first.
 
 | Date | Change |
 |---|---|
+| 2026-11-23 | **Cash limit on paper:** no variant, and not the paper book, buys more than the cash it has left. Entries from before could. A variant that is out of cash says so in the variants box. |
 | 2026-11-23 | **Variants hold every trading setting**, contracts a strike, most an hour and paper start too. `E` opens them as a draft and `s` saves it as a new variant; a saved one never changes, and only `enter` changes what trades. Settings (`e`) has the profile and the desk only, the same under every profile. `n` in the variants box, and the rule, paper and "book trades" rows in settings, are gone. Variants saved before keep their profile's size. |
 | 2026-11-23 | **AGPL license** (version 3 or later). It was MIT, then briefly the GPL; copies from then stay under those. |
 | 2026-11-23 | **Your own variants.** Make, change and delete them from the screen (`n`, `E`, `D`), in each profile. Changing a rule makes a new variant with its own record; the built-in ones never change. Profile 1's settings show its variant and rule. Profiles that had changed their rule are converted (see Profiles). |

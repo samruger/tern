@@ -343,7 +343,8 @@ class Profile:
 
     def step(self, event: str, close: float, markets: list[dict], now: float, vol: float | None) -> None:
         if self.enabled:
-            self.shadow.step(event, close, markets, self.cfg.strategy, now, vol=vol, sv=self.log.sv)
+            self.shadow.step(event, close, markets, self.cfg.strategy, now, vol=vol, sv=self.log.sv,
+                             paper=self.cfg.paper_capital)
 
 
 def _root(runtime: str) -> str:

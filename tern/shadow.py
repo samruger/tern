@@ -17,7 +17,7 @@ import os
 import time
 from collections import deque
 
-from .book import taker_fee
+from .book import afford, taker_fee
 from .config import SERIES, Config
 from .strategy import due_slot, signals
 from .variants import VariantSet, as_rule, describe
@@ -251,11 +251,17 @@ class Shadow:
         """Whether a variant has any entry, open or settled: its rule is then kept when it is deleted."""
         return bool(self.agg.get(name)) or any(r["v"] == name for r in self.rows)
 
+    def cash(self, name: str, start: float) -> float:
+        """What a variant has left to spend, from its paper start: settled P&L in, open entries' cost and fees out."""
+        return start + sum(a[0] for a in self.agg.get(name, {}).values()) - \
+            sum(r["n"] * r["cost"] + r["fee"] for r in self.rows if r["v"] == name)
+
     # ------------------------------------------------------------ each engine step
     def step(self, event: str, close: float, markets: list[dict], S, now: float, vol: float | None = None,
-             sv: int | None = None) -> list[str]:
+             sv: int | None = None, paper: float | None = None) -> list[str]:
         """Run every variant on one fresh snapshot of an hourly event; vol is the coin's vol() now.
-        sv, when given, is the settings version each new row is stamped with. Returns lines for the log."""
+        sv, when given, is the settings version each new row is stamped with. paper is the built-in variants' paper
+        start (an own one has its own): none buys more than its cash(). Returns lines for the log."""
         done = self.slots.setdefault(event, [])
         self.closes[event] = close                 # settle() keeps an event's slots until it has closed
         slot = due_slot(close - now, all_minutes(S, self.own), set(done))
@@ -266,6 +272,9 @@ class Shadow:
         for name in self.order():
             lo, hi, cap, mins, spread, coins, mvol = params(name, S, self.own)
             size, hour = size_of(name, S, self.own)
+            mine_rule = self.own.rule(name) if name not in VARIANTS else None
+            start = paper if mine_rule is None else mine_rule["paper_capital"]
+            cash = math.inf if start is None else self.cash(name, start)
             if slot not in mins or series not in coins or too_wild(mvol, vol):
                 continue
             mine = [r for r in self.rows if r["v"] == name and r["event"] == event]
@@ -278,10 +287,13 @@ class Shadow:
                     continue
                 unit = s["price"] if s["delta_sign"] > 0 else 1 - s["price"]
                 n = float(int(min(size, s["size"], max(0.0, (hour - spent) / max(unit, 1e-6)))))
+                if cash < math.inf:
+                    n = afford(n, unit, s["price"], cash, self.rate)
                 if n < 1:
                     continue
                 fee = self._fee(n, s["price"])
                 spent += n * unit + fee
+                cash -= n * unit + fee
                 held[s["ticker"]] = held.get(s["ticker"], 0) + 1
                 self.rows.append({"v": name, "ts": now, "event": event, "close": close, "ticker": s["ticker"],
                                   "side": s["side"], "n": n, "cost": unit, "fee": fee, "slot": slot, "pnl": None,

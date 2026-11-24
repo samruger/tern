@@ -116,6 +116,8 @@ def _periods(sh, lines: list[dict], sv_now: int) -> list[str]:
             if ln.get("key") in profmod.RECORD_KEYS:
                 why.setdefault(sv, []).append(f"{profmod.label(ln['key'])} {profmod.show(ln['key'], ln.get('from'))}"
                                               f" → {profmod.show(ln['key'], ln.get('to'))}")
+            elif ln.get("key") == "note":            # a change of tern's own that makes records differently from here
+                why.setdefault(sv, []).append(str(ln.get("to")))
     versions = sorted({v for n in shadow_names(sh) for v in sh.versions(n)} | {sv_now})
     out = []
     for sv in versions:

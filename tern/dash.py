@@ -303,7 +303,7 @@ HELP = [
                  "passes the gate. Highlight another with ↑↓ and press enter to switch; while live is on or armed "
                  "you type \"live\" to confirm. Open positions ride to settlement.\n"
                  "A variant holds everything about how it trades: its rule, contracts a strike, most an hour and paper start. "
-                 "Once saved it never changes. Make your own, marked +, in any profile: (E) in the variants box opens the "
+                 "It never buys more than the cash it has left. Once saved it never changes. Make your own, marked +, in any profile: (E) in the variants box opens the "
                  "highlighted one's settings as a draft, and (s) there saves them as a new variant with an empty record. "
                  "Saving changes nothing that trades; enter does. (D) deletes one, (N) renames it. At most {max_own} in "
                  "a profile; a deleted one's record stays on file.\n"
@@ -1345,6 +1345,9 @@ class Screen:
             if cur.get("lost"):
                 self.put(y + h - 2, x + 2, f"{cur['lost']}: paper trades {self.vn(active)}, live waits · enter picks one"[:w - 4],
                          P(YELLOW, bold=True))
+            elif cur.get("cash") is not None and cur["cash"] < (cur.get("rule") or {}).get("band_lo", 0) and not cur.get("open"):
+                tip = f"{self.vn(cur['name'])} has {money(cur['cash'])} left: it buys nothing · E makes one with a new paper start"
+                self.put(y + h - 2, x + 2, tip[:w - 4], P(YELLOW, bold=True))
             elif cur["name"] == active and st.get("profile_name"):
                 tip = f"● {self.vn(active)} is {st['profile_name']}'s book (paper only) · every variant keeps running"
                 self.put(y + h - 2, x + 2, tip[:w - 4], P(GREEN, bold=True))

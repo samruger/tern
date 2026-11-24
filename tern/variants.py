@@ -46,7 +46,7 @@ RULE_SETTINGS = [
     Setting("rule", "max_hour_cost", "most an hour", 5, 2_000, 5,
             what="$ it may put into one coin's hour, on paper and live"),
     Setting("rule", "paper_capital", "paper start", 100, 1_000_000, 100, group="PAPER",
-            what="the cash its paper book starts with; profile 1's paper book takes it at a reset (R)"),
+            what="the cash it starts with; it never buys more than it has left (profile 1's paper book: from a reset, R)"),
 ]
 SIZES = ("contracts", "max_hour_cost", "paper_capital")   # what variants saved before 2026-11-23 evening took from their profile
 RULE = {r.name: r for r in RULE_SETTINGS}

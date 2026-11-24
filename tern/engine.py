@@ -17,7 +17,7 @@ import traceback
 import uuid
 
 from . import config as cfgmod
-from .book import Book, taker_fee
+from .book import Book, afford, taker_fee
 from .kalshi import Kalshi, KalshiError, quote
 from .record import Recorder
 from . import profiles as profmod
@@ -795,6 +795,11 @@ class Desk:
                 # sizes it; live has its own size (live.contracts)
                 size = self.cfg.live.contracts if book is self.live else contracts
                 n = float(int(min(size, s["size"], max(0.0, (hour - spent) / max(unit, 1e-6)))))
+                if book is self.paper:           # no more than its cash, as in shadow (what closes the other side needs none)
+                    q = book.pos.get(s["ticker"], {}).get("q", 0.0)
+                    closes = abs(q) if q * s["delta_sign"] < 0 else 0.0
+                    if n > closes:
+                        n = closes + afford(n - closes, unit, s["price"], book.cash, self.cfg.taker_fee)
                 if n < 1:
                     continue                     # a cheaper favorite further on may still fit (as in shadow)
                 try:
@@ -868,7 +873,7 @@ class Desk:
                 e["shadowed"] = e["fetched"]
                 v = self.vol(series, now)
                 for note in self.shadow.step(e["event"], e["close"], e["markets"], self.cfg.strategy, now,
-                                             vol=v, sv=self.slog.sv):
+                                             vol=v, sv=self.slog.sv, paper=self.cfg.paper_capital):
                     self.log(note)
                 self._each_profile(lambda p: p.step(e["event"], e["close"], e["markets"], now, v), "step")
         for ev, c in list(self.closed.items()):
@@ -1237,16 +1242,18 @@ class Desk:
         key = (p.shadow.changes, p.shadow.own.changes, p.variant, repr(p.cfg.strategy), p.cfg.paper_capital)
         if getattr(p, "_sum", (None,))[0] != key:
             lost = self._lost(p.cfg.strategy, p.shadow)
-            p._sum = (key, [{**r, **self._vinfo(r["name"], p.cfg, p.shadow.own), "active": r["name"] == p.variant,
+            p._sum = (key, [{**r, **self._vinfo(r["name"], p.cfg, p.shadow), "active": r["name"] == p.variant,
                              **({"lost": lost} if lost and r["name"] == p.variant else {})}
                             for r in p.shadow.summary()])
         return p._sum[1]
 
     @staticmethod
-    def _vinfo(name: str, cfg, own) -> dict:
+    def _vinfo(name: str, cfg, shadow) -> dict:
         """What the screen needs to know of a variant besides its record: its rule, and whether it is the
         profile's own (then its display name, what it was made from and the id of the command that made it)."""
-        out = {"desc": shadowmod.desc_of(name, own), "rule": shadowmod.rule_of(name, cfg, own), "own": name in own.all}
+        own = shadow.own
+        out = {"desc": shadowmod.desc_of(name, own), "rule": shadowmod.rule_of(name, cfg, own), "own": name in own.all,
+               "cash": round(shadow.cash(name, shadowmod.start_of(name, cfg, own)), 2)}
         if out["own"]:
             out.update(title=own.title(name), parent=own.all[name]["from"], by=own.by.get(name, ""))
         return out
@@ -1337,7 +1344,7 @@ class Desk:
         gate = gate or self.gate()
         shadow = self.shadow.summary()
         lost = self._lost(self.cfg.strategy, self.shadow)
-        variants = [{**r, **self._vinfo(r["name"], self.cfg, self.shadow.own), "active": r["name"] == self.variant(),
+        variants = [{**r, **self._vinfo(r["name"], self.cfg, self.shadow), "active": r["name"] == self.variant(),
                      **({"lost": lost} if lost and r["name"] == self.variant() else {}),
                      "gate": self.checks(r["name"], r)} for r in shadow]
 
