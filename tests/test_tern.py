@@ -3890,6 +3890,102 @@ class Phone(Rig, unittest.TestCase):
             self.assertNotIn(no, text)
 
 
+class AndroidApp(unittest.TestCase):
+    """The Android app's parts that need no Android: what it takes for an address, and which server it takes for the desk."""
+
+    HERE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "android")
+
+    @classmethod
+    def setUpClass(cls):
+        import shutil, subprocess
+        if not (shutil.which("javac") and shutil.which("openssl")):
+            raise unittest.SkipTest("needs a JDK and openssl")
+        cls.tmp = tempfile.TemporaryDirectory(); cls.addClassCleanup(cls.tmp.cleanup)
+        subprocess.run(["javac", "--release", "17", "-d", cls.tmp.name, os.path.join(cls.HERE, "src", "tern", "desk", "Link.java"), os.path.join(cls.HERE, "LinkTest.java")],
+                       check=True, capture_output=True)
+
+    def java(self, *a) -> list:
+        import subprocess
+        return subprocess.run(["java", "-cp", self.tmp.name, "tern.desk.LinkTest", *a], check=True, capture_output=True, text=True, timeout=60).stdout.split("\n")[:-1]
+
+    def server(self, name, hold=False):
+        """An HTTPS server with a certificate of its own; `hold` answers no handshake."""
+        import socket, ssl, threading
+        from unittest import mock
+        from tern import webauth
+        cert, key = (os.path.join(self.tmp.name, f"{name}-{n}.pem") for n in ("cert", "key"))
+        with mock.patch.multiple(webauth, DIR=self.tmp.name, CERT_FILE=cert, KEY_FILE=key):
+            pin = webauth.make_cert(["127.0.0.1"])
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER); ctx.load_cert_chain(cert, key)
+        sock = socket.create_server(("127.0.0.1", 0)); self.addCleanup(sock.close)
+        got: list = []
+
+        def one(c):
+            try:
+                with ctx.wrap_socket(c, server_side=True) as t:
+                    t.settimeout(5); got.append(t.recv(100))
+            except OSError:
+                pass
+
+        def run():
+            kept = []
+            while True:
+                try:
+                    c, _ = sock.accept()
+                except OSError:
+                    return
+                kept.append(c)
+                if not hold:
+                    threading.Thread(target=one, args=(c,), daemon=True).start()
+        threading.Thread(target=run, daemon=True).start()
+        return f"https://127.0.0.1:{sock.getsockname()[1]}", pin, got
+
+    def test_what_is_taken_for_an_address(self):
+        cases = {"192.0.2.7": "https://192.0.2.7:8787", " 192.0.2.7:99 ": "https://192.0.2.7:99", "https://Desk.Example/": "https://desk.example:8787", "": "null", "  ": "null",
+                 "[2001:db8::1]": "https://[2001:db8::1]:8787", "http://192.0.2.7": "no", "ftp://x": "no", "https://me@192.0.2.7": "no", "192.0.2.7/x": "no", "192.0.2.7?a": "no",
+                 "javascript:alert(1)": "no", "x:70000": "no", "x:0": "no", "a b": "no", "file:///etc/passwd": "no", "x#y": "no"}
+        self.assertEqual(dict(zip(cases, self.java("base", *cases))), cases)
+
+    def test_a_page_is_the_desks_only_at_its_address(self):
+        base = "https://192.0.2.7:8787"
+        cases = {base + "/#/spot": "true", base: "true", "http://192.0.2.7:8787/": "false", "https://192.0.2.7/": "false", "https://192.0.2.7:8788/": "false",
+                 "https://192.0.2.7:8787.evil.example/": "false", "https://192.0.2.7:8787@evil.example/": "false", "https://evil.example/192.0.2.7:8787": "false", "about:blank": "false"}
+        self.assertEqual(dict(zip(cases, self.java("at", base, *cases))), cases)
+
+    def test_only_the_approved_certificate_is_the_desk(self):
+        desk, pin, got = self.server("desk")
+        other, other_pin, other_got = self.server("other")
+        self.assertEqual(self.java("find", pin, desk)[:-1], [f"{desk} {pin}"])
+        self.assertEqual(self.java("find", pin, other, desk)[:-1], [f"{desk} {pin}"])                         # another house's machine at the home address
+        self.assertEqual(self.java("find", pin, other)[:-1], [f"{other} {other_pin}"])                        # not it: the app says whose it got
+        self.assertEqual(self.java("find", "", desk)[:-1], [f"{desk} {pin}"])                                 # none approved yet: it is asked about
+        self.assertEqual([x for x in got + other_got if x], [])                                              # nothing is sent to either
+
+    def test_home_goes_first_and_an_address_that_is_dead_or_silent_holds_up_nothing(self):
+        desk, pin, _ = self.server("desk")
+        silent, _, _ = self.server("silent", hold=True)
+        import socket
+        with socket.create_server(("127.0.0.1", 0)) as s:
+            dead = f"https://127.0.0.1:{s.getsockname()[1]}"
+        *out, ms = self.java("find", pin, dead, desk)
+        self.assertEqual(out, [f"{desk} {pin}"]); self.assertLess(int(ms), 1500)
+        *out, ms = self.java("find", pin, silent, desk)
+        self.assertEqual(out, [f"{desk} {pin}"]); self.assertLess(int(ms), 4000)
+        self.assertEqual(self.java("find", pin, desk, silent)[:-1], [f"{desk} {pin}"])
+        *out, ms = self.java("find", pin, dead, silent)
+        self.assertEqual(out, [f"{dead} -", f"{silent} -"]); self.assertLess(int(ms), 14000)
+
+    def test_it_asks_for_the_network_only_and_trusts_no_authority(self):
+        import re
+        with open(os.path.join(self.HERE, "AndroidManifest.xml")) as fh:
+            man = fh.read()
+        self.assertEqual(sorted(re.findall(r'uses-permission android:name="android.permission.(\w+)"', man)), ["ACCESS_NETWORK_STATE", "INTERNET"])
+        self.assertIn('android:allowBackup="false"', man)
+        with open(os.path.join(self.HERE, "res", "xml", "network.xml")) as fh:
+            net = fh.read()
+        self.assertIn("<trust-anchors />", net); self.assertNotIn("<certificates", net); self.assertNotIn('Permitted="true"', net)
+
+
 class Reports(Rig, unittest.TestCase):
     """The reports screen (o): the reports tern works out from its records, and the saved ones."""
 

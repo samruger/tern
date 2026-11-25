@@ -393,6 +393,26 @@ the desk is on paper or live; the menu lists the pages, with how things stand be
 - **View only**, behind the same login. The coin, chart, variant and theme picked are that browser's own. The settings box and making variants
   are the terminal's.
 
+### Android app
+
+`android/` is a small app that shows the phone pages full screen: one WebView, no libraries, 36 KB. Android 10 or newer.
+
+```
+python3 android/build.py --home 192.168.1.20:8787 --outside desk.example.com:8787
+adb install -r ~/tern.apk
+```
+
+- **Building** needs a JDK (17 or newer) and, from Google, the Android SDK's platform 36 and build-tools, in `$ANDROID_HOME`
+  or `~/.local/share/android-sdk`. No Gradle. The addresses are kept in `~/.config/tern/android.json`, outside the repo, and go
+  into the apk with the certificate's fingerprint, so keep that apk to yourself; `--blank` builds one that asks for them.
+- **Signing:** the first build makes a key, `~/.config/tern/android.jks` and its password `android.pass`. Keep copies:
+  Android takes an update only with the same key.
+- **Two addresses,** home and outside. It asks both at once, takes home's if it answers, and looks again when the phone changes
+  networks. A sign-in at one is good at the other. Hold the app's icon for `Addresses`.
+- **The certificate** must be the one in the apk, or the one approved on the phone; no authority's word is taken. Nothing is
+  sent to a server with another, and the app shows its fingerprint. A renewed certificate has to be approved, or the app built again.
+- **View only**, with the same password. The pages come from `tern web`, so a change to them needs no new apk.
+
 ## Files
 
 `runtime/` (gitignored) holds `config.json`, `state.json` (the live book as it
@@ -425,6 +445,7 @@ because they are rewritten every second.
 | `themes.py` | the screen's 56 color themes |
 | `web.py`, `web.html` | the same screen in a browser, view only |
 | `phone.py`, `phone.html` | the web screen's phone pages |
+| `../android/` | the Android app and what builds it |
 | `webctl.py` | starts, stops and asks about tern-web.service for the settings box's WEB rows |
 | `webauth.py` | tern web's password, sign-in cookie, wrong-guess limits and certificate |
 | `research/` | the study's scripts and write-up |
@@ -442,6 +463,7 @@ The major ones, newest first.
 
 | Date | Change |
 |---|---|
+| 2026-11-24 | **Android app:** the phone pages as an app, which finds the desk at home or from outside and takes only its certificate. |
 | 2026-11-24 | **Swiping on the phone pages:** left and right go to the next page and the one before, and around. The spot page is gone: home has its chart and spans. |
 | 2026-11-24 | **Phone pages:** the web screen gives phones a layout of their own, one page at a time with a menu button. View only. |
 | 2026-11-24 | **Mouse:** the terminal screen takes clicks: tabs, the keys on the borders, rows, settings, themes. Turning a variant on or off and starting the engine ask `y`, and so do clicks that turn live off, change a setting, discard an edit or close the screen. A click no longer holds the screen still until the next key. The web page takes them in the settings and themes boxes too, view only as before. |

@@ -2,3 +2,7 @@ runtime/
 research/data/
 __pycache__/
 *.pyc
+*.apk
+*.jks
+*.pass
+android.json

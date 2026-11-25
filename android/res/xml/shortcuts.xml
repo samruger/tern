@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+    <shortcut android:shortcutId="addresses" android:icon="@mipmap/icon" android:shortcutShortLabel="@string/addresses">
+        <intent android:action="tern.desk.ADDRESSES" android:targetPackage="tern.desk" android:targetClass="tern.desk.MainActivity" />
+    </shortcut>
+</shortcuts>
