@@ -19,7 +19,7 @@ from . import reports
 from .variants import describe
 
 PAGE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "phone.html")
-PAGES = ("home", "spot", "ladder", "contract", "book", "variants", "variant", "log", "gate", "reports", "report", "themes")
+PAGES = ("home", "ladder", "contract", "book", "variants", "variant", "log", "gate", "reports", "report", "themes")
 UI_COOKIE = "tern_ui"                            # "full" or "phone": what the viewer chose over what was detected
 UI = ("phone", "full")
 PHONE = re.compile(r"iPhone|iPod|Android.*\bMobile\b|Windows Phone|Opera Mini")
@@ -185,10 +185,6 @@ def home(scr, arg) -> dict:
             "money": [[l, t, ROLE.get(c, "")] for l, t, c in scr.book_money(b)[:4]] if b else [],
             "variant": {**variant(scr, v), "gate": gate_of(v), "curve": thin(v.get("curve") or [], 80)} if v else None,
             "open": positions(scr, b)}
-
-
-def spot(scr, arg) -> dict:
-    return {"chart": spot_chart(scr), "hour": hour(scr)}
 
 
 def ladder(scr, arg) -> dict:
@@ -361,7 +357,7 @@ def theme_list(scr, arg) -> dict:
     return {"rows": out}
 
 
-MAKE = {"home": home, "spot": spot, "ladder": ladder, "contract": contract, "book": book, "variants": variants, "variant": one_variant,
+MAKE = {"home": home, "ladder": ladder, "contract": contract, "book": book, "variants": variants, "variant": one_variant,
         "log": log, "gate": gate, "reports": report_list, "report": one_report, "themes": theme_list}
 
 

@@ -44,6 +44,10 @@
   .pick button span { display: block; font-size: 13px; line-height: 1.1; }
   .pick.coins button { padding: 6px 12px; line-height: 1.25; }
   .pick button.on span { color: inherit; }
+  .pick.mini { gap: 4px; margin: 8px 0 0; overflow: visible; }
+  .pick.mini button { position: relative; min-height: 28px; padding: 0 8px; font-size: 14px; line-height: 1; border-radius: 4px; color: var(--grey); }
+  .pick.mini button.on { color: var(--bg); }
+  .pick.mini button::after { content: ""; position: absolute; inset: -8px -2px; }        /* small to see, not to hit */
 
   .price { font-size: 34px; line-height: 1.1; font-weight: 700; letter-spacing: -.02em; }
   .line { display: flex; flex-wrap: wrap; gap: 2px 16px; align-items: baseline; }
@@ -287,9 +291,9 @@
     return el("div", {}, el("div.line.small", { style: { "margin-top": "12px" } }, el("span.quiet", {}, "the hour closes in ", el("b.val", {}, h.left)), next && el("span.quiet", {}, "next slot in ", el("b.val", {}, next.in))),
       h.slots.length > 0 && el("div.slots", { "aria-label": "slots" }, h.slots.map(s => el("span", { cls: s.state }, (s.state === "done" ? "✓ " : "") + s.at))));
   }
-  function spotChart(d, c, size) {
+  function spotChart(d, c) {
     const v = c.vals, last = v[v.length - 1];
-    return chart("spot", size, { vals: v, t0: c.t0, t1: c.t1, grad: theme.grads.spot, fmt: price, none: "waiting for spot",
+    return chart("spot", "mid", { vals: v, t0: c.t0, t1: c.t1, grad: theme.grads.spot, fmt: price, none: "waiting for spot",
       marks: c.strike ? [{ v: c.strike, color: pal[theme.warn], fit: true }] : [] }, v.length ? `${d.coin} over ${d.chart}, now $${price(last)}` : "no prices yet");
   }
   function priceLine(d, c) {
@@ -311,16 +315,10 @@
   const PAGES = {
     home(d, x) {
       const v = x.variant;
-      return [coinPick(d), priceLine(d, x.chart), spotChart(d, x.chart, "mid"), hourLine(x.hour),
+      return [coinPick(d), priceLine(d, x.chart), spotChart(d, x.chart), pick("chart", d.charts.map(c => [c, c]), d.chart, "mini"), hourLine(x.hour),
         v && [el("h2", {}, v.title, el("span", {}, x.view === "live" ? "the live book" : "on paper")), stats([...x.money, ...(x.view === "live" ? [] : [["today", usd(v.today, true), role(v.today)], ["win", v.win, ""]])]),
           chart("pnl", "mid", plus(v.curve, "P&L by hour, on paper"), `P&L of ${v.title}: ${v.pnl}`), gateLines(v.gate, true)],
         el("h2", {}, "open", el("span", {}, x.open.length)), openRows(x.open)];
-    },
-    spot(d, x) {
-      const v = x.chart.vals, last = v[v.length - 1];
-      return [title("spot"), coinPick(d), priceLine(d, x.chart), spotChart(d, x.chart, "tall"), el("div", { style: { height: "12px" } }), pick("chart", d.charts.map(c => [c, c]), d.chart),
-        v.length > 0 && stats([["high", "$" + price(Math.max(...v)), "up"], ["low", "$" + price(Math.min(...v)), "dn"],
-          ...(x.chart.strike ? [["strike", "$" + price(x.chart.strike), "warn"], [last >= x.chart.strike ? "above it by" : "below it by", "$" + price(Math.abs(last - x.chart.strike)), role(last - x.chart.strike)]] : [])]), hourLine(x.hour)];
     },
     ladder(d, x) {
       if (!x.rows.length) return [title("ladder"), coinPick(d), none("Waiting for the hourly event.")];
@@ -416,13 +414,13 @@
   }
 
   // ------------------------------------------------------------ the menu and the status line
-  const NAMES = ["home", "spot", "ladder", "book", "variants", "log", "gate", "reports", "themes"];
+  const NAMES = ["home", "ladder", "book", "variants", "log", "gate", "reports", "themes"];
   const route = () => { const [p, ...a] = location.hash.replace(/^#\/?/, "").split("/"); let arg = a.join("/"); try { arg = decodeURIComponent(arg); } catch (e) {} return { page: PAGES[p] ? p : "home", arg: arg || null }; };
   const parent = p => ({ contract: "ladder", variant: "variants", report: "reports" })[p] || p;
   let open = false, last = null;
   function drawMenu() {
     const at = parent(route().page), m = (last || {}).menu || {}, coin = last && last.coins.find(c => c.series === last.series);
-    const facts = { ...m, spot: coin ? [`${coin.coin} $${coin.px}`, ""] : ["", ""], home: ["", ""] };
+    const facts = { ...m, home: coin ? [`${coin.coin} $${coin.px}`, ""] : ["", ""] };
     const list = el("div.list", {}, NAMES.map(n => el("a.row", { href: "#/" + n, cls: n === at ? "on" : "", "aria-current": n === at ? "page" : null, style: { "--c": pageColor(n) } }, el("span.grow.name", {}, n), facts[n] && el("span", { cls: facts[n][1] || "quiet" }, facts[n][0]))),
       el("a.row", { href: "/ui/full" }, el("span.grow.name", {}, "full screen"), el("span.quiet", {}, "the desk's layout")), look.login && el("a.row", { href: "/logout" }, el("span.grow.name", {}, "sign out")));
     if (menu.firstChild) morph(menu.firstChild, list); else menu.append(list);
@@ -530,16 +528,16 @@
   });
   window.addEventListener("resize", drawAll);
 
-  // ------------------------------------------------------------ swiping: the menu's pages in order, and a strike's, a variant's and a report's neighbors
+  // ------------------------------------------------------------ swiping: the menu's pages in order and around, so the variants and the reports; the strikes have ends
   const slide = $("slide"), beside = $("beside"), calm = window.matchMedia("(prefers-reduced-motion: reduce)");
   function next(step) {
     const { page, arg } = route(), i = NAMES.indexOf(page);
-    if (i >= 0) { const n = NAMES[i + step]; return n ? { to: "#/" + n, name: n, color: pageColor(n) } : null; }
+    if (i >= 0) { const n = NAMES[(i + step + NAMES.length) % NAMES.length]; return { to: "#/" + n, name: n, color: pageColor(n) }; }
     if (!data || shown !== page + "/" + arg || data.none) return null;
     const color = pageColor(page), swap = true;
     if (page === "contract") { const t = step > 0 ? data.up : data.down; return t ? { to: "#/contract/" + t, name: step > 0 ? "higher strike" : "lower strike", color, swap } : null; }
     const all = new Map(data.all), at = page === "variant" ? data.name : data.id;
-    const ids = page === "variant" && order ? order().filter(n => all.has(n)) : [...all.keys()], k = ids.indexOf(at), id = k < 0 ? undefined : ids[k + step];
+    const ids = page === "variant" && order ? order().filter(n => all.has(n)) : [...all.keys()], k = ids.indexOf(at), id = k < 0 || ids.length < 2 ? undefined : ids[(k + step + ids.length) % ids.length];
     return id === undefined ? null : { to: `#/${page}/` + encodeURIComponent(id), name: all.get(id), color, swap };
   }
   let leaving = null, away = 0, awayT = 0;                  // until the old page is off the screen; which way it went, until the new one is drawn
