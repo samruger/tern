@@ -385,6 +385,9 @@ the desk is on paper or live; the menu lists the pages, with how things stand be
 
 - **Pages:** home, spot, ladder, book, variants, log, gate, reports and themes. Tap a strike for its price this hour, a variant
   for its record, a slot in the log for who bought. Hold a chart and slide to read it. The phone's back button goes back, and closes the menu.
+- **Swiping:** left for the next page in the menu's order, right for the one before. On a strike it goes to the next strike,
+  on a variant to the next variant as they were last listed, and on a report to the next report. A quick swipe works over a chart
+  too. A row that slides by itself, such as a wide table, keeps its own.
 - **Which browsers:** the server picks by the browser's headers (`Sec-CH-UA-Mobile`, else the user agent). Tablets and
   computers get the screen. `full screen` in the menu, and `phone pages` on the screen there, switch; a cookie remembers it
   (`/ui/full`, `/ui/phone`).
@@ -440,6 +443,7 @@ The major ones, newest first.
 
 | Date | Change |
 |---|---|
+| 2026-11-24 | **Swiping on the phone pages:** left and right go to the next page and the one before. |
 | 2026-11-24 | **Phone pages:** the web screen gives phones a layout of their own, one page at a time with a menu button. View only. |
 | 2026-11-24 | **Mouse:** the terminal screen takes clicks: tabs, the keys on the borders, rows, settings, themes. Turning a variant on or off and starting the engine ask `y`, and so do clicks that turn live off, change a setting, discard an edit or close the screen. A click no longer holds the screen still until the next key. The web page takes them in the settings and themes boxes too, view only as before. |
 | 2026-11-24 | **Limits are part of a variant:** most at risk, largest order and daily loss limit, on paper and live. Live buys the variant's own contracts a strike (it had a size of its own). The settings box and the editor explain each setting. BNB and HYPE are not traded any more. |

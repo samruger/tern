@@ -12,9 +12,9 @@
           --tabtext: #fff; --up: #9ece6a; --dn: #f7768e; --warn: #e0af68; --no: #bb9af7; --value: #c0caf5; --variant: #7dcfff; --page: #7aa2f7;
           --line: color-mix(in srgb, var(--fg) 16%, var(--bg)); --bar: 56px; --safe: env(safe-area-inset-bottom, 0px); }
   * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
-  html { background: var(--bg); -webkit-text-size-adjust: 100%; }
+  html { background: var(--bg); -webkit-text-size-adjust: 100%; overscroll-behavior-x: none; }
   body { margin: 0; background: var(--bg); color: var(--text); font: 16px/1.45 ternmono, "JetBrains Mono", ui-monospace, Menlo, monospace;
-         font-variant-ligatures: none; overscroll-behavior-y: contain; overflow-x: hidden; }
+         font-variant-ligatures: none; overscroll-behavior: none contain; overflow-x: hidden; }
   button, a { font: inherit; color: inherit; }
   button { background: none; border: 0; padding: 0; text-align: left; }
   button:focus-visible, a:focus-visible { outline: 2px solid var(--key); outline-offset: 2px; }
@@ -91,6 +91,12 @@
   td.note { text-align: left; }
   .ramp { display: flex; height: 18px; width: 96px; border-radius: 4px; overflow: hidden; flex: none; } .ramp i { flex: 1; }
 
+  /* a swipe: the page moves with the finger, and under it is the name of the one it leads to */
+  #slide { position: relative; z-index: 1; background: var(--bg); }
+  #slide.on { box-shadow: 0 0 0 1px var(--line); will-change: transform; }
+  #beside { position: fixed; top: 42%; z-index: 0; max-width: 45vw; font-size: 18px; font-weight: 700; overflow-wrap: anywhere; pointer-events: none; }
+  #beside[hidden] { display: none; }
+
   /* the status line, along the bottom as on the desk, and the menu it opens */
   #bar { position: fixed; inset: auto 0 0 0; z-index: 3; height: calc(var(--bar) + var(--safe)); padding: 0 12px var(--safe) 0; display: flex; align-items: center; gap: 12px;
          background: var(--fill); border-top: 2px solid var(--page); }
@@ -113,7 +119,8 @@
 </style>
 </head>
 <body>
-<main id="main" aria-live="off"></main>
+<div id="beside" aria-hidden="true" hidden></div>
+<div id="slide"><main id="main" aria-live="off"></main></div>
 <nav id="menu" aria-label="Pages" hidden></nav>
 <div id="say" role="status" hidden></div>
 <div id="bar"><button id="menub" aria-expanded="false" aria-controls="menu"><i aria-hidden="true"></i><span id="where">menu</span></button>
@@ -185,6 +192,7 @@
   const price = v => v >= 1000 ? Math.round(v).toLocaleString("en-US") : v >= 10 ? v.toFixed(2) : v >= 1 ? v.toFixed(3) : v.toFixed(4);
   const role = v => v >= 0 ? "up" : "dn";
 
+  let swipe = null;                                         // the finger on the page, while it may be a swipe
   // ------------------------------------------------------------ charts: tern's dots, colored by height
   const charts = new Map(), held = new Map();              // canvas id -> its chart; -> where a finger is, 0..1
   function chart(id, size, c, label) {
@@ -257,7 +265,7 @@
   const drawAll = () => document.querySelectorAll("canvas[data-chart]").forEach(draw);
   function hold(e) {
     const cv = e.target.closest && e.target.closest("canvas[data-chart]");
-    if (!cv || cv.classList.contains("spark")) return;
+    if (!cv || cv.classList.contains("spark") || (swipe && swipe.on)) return;
     const r = cv.getBoundingClientRect();
     held.set(cv.dataset.chart, (e.clientX - r.left) / r.width); draw(cv);
   }
@@ -299,7 +307,7 @@
   const title = (t, ...more) => el("h1", {}, t, ...more);
 
   // ------------------------------------------------------------ the pages
-  let sort = "list";
+  let sort = "list", order = null;                          // the variants page's order, for going through them one at a time
   const PAGES = {
     home(d, x) {
       const v = x.variant;
@@ -349,6 +357,7 @@
     },
     variants(d, x) {
       const list = [...x.rows];
+      order = () => list.map(v => v.name);
       if (sort === "pnl") list.sort((a, b) => b.n - a.n);
       if (sort === "today") list.sort((a, b) => b.today - a.today);
       return [title("variants", el("small", {}, `${x.rows.length}`)), pick("sort", [["list", "as listed"], ["pnl", "by P&L"], ["today", "by today"]], sort),
@@ -468,6 +477,7 @@
         store("tern-prefs", JSON.stringify(d.prefs));
         if (d.look) dress(d.look);
         fails = 0; lastAt = Date.now(); last = d;
+        if (leaving) await leaving;
         const now = route();
         if (now.page + "/" + now.arg !== key) { again = again || {}; continue; }          // moved on meanwhile
         if (d.data) { data = d.data; etag = d.etag; }
@@ -475,7 +485,7 @@
       } while (again);
     } catch (e) {
       if (++fails > 1) render(shown);
-    } finally { busy = false; }
+    } finally { busy = false; arrive(); }
   }
   function alerts() {
     const out = [];
@@ -486,6 +496,7 @@
     return out;
   }
   function render(key) {
+    if (swipe && swipe.on) return;                         // not under a moving finger: the next answer draws it
     if (!theme || !data || !last) { if (fails > 1) morph(main, el("main", { id: "main", "aria-live": "off" }, alerts())); return; }
     const p = last.page, fresh = key !== shown;
     css("page", pageColor(p));
@@ -518,6 +529,83 @@
     get({ [k]: v });
   });
   window.addEventListener("resize", drawAll);
+
+  // ------------------------------------------------------------ swiping: the menu's pages in order, and a strike's, a variant's and a report's neighbors
+  const slide = $("slide"), beside = $("beside"), calm = window.matchMedia("(prefers-reduced-motion: reduce)");
+  function next(step) {
+    const { page, arg } = route(), i = NAMES.indexOf(page);
+    if (i >= 0) { const n = NAMES[i + step]; return n ? { to: "#/" + n, name: n, color: pageColor(n) } : null; }
+    if (!data || shown !== page + "/" + arg || data.none) return null;
+    const color = pageColor(page), swap = true;
+    if (page === "contract") { const t = step > 0 ? data.up : data.down; return t ? { to: "#/contract/" + t, name: step > 0 ? "higher strike" : "lower strike", color, swap } : null; }
+    const all = new Map(data.all), at = page === "variant" ? data.name : data.id;
+    const ids = page === "variant" && order ? order().filter(n => all.has(n)) : [...all.keys()], k = ids.indexOf(at), id = k < 0 ? undefined : ids[k + step];
+    return id === undefined ? null : { to: `#/${page}/` + encodeURIComponent(id), name: all.get(id), color, swap };
+  }
+  let leaving = null, away = 0, awayT = 0;                  // until the old page is off the screen; which way it went, until the new one is drawn
+  const move = (x, ms, o) => { slide.style.transition = ms && !calm.matches ? `transform ${ms}ms ease-out, opacity ${ms}ms ease-out` : "none"; slide.style.transform = x ? `translateX(${x}px)` : ""; slide.style.opacity = o === undefined ? "" : o; };
+  const rest = () => { slide.classList.remove("on"); beside.hidden = true; };
+  function arrive() {                                       // the new page comes in from the side the old one left towards it
+    if (!away) return;
+    clearTimeout(awayT);
+    const from = away; away = 0; rest();
+    if (calm.matches) { move(0); return; }
+    move(from * 60, 0, 0); slide.getBoundingClientRect(); move(0, 180);
+  }
+  function leave(step, to) {
+    const W = window.innerWidth;
+    move(-step * W, 140);
+    away = step; clearTimeout(awayT); awayT = setTimeout(arrive, 1500);                       // a slow answer: the page is put back meanwhile
+    const p = leaving = new Promise(r => setTimeout(() => { if (leaving === p) leaving = null; r(); }, calm.matches ? 0 : 140));
+    if (to.swap) { history.replaceState(null, "", to.to); moved(); } else location.hash = to.to;
+  }
+  const EDGE = 24;                                          // the phone's own back swipe starts here
+  main.addEventListener("touchstart", e => {
+    const t = e.touches[0], vv = window.visualViewport, sel = window.getSelection();
+    if (swipe && swipe.on) move(0, 160);
+    swipe = null;
+    if (!away) rest();
+    if (e.touches.length !== 1 || open || away || !theme || (vv && vv.scale > 1.02) || (sel && sel.type === "Range")) return;
+    if (t.clientX < EDGE || t.clientX > window.innerWidth - EDGE) return;
+    for (let n = e.target; n && n !== main; n = n.parentNode) if (n.matches && n.matches(".pick, .scroll") && n.scrollWidth > n.clientWidth + 1) return;       // that slides by itself
+    const chart = e.target.closest && e.target.closest("canvas[data-chart]:not(.spark)");
+    swipe = { x: t.clientX, y: t.clientY, at: e.timeStamp, dx: 0, chart, on: false, trail: [] };
+  }, { passive: true });
+  main.addEventListener("touchmove", e => {
+    if (!swipe) return;
+    const t = e.touches[0], dx = t.clientX - swipe.x, dy = t.clientY - swipe.y;
+    if (!swipe.on) {
+      if (swipe.chart && e.timeStamp - swipe.at > 220) { swipe = null; return; }              // held first: the chart is being read
+      if (Math.abs(dx) < 8 && Math.abs(dy) < 8) return;
+      if (Math.abs(dx) < 1.3 * Math.abs(dy) || !e.cancelable) { swipe = null; return; }       // the page is being scrolled
+      swipe.on = true; swipe.to = {}; slide.classList.add("on");
+      if (held.size) { held.clear(); drawAll(); }
+    }
+    e.preventDefault();
+    swipe.trail.push([e.timeStamp, dx]);
+    while (swipe.trail.length > 2 && e.timeStamp - swipe.trail[0][0] > 100) swipe.trail.shift();
+    const step = dx < 0 ? 1 : -1, to = step in swipe.to ? swipe.to[step] : swipe.to[step] = next(step);
+    swipe.dx = dx; swipe.step = step;
+    move(to ? dx : dx / 4);                                 // nothing that way: it gives a little
+    beside.hidden = !to;
+    if (to) {
+      beside.textContent = step > 0 ? to.name + " ›" : "‹ " + to.name;
+      beside.style.color = to.color; beside.style.textAlign = step > 0 ? "right" : "left";
+      beside.style.left = step > 0 ? "auto" : "16px"; beside.style.right = step > 0 ? "16px" : "auto";
+      beside.style.opacity = Math.min(1, 0.25 + Math.abs(dx) / reach());
+    }
+  }, { passive: false });
+  const reach = () => Math.max(64, window.innerWidth * 0.24);
+  function lift(e) {
+    const s = swipe;
+    swipe = null;
+    if (!s || !s.on) return;
+    const to = s.to[s.step], [t0, x0] = s.trail[0], [t1, x1] = s.trail[s.trail.length - 1], speed = (x1 - x0) / Math.max(1, t1 - t0) * -s.step;
+    const still = e.timeStamp - t1 > 120;
+    if (e.type === "touchend" && to && speed > -0.2 && (Math.abs(s.dx) > reach() || (!still && Math.abs(s.dx) > 30 && speed > 0.35))) { leave(s.step, to); return; }
+    move(0, 160); setTimeout(() => { if (!swipe && !away) rest(); }, 160);
+  }
+  main.addEventListener("touchend", lift); main.addEventListener("touchcancel", lift);
 
   // the font foot uses, served by tern web
   (async () => {

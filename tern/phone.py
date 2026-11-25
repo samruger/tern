@@ -279,7 +279,8 @@ def one_variant(scr, arg) -> dict:
     except (KeyError, TypeError):                # an engine from before a field was added
         says = []
     return {**variant(scr, v), "desc": v.get("desc") or "", "stats": stats, "gate": gate_of(v), "curve": thin(v.get("curve") or []),
-            "points": len(v.get("curve") or []), "rule": says, "positions": positions(scr, view)}
+            "points": len(v.get("curve") or []), "rule": says, "positions": positions(scr, view),
+            "all": [[x["name"], scr.vn(x["name"])] for x in scr.st.get("variants") or []]}
 
 
 def log(scr, arg) -> dict:
@@ -347,7 +348,7 @@ def one_report(scr, arg) -> dict:
             blocks.append({"head": head, "rows": [[m[2], *m[3].split()]]})
         elif l.strip():
             blocks.append({"text": spans(scr, scr.log_spans(l.strip(), ""))})
-    return {"id": e.id, "label": e.label, "ready": got is not None, "blocks": blocks,
+    return {"id": e.id, "label": e.label, "ready": got is not None, "blocks": blocks, "all": [[x.id, x.label] for x in ids.values()],
             "from": f"runtime/{e.id[len('saved:'):]}" if e.saved else reports.command(e.id)}
 
 

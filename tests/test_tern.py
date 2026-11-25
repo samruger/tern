@@ -3815,6 +3815,17 @@ class Phone(Rig, unittest.TestCase):
             g = hub.phone({"sid": sid, "page": "gate"})["data"]
             self.assertEqual([c["name"] for c in g["checks"]], ["days traded", "settled entries", "paper P&L"])
 
+    def test_a_variant_and_a_report_have_their_neighbors_to_swipe_to(self):
+        with tempfile.TemporaryDirectory() as d:
+            k, hub = self.hub(d)
+            one = hub.phone({"page": "variant", "arg": "band90"})
+            self.assertEqual([n for n, _ in one["data"]["all"]], [v["name"] for v in self.scr.st["variants"]])
+            self.assertIn(one["data"]["name"], dict(one["data"]["all"]))
+            listed = hub.phone({"sid": one["sid"], "page": "reports"})["data"]["rows"]
+            rep = hub.phone({"sid": one["sid"], "page": "report", "arg": "desk"})["data"]
+            self.assertEqual(rep["all"], [[r["id"], r["label"]] for r in listed])
+            self.assertIn(rep["id"], dict(rep["all"]))
+
     def test_picking_is_each_viewers_own_and_sends_nothing(self):
         with tempfile.TemporaryDirectory() as d:
             k, hub = self.hub(d)
