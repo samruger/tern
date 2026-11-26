@@ -333,7 +333,7 @@ themes, `↑↓ ←→`, the wheel and clicks (see Mouse). Phones get pages of t
 
 <img width="1364" height="668" alt="The spot box in a browser" src="docs/screenshots/16-web-screen.png" />
 
-It is view only. `q`, `P`, `L`, `r`, `D`, `space` and `e` do nothing there, and their
+In a browser it is view only, even signed in. `q`, `P`, `L`, `r`, `D`, `space` and `e` do nothing there, and their
 hints are not drawn. The settings box shows the settings but changes only what that browser's log box shows.
 The web screen writes no command files and never touches the terminal's `dash.json` or `view.json`: each browser keeps its own settings. It writes `view-web.json` (in the same tmpfs folder)
 with the coins and strikes its viewers have up, so the engine sends those strikes' contract history
@@ -362,12 +362,13 @@ Secure, SameSite=Strict cookie. After a new password, restart `tern-web`: every 
 everyone make every sign-in wait. To reach it from another network, allow the port (8787 by default) through
 the host's firewall, and forward it to the host if there is NAT in between.
 
-**Settings box (`9`), WEB and APP.** `browsers` turns the browser page on and off, `the app` turns on the paired phone app (the service runs while either is on), `port` moves it and `open to the
-network` switches between every address and localhost only. tern-web.service runs
-`tern web --config`, which reads those from `config.json`'s `web` section and exits (and stays down)
-when both are off. `pair a phone` under APP makes a 6-digit code to type into the app, then asks you to check the phone's key words here and press `y`; `D` on a phone's row removes it. The engine restarts or stops the service as soon as one changes, from the box or by
-hand in `config.json`, and the box shows whether it is running and where to open it. Firewall and
-port-forwarding rules are not touched: a new port needs its own.
+**Settings box (`9`), WEB and APP.** `browsers` turns the browser page on and off and `the app` turns on the paired phone app
+(see Control from the app). tern-web.service runs while either is on, and `port` and `open to the network` (every address, or
+localhost only) are the same for both. `tern web --config` reads these from `config.json`'s `web` section and exits (and stays
+down) when both are off. With `browsers` off the login page and the browser pages are refused, on localhost too; with `the app`
+off the app can neither sign in nor send anything. The engine restarts or stops the service as soon as one changes, from the
+box or by hand in `config.json`, and the box shows whether it is running and where to open it. Firewall and port-forwarding
+rules are not touched: a new port needs its own. The APP rows below are for pairing phones (see Control from the app).
 
 ### Phones
 
@@ -415,6 +416,26 @@ adb install -r ~/tern.apk
   sent to a server with another, and the app shows its fingerprint. A renewed certificate has to be approved, or the app built again.
 - **View only**, with the same password. The pages come from `tern web`, so a change to them needs no new apk.
 
+#### Control from the app
+
+Version 1.1 of the app can do what the screen does, from a phone you have paired. A browser, even signed in, still cannot.
+The app has the help, settings and variant editor pages as well, and the same questions the screen asks (`y`, or typing `live`).
+
+- **Pairing:** on the desk, settings (`9`), APP, `pair a phone` shows a 6-digit code for 5 minutes. In the app, the menu's `Pair this
+  phone` asks for your fingerprint, then the code and a name for the phone. The desk then shows the phone's name and its key, three groups
+  of four characters, and the app shows the same: if they match, press `y` on the desk. Five wrong codes shut pairing for 10 minutes.
+  At most 3 phones are paired at once.
+- **Keys:** the phone makes two keys in its secure hardware, which never leave it. The desk keeps only their public halves, in
+  `~/.config/tern/app-devices.json` (kept private to you), and the app signs every command it sends. A password, a cookie or the
+  apk alone sends nothing.
+- **Fingerprint:** the everyday key needs your fingerprint at most every 5 minutes. The live key needs it every time: arming live,
+  moving it to another variant, and loosening a risky setting while live is armed. Turning live off uses the everyday key.
+- **Safety:** the desk refuses a command that is signed twice, or sent from a phone whose clock is more than 30 seconds off
+  (it says by how many). Every command is logged on the desk as `app <phone name>: <what>`.
+- **Changed fingerprints:** if you add or change a fingerprint on the phone, its keys stop working, and the app says to pair again.
+- **Removing a phone:** settings, APP, the phone's row, `D` (asks `y`). It can send nothing from then on.
+- **Switches:** `browsers` and `the app` in settings are separate, so the app can be on with the browser page off.
+
 ## Files
 
 `runtime/` (gitignored) holds `config.json`, `state.json` (the live book as it
@@ -436,7 +457,7 @@ because they are rewritten every second.
 | `engine.py` | polling, the rule, orders, settlement, live reconcile, kill switch, status |
 | `net.py` | HTTPS over connections that stay open |
 | `kalshi.py` | public and signed REST, V2 orders (`/portfolio/events/orders`) |
-| `sign.py` | Ed25519 and RSA-PSS signing, PEM/DER parsing |
+| `sign.py` | Ed25519 and RSA-PSS signing, P-256 checking for the app's keys, PEM/DER parsing |
 | `spot.py` | Coinbase ticker and candles |
 | `shadow.py` | the built-in variants, and every variant's paper record (also each one's gate) |
 | `variants.py` | the variants you make: their settings, names and file |
@@ -447,6 +468,7 @@ because they are rewritten every second.
 | `themes.py` | the screen's 56 color themes |
 | `web.py`, `web.html` | the same screen in a browser, view only |
 | `phone.py`, `phone.html` | the web screen's phone pages |
+| `devices.py` | the phones paired to the app: their keys, pairing codes and checking what they sign |
 | `../android/` | the Android app and what builds it |
 | `webctl.py` | starts, stops and asks about tern-web.service for the settings box's WEB rows |
 | `webauth.py` | tern web's password, sign-in cookie, wrong-guess limits and certificate |
@@ -465,7 +487,7 @@ The major ones, newest first.
 
 | Date | Change |
 |---|---|
-| 2026-11-25 | **Pairing a phone from the settings box:** the WEB rows are now `browsers` and `the app`, with separate switches, and an APP group pairs phones with a code and a key check on the desk. |
+| 2026-11-25 | **The paired Android app controls the desk** (app 1.1): everything the screen does, signed on the phone with a key in its secure hardware and your fingerprint, which live asks for every time. Pair a phone from the settings box (APP). The WEB rows are now `browsers` and `the app`, with separate switches. Browsers stay view only. |
 | 2026-11-25 | **Renaming one of your own variants moves its record to the new name**, with the settings log, live and the variants made from it, so the old name is left nowhere. A copy made without a name is called after what its parent is called now (base-6 gives base-8), not its old key. |
 | 2026-11-24 | **Android app:** the phone pages as an app, which finds the desk at home or from outside and takes only its certificate. |
 | 2026-11-24 | **Swiping on the phone pages:** left and right go to the next page and the one before, and around. The spot page is gone: home has its chart and spans. |

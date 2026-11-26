@@ -388,7 +388,7 @@ HELP_BOXES = [
                   "slots, warnings, and every variant's day"),
     ("⁷", "gate", "what the selected variant still needs to go live, caps, and every variant side by side"),
     ("⁸", "reports", "every record: worked out now, or saved"),
-    ("⁹", "settings", "gate, alerts, web, what the log shows"),
+    ("⁹", "settings", "gate, alerts, the web screen and the app (pairing phones), what the log shows"),
     ("⁰", "themes", f"{len(themes.NAMES)} color themes: the one highlighted is in use"),
     ("", "help", "(h) this"),
     ("", "tabs", "one box fills the screen; the others are tabs on its top border: their keys show one, (tab) steps through. "
@@ -441,7 +441,9 @@ HELP_KEYS = [
      ("settings", [("↑↓", "pick a setting"),
                    ("←→  - +", "step it down / up, or flip it"),
                    ("enter", "type a value, enter saves, esc leaves it"),
-                   ("s esc", "in a variant (e): save as a new one / discard")]),
+                   ("s esc", "in a variant (e): save as a new one / discard"),
+                   ("enter", "on APP's \"pair a phone\": a code for the app"),
+                   ("D", "on a paired phone: remove it (asks y)")]),
      ("engine", [("P", "pause / start the engine (asks y)"),
                  ("q", "close the screen; the engine keeps going")])],
 ]
