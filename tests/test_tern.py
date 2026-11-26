@@ -1,7 +1,10 @@
+import base64
+import hashlib
 import json
 import os
 import pathlib
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -14,7 +17,7 @@ from tern.sign import load_key, signature
 from tern import sign
 from tern.strategy import due_slot, signals
 from tern.dash import braille, by_time
-from tern import webctl
+from tern import config as cfgmod, devices, webauth, webctl
 
 webctl.ENABLED = False           # no test starts, stops or asks systemd about the real tern-web
 
@@ -4974,6 +4977,130 @@ class Themes(unittest.TestCase):
                 self.assertLess(len(out), 4 * len(ramp), name)
             self.assertGreaterEqual(len(themes.visible(tuple(t["grads"]["spot"]))), 3, name)
         self.assertGreater(len(themes.smooth((17, 231))), 2)
+
+
+class Devices(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.path = os.path.join(self.tmp.name, "app-devices.json")
+        self.dev = devices.Devices(path=self.path)
+
+    def _phone(self):
+        """Two openssl keys: (everyday b64, live b64, sign(text, which))."""
+        d = self.tmp.name
+        pubs = {}
+        for which in ("everyday", "live"):
+            subprocess.run(["openssl", "ecparam", "-name", "prime256v1", "-genkey", "-noout",
+                            "-out", which + ".pem"], cwd=d, check=True, capture_output=True)
+            subprocess.run(["openssl", "pkey", "-in", which + ".pem", "-pubout", "-outform", "DER",
+                            "-out", which + ".der"], cwd=d, check=True, capture_output=True)
+            pubs[which] = base64.b64encode(pathlib.Path(d, which + ".der").read_bytes()).decode()
+
+        def signer(text, which):
+            pathlib.Path(d, "msg").write_bytes(text.encode())
+            subprocess.run(["openssl", "dgst", "-sha256", "-sign", which + ".pem", "-out", "sig.der", "msg"],
+                           cwd=d, check=True, capture_output=True)
+            return base64.b64encode(pathlib.Path(d, "sig.der").read_bytes()).decode()
+        return pubs["everyday"], pubs["live"], signer
+
+    def _paired(self):
+        e, l, signer = self._phone()
+        return self.dev.add("pixel", e, l), signer
+
+    def _send(self, dev_id, signer, n, cmd, which="everyday", ts=1000.0, **kw):
+        payload = json.dumps({"d": dev_id, "n": n, "ts": ts, "cmd": cmd})
+        return self.dev.check(payload, signer(payload, which), which, 1000.0, **kw)
+
+    def test_words_match_the_formula(self):
+        a, b = base64.b64encode(b"everyday"), base64.b64encode(b"live")
+        h = hashlib.sha256(b"everyday" + b"live").hexdigest()[:12].upper()
+        want = f"{h[:4]} {h[4:8]} {h[8:]}"
+        self.assertEqual(devices.words(a.decode(), b.decode()), want)
+        self.assertEqual(len(want), 14)
+
+    def test_add_remove_and_the_file_is_private(self):
+        e, l, _ = self._phone()
+        ids = [self.dev.add(f"p{i}", e, l) for i in range(3)]
+        self.assertEqual(stat.S_IMODE(os.stat(self.path).st_mode), 0o600)
+        rows = self.dev.all()
+        self.assertEqual([r["id"] for r in rows], ids)
+        self.assertEqual(set(rows[0]), {"id", "name", "paired", "used"})
+        self.assertNotIn(e, json.dumps(rows))
+        with self.assertRaises(devices.Refused):
+            self.dev.add("fourth", e, l)
+        self.assertTrue(self.dev.remove(ids[1]))
+        with self.assertRaises(devices.Refused):
+            self.dev.add("bad", "AAAA", l)
+        self.assertFalse(self.dev.remove(ids[1]))
+        self.assertEqual(len(self.dev.secret()), 32)
+        self.assertEqual(self.dev.secret(), devices.Devices(path=self.path).secret())
+
+    def test_check_accepts_then_refuses_a_replay(self):
+        i, signer = self._paired()
+        who, cmd = self._send(i, signer, 5, {"op": "live", "on": False})
+        self.assertEqual(cmd, {"op": "live", "on": False})
+        self.assertEqual(who["id"], i)
+        with self.assertRaisesRegex(devices.Refused, "sent twice"):
+            self._send(i, signer, 5, {"op": "live", "on": False})
+        self._send(i, signer, 6, {"op": "live", "on": False})
+        again = devices.Devices(path=self.path)          # the counter is kept in the file
+        payload = json.dumps({"d": i, "n": 6, "ts": 1000.0, "cmd": {"op": "x"}})
+        with self.assertRaisesRegex(devices.Refused, "sent twice"):
+            again.check(payload, signer(payload, "everyday"), "everyday", 1000.0)
+
+    def test_check_refusals(self):
+        i, signer = self._paired()
+        cmd = {"op": "live", "on": False}
+
+        def refused(text, regex, sig=None, key="everyday", now=1000.0):
+            with self.assertRaisesRegex(devices.Refused, regex):
+                self.dev.check(text, sig or signer(text, "everyday"), key, now)
+        for bad in ("nope", "[1]", json.dumps({"d": i, "n": 1, "ts": 1000, "cmd": []}),
+                    json.dumps({"d": i, "n": "1", "ts": 1000, "cmd": cmd}),
+                    json.dumps({"d": 7, "n": 1, "ts": 1000, "cmd": cmd}),
+                    json.dumps({"d": i, "n": True, "ts": 1000, "cmd": cmd}),
+                    json.dumps({"d": i, "n": 1, "ts": None, "cmd": cmd})):
+            refused(bad, "")
+        good = json.dumps({"d": i, "n": 1, "ts": 1000, "cmd": cmd})
+        other = json.dumps({"d": "ffffffffffff", "n": 1, "ts": 1000, "cmd": cmd})
+        refused(other, "isn't paired: pair it again from the desk")
+        refused(good, "not signed by this phone's key", key="other")
+        refused(good, "not signed by this phone's key", sig=signer(good, "live"))
+        refused(good, "not signed by this phone's key", sig="!!!")
+        late = json.dumps({"d": i, "n": 1, "ts": 960, "cmd": cmd})
+        refused(late, r"clock is 40 s off")
+        self.dev.check(good, signer(good, "everyday"), "everyday", 1029.0)
+        refused(good, "sent twice")
+
+    def test_live_needs_the_live_key(self):
+        i, signer = self._paired()
+        cfg = cfgmod.Config()
+        on = {"op": "live", "on": True, "variant": "base"}
+        with self.assertRaisesRegex(devices.Refused, "fingerprint"):
+            self._send(i, signer, 1, on, cfg=cfg)
+        self._send(i, signer, 2, on, which="live", cfg=cfg)
+        self._send(i, signer, 3, {"op": "live", "on": False}, cfg=cfg)
+        low = {"op": "set", "key": "gate.min_days", "value": cfg.gate.min_days - 1}
+        with self.assertRaisesRegex(devices.Refused, "fingerprint"):
+            self._send(i, signer, 4, low, cfg=cfg, armed=True)
+        self._send(i, signer, 5, low, cfg=cfg, armed=False)
+        up = dict(low, value=cfg.gate.min_days + 1)
+        self._send(i, signer, 6, up, cfg=cfg, armed=True)
+        self.assertTrue(devices.needs_live(low, cfg, True))
+        self.assertFalse(devices.needs_live(low, cfg, False))
+        self.assertFalse(devices.needs_live({"op": "set", "key": "nope", "value": 1}, cfg, True))
+
+    def test_session_tokens(self):
+        i, _ = self._paired()
+        tok = self.dev.session_token(i, 1000.0)
+        self.assertEqual(self.dev.session_device(tok, 1001.0), i)
+        self.assertIsNone(self.dev.session_device(tok, 1000.0 + webauth.TTL + 1))
+        self.assertIsNone(self.dev.session_device(tok[:-1] + ("0" if tok[-1] != "0" else "1"), 1001.0))
+        self.assertIsNone(self.dev.session_device(None, 1001.0))
+        self.assertIsNone(self.dev.session_device("junk", 1001.0))
+        self.dev.remove(i)
+        self.assertIsNone(self.dev.session_device(tok, 1001.0))
 
 
 if __name__ == "__main__":
