@@ -1262,6 +1262,10 @@ class Desk:
             except ValueError:                       # not the main thread
                 pass
         failed = []
+        try:
+            self._commands()                         # a note the app wrote just before the stop is logged on the way out
+        except Exception:
+            pass
         for name, save in (("state", self._save_state), ("shadow", self.shadow.save), ("quotes", self.rec.flush)):
             try:
                 save()

@@ -362,7 +362,8 @@ class Hub:
             os.makedirs(cmd_dir, exist_ok=True)
             if cmd["run"]:
                 say = dash.start_engine(self.runtime)
-                cid = note("engine started from the app")        # waits in the folder for the engine to come up
+                started = say.startswith(("engine started", "starting the engine"))
+                cid = note(f"engine: {say}") if started else ""   # waits in the folder for the engine to come up
             else:
                 cid = note("stopping the engine from the app") if dash.engine_alive(self.runtime) else ""
                 say = dash.stop_engine(self.runtime, self.status().get("pid"))

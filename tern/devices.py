@@ -44,6 +44,8 @@ def needs_live(cmd: dict, cfg: "cfgmod.Config", armed: bool) -> bool:
     """True if the command needs the fingerprint key: arming live, or loosening a limit while live is armed."""
     if cmd.get("op") == "live":
         return bool(cmd.get("on"))                # the engine arms on any truthy value
+    if cmd.get("op") == "variant_on" and armed:   # the desktop types "live" for turning on the armed live variant too
+        return bool(cmd.get("on")) and cmd.get("variant") == cfg.live.variant
     if cmd.get("op") == "set" and armed:
         row = cfgmod.setting(str(cmd.get("key")))
         value = cmd.get("value")
@@ -163,7 +165,7 @@ class Devices:
             raise Refused("not signed by this phone's key")
         if abs(now - req["ts"]) > SKEW:
             raise Refused(f"the phone's clock is {abs(now - req['ts']):.0f} s off the desk's")
-        if req["cmd"].get("op") == "live" and not isinstance(req["cmd"].get("on"), bool):
+        if req["cmd"].get("op") in ("live", "variant_on") and not isinstance(req["cmd"].get("on"), bool):
             raise Refused("the request was malformed")
         if key == "everyday" and cfg is not None and needs_live(req["cmd"], cfg, armed):
             raise Refused("live needs your fingerprint")

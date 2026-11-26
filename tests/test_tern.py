@@ -2439,6 +2439,16 @@ class OwnVariants(Rig, unittest.TestCase):
             self.assertNotIn("None", k.results["n4"])
             self.assertFalse([1 for l in k.logs for x in l if str(x).startswith("None:") or str(x).startswith(": ")])
 
+    def test_shutdown_logs_a_pending_note_and_leaves_no_file(self):
+        import time
+        with tempfile.TemporaryDirectory() as d:
+            k = self.desk(d)
+            with open(os.path.join(k.cmd_dir, f"{time.time():.6f}-n9.json"), "w") as fh:
+                json.dump({"id": "n9", "op": "note", "text": "stopping the engine from the app", "by": "app pixel", "ts": time.time()}, fh)
+            k._shutdown(quiet=True)
+            self.assertIn("app pixel: stopping the engine from the app", [str(x) for l in k.logs for x in l])
+            self.assertEqual(os.listdir(k.cmd_dir), [])
+
     def test_the_band_may_move_past_where_it_was(self):
         with tempfile.TemporaryDirectory() as d:
             k = self.desk(d)
@@ -4831,6 +4841,15 @@ class WebApp(unittest.TestCase):
             self.assertEqual((r.status, b["say"]), (200, "engine started in the background"))
             start.assert_called_once_with(self.run_dir)
         self.assertEqual([c["op"] for c in self.cmd_files()], ["note"])
+        self.assertIn("engine started", self.cmd_files()[0]["text"])
+        for n in os.listdir(os.path.join(self.run_dir, "cmd")):
+            os.remove(os.path.join(self.run_dir, "cmd", n))
+        for said in ("engine already running", "systemctl start failed: boom"):
+            with mock.patch.object(dash, "engine_alive", return_value=False), \
+                    mock.patch.object(dash, "start_engine", return_value=said):
+                r, b = self.act(ck, {"op": "engine", "run": True})
+            self.assertEqual((r.status, b["say"]), (200, said))
+            self.assertEqual(self.cmd_files(), [])
 
     def test_act_report_save(self):
         from unittest import mock
@@ -5436,6 +5455,20 @@ class Devices(unittest.TestCase):
         self.assertTrue(devices.needs_live(low, cfg, True))
         self.assertFalse(devices.needs_live(low, cfg, False))
         self.assertFalse(devices.needs_live({"op": "set", "key": "nope", "value": 1}, cfg, True))
+
+    def test_variant_on_of_the_live_variant_needs_the_live_key(self):
+        i, signer = self._paired()
+        cfg = cfgmod.Config()
+        cfg.live.variant = "base"
+        on = {"op": "variant_on", "variant": "base", "on": True}
+        with self.assertRaisesRegex(devices.Refused, "fingerprint"):
+            self._send(i, signer, 1, on, cfg=cfg, armed=True)
+        self._send(i, signer, 2, on, which="live", cfg=cfg, armed=True)
+        self._send(i, signer, 3, on, cfg=cfg, armed=False)
+        self._send(i, signer, 4, dict(on, variant="other"), cfg=cfg, armed=True)
+        self._send(i, signer, 5, dict(on, on=False), cfg=cfg, armed=True)
+        with self.assertRaisesRegex(devices.Refused, "malformed"):
+            self._send(i, signer, 6, dict(on, on="false"), cfg=cfg, armed=True)
 
     def test_live_on_must_be_a_real_bool(self):
         i, signer = self._paired()
