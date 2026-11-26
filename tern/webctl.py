@@ -1,7 +1,7 @@
 """The web screen's service (tern-web.service), run from the settings box's WEB rows.
 
 `tern web --config` (what the unit runs) takes its port and host from config.json's "web" section and
-exits cleanly when web.enabled is off, so the unit (Restart=on-failure) stays down. When a WEB setting
+exits cleanly when web.enabled and web.app are both off, so the unit (Restart=on-failure) stays down. When a WEB setting
 changes the engine restarts or stops the unit here. The firewall is not touched: opening a new port
 takes root (sudo ufw allow PORT/tcp), so the screen says so instead.
 """
@@ -35,7 +35,7 @@ def state() -> str:
 
 def apply(web) -> str:
     """Make the service match web settings: running on its port and host, or stopped."""
-    if not web.enabled:
+    if not (web.enabled or web.app):
         code, out = systemctl("stop", UNIT)
         return "web screen off" if code == 0 else f"web screen: stop failed ({out or code})"
     code, out = systemctl("restart", UNIT)

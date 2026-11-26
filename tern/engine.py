@@ -943,10 +943,10 @@ class Desk:
                 self.slog.append(key, was, v, bump=key in namesmod.RECORD_KEYS)
             r = cfgmod.setting(key)
             label = {"live": "live ", "gate": "gate ", "web": "web "}.get(r.sec, "") + r.label
-            label = "web screen" if key == "web.enabled" else label
+            label = "web screen" if key == "web.enabled" else "app" if key == "web.app" else label
             show = (lambda x: "on" if x else "off") if r.kind == "bool" else (lambda x: f"{x:g}")
             msg = f"{label}: {show(was)} → {show(v)}"
-            if r.sec == "web" and was != v and (key == "web.enabled" or self.cfg.web.enabled):
+            if r.sec == "web" and was != v and (key in ("web.enabled", "web.app") or self.cfg.web.enabled or self.cfg.web.app):
                 msg += " · " + webctl.apply(self.cfg.web)
                 if key == "web.port":
                     msg += f" · open it: sudo ufw allow {v}/tcp"

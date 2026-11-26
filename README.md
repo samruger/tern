@@ -362,10 +362,10 @@ Secure, SameSite=Strict cookie. After a new password, restart `tern-web`: every 
 everyone make every sign-in wait. To reach it from another network, allow the port (8787 by default) through
 the host's firewall, and forward it to the host if there is NAT in between.
 
-**Settings box (`9`), WEB.** `web screen` turns it on and off, `port` moves it and `open to the
+**Settings box (`9`), WEB and APP.** `browsers` turns the browser page on and off, `the app` turns on the paired phone app (the service runs while either is on), `port` moves it and `open to the
 network` switches between every address and localhost only. tern-web.service runs
 `tern web --config`, which reads those from `config.json`'s `web` section and exits (and stays down)
-when it is off. The engine restarts or stops the service as soon as one changes, from the box or by
+when both are off. `pair a phone` under APP makes a 6-digit code to type into the app, then asks you to check the phone's key words here and press `y`; `D` on a phone's row removes it. The engine restarts or stops the service as soon as one changes, from the box or by
 hand in `config.json`, and the box shows whether it is running and where to open it. Firewall and
 port-forwarding rules are not touched: a new port needs its own.
 
@@ -465,6 +465,7 @@ The major ones, newest first.
 
 | Date | Change |
 |---|---|
+| 2026-11-25 | **Pairing a phone from the settings box:** the WEB rows are now `browsers` and `the app`, with separate switches, and an APP group pairs phones with a code and a key check on the desk. |
 | 2026-11-25 | **Renaming one of your own variants moves its record to the new name**, with the settings log, live and the variants made from it, so the old name is left nowhere. A copy made without a name is called after what its parent is called now (base-6 gives base-8), not its old key. |
 | 2026-11-24 | **Android app:** the phone pages as an app, which finds the desk at home or from outside and takes only its certificate. |
 | 2026-11-24 | **Swiping on the phone pages:** left and right go to the next page and the one before, and around. The spot page is gone: home has its chart and spans. |

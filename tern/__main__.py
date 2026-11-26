@@ -284,7 +284,7 @@ def main(argv: list[str]) -> int:
         from .webctl import host
         if "--config" in argv:                   # the unit's way: the settings box's WEB rows
             W = cfgmod.load(runtime).web
-            if not W.enabled:
+            if not (W.enabled or W.app):
                 print("tern web is off in the settings box (9, WEB): not starting"); return 0
             serve(runtime, host(W), W.port); return 0
         opt = dict(zip(argv[1::2], argv[2::2]))

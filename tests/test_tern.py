@@ -8,6 +8,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from unittest import mock
 
@@ -1741,7 +1742,7 @@ class SettingsBox(Rig, unittest.TestCase):
             k, scr = self.setup(d)
             self.press("9")
             rows = [r.key for r in scr.set_rows()]
-            self.assertEqual(rows, [r.key for r in cfgmod.SETTINGS] + ["screen.log"])
+            self.assertEqual(rows, [r.key for r in cfgmod.SETTINGS] + ["app.pair", "screen.log"])
             self.assertFalse([x for x in rows if x.startswith(("rule.", "strategy.")) or x == "paper_capital"])
             self.assertNotIn("older than this screen", self.text())
             self.assertIsNone(scr.set_sent.get("web.port"))
@@ -1817,6 +1818,63 @@ class SettingsBox(Rig, unittest.TestCase):
             self.assertEqual((scr.set_buf, scr.tab, self.cmds()), (None, "themes", []))
             self.press("9", "q" if False else "x", "e", "s")                   # nothing else is its
             self.assertEqual((scr.tab, scr.overlay, self.cmds()), ("settings", None, []))
+
+
+class AppRows(Rig, unittest.TestCase):
+    """The settings box's APP rows: pairing a phone and the phones paired."""
+
+    def screen(self, d):
+        self.dpath = os.path.join(d, "app-devices.json")
+        p = mock.patch.object(devices, "FILE", self.dpath); p.start(); self.addCleanup(p.stop)
+        k, scr = self.setup(d)
+        self.press("9")
+        return k, scr
+
+    def row(self, scr, key):
+        scr.set_sel = [r.key for r in scr.set_rows()].index(key); scr.draw()
+
+    def test_rows_pairing_question_and_removal(self):
+        from tern import config as cfgmod
+        with tempfile.TemporaryDirectory() as d:
+            k, scr = self.screen(d)
+            keys = [r.key for r in scr.set_rows()]
+            self.assertEqual(keys, [r.key for r in cfgmod.SETTINGS] + ["app.pair", "screen.log"])
+            self.assertIn("APP", self.text()); self.assertIn("pair a phone", self.text())
+            self.assertIn("the app", self.text()); self.assertIn("browsers", self.text())
+            self.row(scr, "app.pair"); self.press(10)
+            m = scr.modal
+            self.assertEqual(m["type"], "pair"); self.assertRegex(m["code"], r"^\d{6}$")
+            self.assertIn("it lasts 5 minutes", self.text()); self.assertIn("esc closes", self.text())
+            self.press(27); self.assertIsNone(scr.modal)
+            self.row(scr, "app.pair"); self.press(10)
+            code = scr.modal["code"]
+            self.tmp = mock.Mock(); self.tmp.name = d
+            e, l, signer = Devices._phone(self)
+            live = scr.fast
+            oid = devices.offer(live, code, "pixel", e, l, signer(f"pair\n{code}\npixel\n{e}\n{l}", "everyday"), time.time())
+            scr.pair_at = 0; self.sync()
+            self.assertEqual(scr.modal["type"], "offer")                         # the code box gave way to the question
+            self.assertIn("pair pixel?", self.text()); self.assertIn(devices.words(e, l), self.text())
+            self.press("n")
+            self.assertEqual(devices.offer_state(live, oid, time.time())["state"], "declined")
+            self.assertIsNone(scr.modal)
+            self.row(scr, "app.pair"); self.press(10); code = scr.modal["code"]
+            oid = devices.offer(live, code, "pixel", e, l, signer(f"pair\n{code}\npixel\n{e}\n{l}", "everyday"), time.time())
+            scr.tab = "log"; scr.pair_at = 0; self.sync()                                         # on any tab
+            self.assertIn("pair pixel?", self.text())
+            self.press("y")
+            self.assertEqual(devices.offer_state(live, oid, time.time())["state"], "paired")
+            scr.tab = "settings"; scr.phones_at = 0; self.sync()
+            [phone] = devices.Devices(self.dpath).all()
+            self.assertIn(f"app.phone.{phone['id']}", [r.key for r in scr.set_rows()])
+            self.assertIn("pixel", self.text()); self.assertIn("paired", self.text())
+            self.row(scr, f"app.phone.{phone['id']}"); self.press("D")
+            self.assertEqual(scr.modal["type"], "confirm")
+            self.press("x")                                                      # any other key keeps it
+            self.assertEqual(len(devices.Devices(self.dpath).all()), 1)
+            self.press("D", "y")
+            self.assertEqual(devices.Devices(self.dpath).all(), [])
+            self.assertNotIn(f"app.phone.{phone['id']}", [r.key for r in scr.set_rows()])
 
 
 class Tabs(Rig, unittest.TestCase):
@@ -5124,6 +5182,85 @@ class Devices(unittest.TestCase):
         self.assertIsNone(self.dev.session_device("junk", 1001.0))
         self.dev.remove(i)
         self.assertIsNone(self.dev.session_device(tok, 1001.0))
+
+    # --- pairing on the desk
+    def _live(self):
+        d = os.path.join(self.tmp.name, "live"); os.makedirs(d, exist_ok=True)
+        return d
+
+    def _offer(self, live, code, now=100.0, name="pixel", sig_for=None):
+        e, l, signer = self._phone()
+        sig = signer(f"pair\n{sig_for or code}\n{name}\n{e}\n{l}", "everyday")
+        return devices.offer(live, code, name, e, l, sig, now), (e, l)
+
+    def test_pairing_flow(self):
+        live = self._live()
+        code = devices.new_code(live, 100.0)
+        self.assertRegex(code, r"^\d{6}$")
+        self.assertIsNone(devices.offered(live, 100.0))
+        oid, (e, l) = self._offer(live, code)
+        o = devices.offered(live, 101.0)
+        self.assertEqual((o["id"], o["name"], o["words"]), (oid, "pixel", devices.words(e, l)))
+        self.assertEqual(devices.offer_state(live, oid, 101.0), {"state": "waiting"})
+        self.assertIn("paired", devices.answer(live, oid, True, self.dev))
+        st = devices.offer_state(live, oid, 102.0)
+        self.assertEqual(st["state"], "paired")
+        self.assertIn(st["device"], [p["id"] for p in self.dev.all()])
+        self.assertIsNone(devices.offered(live, 102.0))
+        with self.assertRaisesRegex(devices.Refused, "no pairing code"):   # the code is used up
+            self._offer(live, code)
+        self.assertEqual(devices.offer_state(live, "nope", 102.0), {"state": "unknown"})
+        c2 = devices.new_code(live, 200.0)
+        with self.assertRaises(devices.Refused):
+            self._offer(live, c2, now=200.0 + 301)
+
+    def test_pairing_refusals(self):
+        live = self._live()
+        with self.assertRaisesRegex(devices.Refused, "no pairing code on the desk: open settings, APP, pair a phone"):
+            self._offer(live, "123456")
+        code = devices.new_code(live, 100.0)
+        with self.assertRaisesRegex(devices.Refused, "no pairing code"):          # expired
+            self._offer(live, code, now=100.0 + 301)
+        code = devices.new_code(live, 100.0)
+        wrong = "000000" if code != "000000" else "111111"
+        for _ in range(5):
+            with self.assertRaises(devices.Refused):
+                self._offer(live, wrong)
+        with self.assertRaisesRegex(devices.Refused, "too many wrong codes: wait 10 min"):
+            self._offer(live, code)                                                 # even the right one now
+        code = devices.new_code(live, 2000.0)                                       # past the lockout
+        with self.assertRaisesRegex(devices.Refused, "bad signature|signature"):
+            self._offer(live, code, now=2000.0, sig_for="999999")
+        oid, _ = self._offer(live, code, now=2000.0, name="a" * 40 + "\x07")
+        self.assertEqual(devices.offered(live, 2001.0)["name"], "a" * 24)
+        with self.assertRaisesRegex(devices.Refused, "another phone is waiting to be paired"):
+            self._offer(live, code, now=2001.0)
+        self.assertIn("no", devices.answer(live, oid, False, self.dev).lower())
+        self.assertEqual(devices.offer_state(live, oid, 2002.0)["state"], "declined")
+        self.assertEqual(self.dev.all(), [])
+        code = devices.new_code(live, 3000.0)
+        oid, _ = self._offer(live, code, now=3000.0)
+        self.assertEqual(devices.offer_state(live, oid, 3000.0 + 301)["state"], "expired")
+        self.assertIsNone(devices.offered(live, 3000.0 + 301))
+        self.assertEqual(oct(os.stat(os.path.join(live, "app-pair.json")).st_mode & 0o777), "0o600")
+
+    def test_switches(self):
+        from tern import __main__ as cli
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as d:
+            for enabled, app, serves in ((False, False, False), (False, True, True), (True, False, True)):
+                cfg = cfgmod.Config(); cfg.web.enabled, cfg.web.app = enabled, app
+                cfgmod.save(cfg, d)
+                with mock.patch("tern.web.serve") as serve, mock.patch.object(cfgmod, "RUNTIME", d):
+                    self.assertEqual(cli.main(["web", "--config"]), 0)
+                self.assertEqual(serve.called, serves, (enabled, app))
+        calls = []
+        with mock.patch.object(webctl, "systemctl", lambda *a: (calls.append(a) or (0, ""))):
+            w = cfgmod.Web(); w.enabled, w.app = False, True
+            self.assertIn("restarting", webctl.apply(w))
+            w.app = False
+            self.assertEqual(webctl.apply(w), "web screen off")
+        self.assertEqual([c[0] for c in calls], ["restart", "stop"])
 
 
 if __name__ == "__main__":

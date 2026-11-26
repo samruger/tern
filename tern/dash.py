@@ -17,6 +17,7 @@ import uuid
 
 from . import about as aboutmod
 from . import config as cfgmod
+from . import devices as devmod
 from . import names as namesmod
 from . import reports
 from . import shadow as shadowmod
@@ -451,6 +452,18 @@ TRADE_LINE = re.compile(r"^(?:live: \d+m slot on .*, [1-9]\d* bought$|paper: \d+
 SCREEN_SETTINGS = [cfgmod.Setting("screen", "log", "log shows", kind="choice", group="SCREEN",
                                   what="shadow: the variants' hourly results · quiet hides paper too · trades: buys and settlements only")]
 
+BIG = {"0": ("███", "█ █", "█ █", "█ █", "███"), "1": (" █ ", "██ ", " █ ", " █ ", "███"),
+       "2": ("███", "  █", "███", "█  ", "███"), "3": ("███", "  █", "███", "  █", "███"),
+       "4": ("█ █", "█ █", "███", "  █", "  █"), "5": ("███", "█  ", "███", "  █", "███"),
+       "6": ("███", "█  ", "███", "█ █", "███"), "7": ("███", "  █", "  █", "  █", "  █"),
+       "8": ("███", "█ █", "███", "█ █", "███"), "9": ("███", "█ █", "███", "  █", "███")}
+
+
+def big(digits: str) -> list[str]:
+    """Digits as five rows of block letters."""
+    return ["  ".join(BIG[c][r] for c in digits) for r in range(5)]
+
+
 # spot chart spans: c cycles them in this order (the engine sends ~15 min of seconds and 24h of minutes)
 CHARTS = {"5m": 300, "15m": 900, "1h": 3600, "24h": 86400}
 
@@ -533,6 +546,7 @@ def selected_overlay(st: dict, name: str | None) -> dict:
 
 
 class Screen:
+    app_rows_on = True                         # the web screen has no APP rows: pairing is the desk's
     def __init__(self, stdscr, runtime: str):
         self.s = stdscr
         self.runtime = runtime
@@ -559,6 +573,10 @@ class Screen:
         self.help_sel = 0                      # the help section picked
         self.theme_rows = 1                    # the themes box: rows in a column, as last drawn
         self.modal: dict | None = None
+        self.devices = devmod.Devices(devmod.FILE)   # the phones paired (the APP rows); one instance for the screen
+        self.phones: list = []                 # as last read (every 2 s): the desk's paired phones
+        self.phones_at = 0.0
+        self.pair_at = 0.0                     # when the pairing state was last looked at
         self.flash, self.flash_at = "", 0.0
         self.pending: dict[str, float] = {}
         self.alive, self.alive_at = False, 0.0
@@ -615,6 +633,7 @@ class Screen:
         except (OSError, json.JSONDecodeError):
             pass
         self.apply_selected()
+        self.pairing()
         for cid in list(self.pending):
             res = (self.st.get("results") or {}).get(cid)
             if res:
@@ -2303,11 +2322,80 @@ class Screen:
             self.say(f"theme {self.P.name}" + ("" if self.P.many else " (needs a 256-color terminal)"))
 
     # ------------------------------------------------------------ settings
+    def app_rows(self) -> list:
+        """APP: pairing a phone, and a row for each phone paired (D removes it)."""
+        if not self.app_rows_on:
+            return []
+        rows = [cfgmod.Setting("app", "pair", "pair a phone", kind="app", group="APP",
+                               what="enter makes a 6-digit code to type into the app; then you check its key here and say yes")]
+        for p in self.phones:
+            when = time.strftime("%b %d", time.localtime(p["paired"]))
+            used = "never" if not p["used"] else ago(time.time() - p["used"]) + " ago"
+            rows.append(cfgmod.Setting("app", f"phone.{p['id']}", f"{p['name']} · paired {when} · last used {used}", kind="app",
+                                       what=f"{p['name']}, a paired phone. D removes it: it can send nothing until it is paired again"))
+        return rows
+
     def set_rows(self) -> list:
         """The box's rows: a variant's, or the desk's and the screen's."""
         if self.edit_var:
             return list(varmod.RULE_SETTINGS)
-        return cfgmod.SETTINGS + SCREEN_SETTINGS
+        return cfgmod.SETTINGS + self.app_rows() + SCREEN_SETTINGS
+
+    def read_phones(self) -> None:
+        self.phones, self.phones_at = self.devices.all(), time.time()
+
+    def pairing(self) -> None:
+        """Look at the pairing state: the phones paired (2 s), and a phone asking to be paired, which is put to you."""
+        now = time.time()
+        if now - self.phones_at > 2:
+            try:
+                self.read_phones()
+            except (OSError, ValueError):
+                self.phones_at = now
+        if now - self.pair_at < 0.5:
+            return
+        self.pair_at = now
+        m = self.modal
+        if m and m.get("type") not in ("pair", "offer"):
+            return                                           # another question is open: ask after it
+        try:
+            o = devmod.offered(self.fast, now)
+        except (OSError, ValueError):
+            return
+        if o:
+            if not m or m["type"] == "pair" or m["id"] != o["id"]:
+                self.modal = {"type": "offer", "id": o["id"], "title": "pair a phone", "color": YELLOW,
+                              "lines": [f"pair {o['name']}? its key: {o['words']} \u2014 the app shows the same", "",
+                                        "y pairs \u00b7 any other key says no"]}
+        elif m and m["type"] == "pair" and now > m["until"]:
+            self.modal = None; self.say("the code ran out")
+        elif m and m["type"] == "offer":
+            self.modal = None; self.say("that pairing is over")
+
+    def pair_start(self) -> None:
+        now = time.time()
+        try:
+            code = devmod.new_code(self.fast, now)
+        except OSError as ex:
+            self.say(f"no code made: {ex}"); return
+        self.modal = {"type": "pair", "title": "pair a phone", "color": CYAN, "code": code, "until": now + devmod.CODE_TTL,
+                      "lines": ["", *big(code), "", "type it into the app \u00b7 it lasts 5 minutes \u00b7 esc closes"]}
+
+    def app_row(self):
+        """The settings row the cursor is on, if it is one of APP's."""
+        rows = self.set_rows()
+        row = rows[self.set_sel % len(rows)]
+        return row if row.sec == "app" and not self.edit_var else None
+
+    def phone_remove(self, row) -> None:
+        pid = row.name[6:]
+        name = next((p["name"] for p in self.phones if p["id"] == pid), "that phone")
+
+        def remove() -> None:
+            self.say(f"{name} removed" if self.devices.remove(pid) else f"{name} was already gone")
+            self.read_phones()
+        self.confirm(f"remove {name}", [f"Remove {name}? It can send nothing until it is paired again."], remove, "removes it",
+                     f"{name} kept", RED)
 
     def set_value(self, key: str):
         """What the setting is: the draft's value or the variant's; the engine's value, or the one just sent until
@@ -2344,7 +2432,7 @@ class Screen:
         P = self.P
         rows = self.set_rows()
         self.set_sel %= len(rows)
-        lw = max(len(r.label) for r in rows)
+        lw = max(len(r.label) for r in rows if r.kind != "app")
         out: list = []
         self.set_at: list = []                           # for clicks: (line, row, its choices: from, to, which)
         for i, row in enumerate(rows):
@@ -2352,7 +2440,9 @@ class Screen:
                 out += ([[]] if out else []) + [[(" " + row.group, P(P.c("head"), bold=True))] + self.rule_head(row)]
             sel = i == self.set_sel
             spans: list = []
-            if sel and self.set_buf is not None:
+            if row.kind == "app":                        # an action, or a phone: a name and no value
+                val = []
+            elif sel and self.set_buf is not None:
                 val = [(f" {self.set_buf}▏", P(YELLOW, bold=True) | curses.A_REVERSE)]
             elif row.kind in ("slots", "coins"):         # each choice, on bright and off grey; the cursor's reversed
                 v = self.set_value(row.key) or []
@@ -2380,7 +2470,7 @@ class Screen:
             self.set_at.append((len(out), i, spans))
             R = P.row(sel)
             out.append([("▸ " if sel else "  ", R(P.c("key"), bold=True)),
-                        (f"{row.label:<{lw}}  ", R(P.pick("rows", i / max(1, len(rows) - 1)), bold=sel))] + val)
+                        (row.label if row.kind == "app" else f"{row.label:<{lw}}  ", R(P.pick("rows", i / max(1, len(rows) - 1)), bold=sel))] + val)
         return out
 
     def settings_about(self, w: int) -> list:
@@ -2400,7 +2490,7 @@ class Screen:
                 if n and (style in ("head", "text") or lines[n - 1][0] == "text" or style == "note" and lines[n - 1][0] == "fact"):
                     out.append([])                       # a paragraph; a heading's own lines follow it at once
                 say(text, *looks[style])
-        older = any(r.key not in (self.raw.get("settings") or {}) for r in rows if r.sec not in ("screen", "rule")) or \
+        older = any(r.key not in (self.raw.get("settings") or {}) for r in rows if r.sec not in ("screen", "rule", "app")) or \
             self.edit_var and self.older_rows()
         r = {f.name: self.set_value(f.key) for f in varmod.RULE_SETTINGS} if self.edit_var else {}
         if row.sec == "rule" and not older and all(v is not None for f, v in r.items() if f not in ("cap", "max_vol")):
@@ -2414,6 +2504,8 @@ class Screen:
         if row.sec == "rule":
             say("←→ pick one · space or enter turns it on / off" if row.kind in ("slots", "coins") else
                 f"{self.set_fmt(row, row.lo)} to {self.set_fmt(row, row.hi)}, steps of " + ("1¢" if row.kind == "p" else f"{row.step:g}"), P.grey)
+        elif row.kind == "app":
+            say("enter makes a code" if row.name == "pair" else "D removes it", P.grey)
         elif row.kind in ("usd", "n"):
             say(f"{self.set_fmt(row, row.lo)} to {self.set_fmt(row, row.hi)}, steps of {self.set_fmt(row, row.step)}. {saved}", P.grey)
         else:
@@ -2583,6 +2675,11 @@ class Screen:
             self.set_sel = (self.set_sel - 1) % len(rows); self.set_sub = 0
         elif ch in (curses.KEY_DOWN, ord("j")):
             self.set_sel = (self.set_sel + 1) % len(rows); self.set_sub = 0
+        elif row.kind == "app":
+            if row.name == "pair" and ch in (10, 13, curses.KEY_ENTER, ord(" ")):
+                self.pair_start()
+            elif row.name != "pair" and ch == ord("D"):
+                self.phone_remove(row)
         elif row.kind in ("slots", "coins") and (step or ch in (10, 13, curses.KEY_ENTER, ord(" "))):
             choices = self.set_choices(row)
             self.set_sub = min(self.set_sub, len(choices) - 1)
@@ -2795,6 +2892,19 @@ class Screen:
                 m["lines"][-1] = "> " + m["buf"]
                 self.modal = m
                 return True
+            if m.get("type") == "pair":
+                if ch == 27:
+                    self.say("pairing closed: the code still works until it runs out")
+                else:
+                    self.modal = m
+                return True
+            if m.get("type") == "offer":
+                try:
+                    self.say(devmod.answer(self.fast, m["id"], ch in (ord("y"), ord("Y")), self.devices))
+                except OSError as ex:
+                    self.say(f"not answered: {ex}")
+                self.read_phones()
+                return True
             if m.get("type") == "confirm":
                 if ch in (ord("y"), ord("Y")):
                     return m["yes"]() is not False
@@ -2819,7 +2929,7 @@ class Screen:
         tab_key = ch in (9, curses.KEY_BTAB)
         if self.tab == "settings" and not tab_key and (self.set_buf is not None or ch in (
                 curses.KEY_UP, curses.KEY_DOWN, curses.KEY_LEFT, curses.KEY_RIGHT, ord("j"), ord("k"), ord("-"), ord("+"),
-                ord("="), ord(" "), 10, 13, curses.KEY_ENTER)):
+                ord("="), ord(" "), 10, 13, curses.KEY_ENTER) or ch == ord("D") and self.app_row()):
             self.settings_key(ch)                        # (a value being typed takes every key but tab)
             return True
         if ch in (ord("q"), ord("Q")):

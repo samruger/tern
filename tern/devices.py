@@ -197,3 +197,121 @@ class Devices:
             return dev_id
         except (ValueError, TypeError):
             return None
+
+
+# ---------------------------------------------------------------- pairing
+# The desk shows a 6-digit code; the phone sends it with its two public keys, signed by its everyday key. The
+# desk shows the keys' words and you say yes on the desk. State is in the tmpfs folder (app-pair.json), shared
+# by the screen and tern-web, under a file lock.
+
+CODE_TTL = 300.0          # a pairing code lasts 5 minutes
+WRONG_MAX = 5             # wrong codes before pairing is shut for LOCKOUT seconds
+LOCKOUT = 600.0
+NAME_MAX = 24
+
+
+@contextlib.contextmanager
+def _pair(live: str):
+    """The pairing state, loaded; saved (0600, atomically) when the block ends, even in a refusal."""
+    path = os.path.join(live, "app-pair.json")
+    fd = os.open(os.path.join(live, "app-pair.lock"), os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        try:
+            with open(path) as fh:
+                st = json.load(fh)
+        except (OSError, ValueError):
+            st = {}
+        try:
+            yield st
+        except Refused:
+            webauth._private_write(path, json.dumps(st))      # a refusal still counts (wrong codes)
+            raise
+        webauth._private_write(path, json.dumps(st))
+    finally:
+        os.close(fd)
+
+
+def _clean(name: str) -> str:
+    return "".join(c for c in str(name) if c.isprintable())[:NAME_MAX].strip() or "phone"
+
+
+def new_code(live: str, now: float) -> str:
+    """A fresh 6-digit code for 5 minutes. It replaces any earlier code and any offer waiting."""
+    code = f"{secrets.randbelow(10 ** 6):06d}"
+    with _pair(live) as st:
+        st.update(code=code, until=now + CODE_TTL, wrong=0)
+        st.pop("offer", None)
+    return code
+
+
+def offer(live: str, code: str, name: str, everyday_b64: str, live_b64: str, sig_b64: str, now: float) -> str:
+    """A phone asks to be paired. Returns an offer id to poll with offer_state, or raises Refused."""
+    sent, name = name, _clean(name)           # the phone signed the name as it sent it
+    with _pair(live) as st:
+        if st.get("locked", 0) > now:
+            raise Refused("too many wrong codes: wait 10 min")
+        o = st.get("offer")
+        if o and o["state"] == "waiting" and o["until"] > now:
+            raise Refused("another phone is waiting to be paired")
+        if not st.get("code") or st.get("until", 0) <= now:
+            raise Refused("no pairing code on the desk: open settings, APP, pair a phone")
+        if not (isinstance(code, str) and hmac.compare_digest(code.encode(), st["code"].encode())):
+            st["wrong"] = st.get("wrong", 0) + 1
+            if st["wrong"] >= WRONG_MAX:
+                st.update(locked=now + LOCKOUT, wrong=0)
+                st.pop("code", None)
+                raise Refused("too many wrong codes: wait 10 min")
+            raise Refused("wrong code")
+        try:
+            ok = sign.p256_verify(base64.b64decode(everyday_b64, validate=True),
+                                  f"pair\n{code}\n{sent}\n{everyday_b64}\n{live_b64}".encode(),
+                                  base64.b64decode(sig_b64, validate=True))
+            sign.p256_key(base64.b64decode(live_b64, validate=True))
+        except (ValueError, binascii.Error, TypeError):
+            ok = False
+        if not ok:
+            raise Refused("bad signature: the phone didn't sign its own keys")
+        oid = secrets.token_hex(8)
+        st["offer"] = {"id": oid, "name": name, "everyday": everyday_b64, "live": live_b64,
+                       "state": "waiting", "until": st["until"]}
+        st.pop("code", None)                      # used up
+        return oid
+
+
+def offered(live: str, now: float) -> dict | None:
+    """The offer waiting for a yes on the desk: its id, the phone's name and the keys' words."""
+    with _pair(live) as st:
+        o = st.get("offer")
+        if o and o["state"] == "waiting" and o["until"] > now:
+            return {"id": o["id"], "name": o["name"], "words": words(o["everyday"], o["live"])}
+    return None
+
+
+def answer(live: str, offer_id: str, yes: bool, devices: "Devices") -> str:
+    """The desk's yes or no. Returns the line the screen says."""
+    with _pair(live) as st:
+        o = st.get("offer")
+        if not o or o["id"] != offer_id or o["state"] != "waiting":
+            return "that pairing is over"
+        if not yes:
+            o["state"] = "declined"
+            return f"{o['name']} not paired"
+        try:
+            o["device"] = devices.add(o["name"], o["everyday"], o["live"])
+        except Refused as ex:
+            o["state"] = "declined"
+            return str(ex)
+        o["state"] = "paired"
+        return f"{o['name']} paired"
+
+
+def offer_state(live: str, offer_id: str, now: float) -> dict:
+    """What the phone polls: waiting, paired (with its device id), declined, expired or unknown."""
+    with _pair(live) as st:
+        o = st.get("offer")
+        if not o or o["id"] != offer_id:
+            return {"state": "unknown"}
+        if o["state"] == "waiting" and o["until"] <= now:
+            return {"state": "expired"}
+        return {"state": o["state"], **({"device": o["device"]} if o["state"] == "paired" else {})}

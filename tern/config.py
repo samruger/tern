@@ -62,7 +62,8 @@ class Gate:
 class Web:
     """tern web, the screen in a browser (view only). tern-web.service reads these (tern web --config);
     the engine restarts or stops it when one changes from the settings box."""
-    enabled: bool = True
+    enabled: bool = True           # the browser page, view only (the label says "browsers")
+    app: bool = False              # the paired phone app, with control; the service runs when either is on
     port: int = 8787
     network: bool = False          # on: every address (needs its login and HTTPS); off: this computer only
 
@@ -155,8 +156,10 @@ SETTINGS = [
             what="paper P&L after fees a variant needs before live may trade it"),
     Setting("", "alerts", "desktop alerts", kind="bool", group="ALERTS",
             what="pop-ups for live orders and settlements, live turning off, errors and the engine stopping"),
-    Setting("web", "enabled", "web screen", kind="bool", group="WEB",
-            what="tern web: this screen in a browser, view only; off stops tern-web.service"),
+    Setting("web", "enabled", "browsers", kind="bool", group="WEB",
+            what="the browser page, view only, on any computer or phone; the app has its own switch"),
+    Setting("web", "app", "the app", kind="bool",
+            what="the paired phone app, with control like this screen"),
     Setting("web", "port", "port", 1024, 65535, 1, kind="n",
             what="the port tern web listens on; a new one needs sudo ufw allow PORT/tcp (and the router forward)"),
     Setting("web", "network", "open to the network", kind="bool",

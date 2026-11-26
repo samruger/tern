@@ -147,6 +147,8 @@ def clean_prefs(d) -> dict:
 class WebScreen(dash.Screen):
     """dash.Screen for one browser tab. Reads come from the hub; nothing is written to the runtime."""
 
+    app_rows_on = False                          # pairing and the phones are the desk's
+
     def __init__(self, hub: "Hub", h: int, w: int, prefs: dict | None = None):
         with _PAL_SWAP:                          # Screen.__init__ builds a Pal: make it the terminal-free one
             real, dash.Pal = dash.Pal, WebPal

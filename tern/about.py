@@ -152,7 +152,10 @@ DESK = {
     "web.enabled": [
         ("text", "The screen in a browser, for another computer or a phone. It shows everything here and changes nothing that trades: "
                  "no pausing, no live, no edits. Each browser keeps its own theme, coin and selected variant."),
-        ("text", "It is a service of its own (tern-web). Turning it off stops that and nothing else.")],
+        ("text", "It is a service of its own (tern-web), shared with the app: it stops when browsers and the app are both off.")],
+    "web.app": [
+        ("text", "The paired phone app, over the same service as the browser page. It shows what this screen shows and, signed by the "
+                 "phone's own keys, does what this screen does. Pair a phone below, under APP.")],
     "web.port": [
         ("text", "The number after the colon in its address. Change it if something else on this computer uses it."),
         ("text", "The firewall and the router are not touched. Off this computer a new port needs its own rules there: "
