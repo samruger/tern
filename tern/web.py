@@ -338,9 +338,10 @@ class Hub:
         """A signed command from a paired phone. Nothing is accepted yet."""
         raise devices.Refused("unknown command")
 
-    def armed(self) -> bool:
+    def armed(self, cfg=None) -> bool:
+        """Live is armed if config.json says so or the engine's status does (no status file: config alone decides)."""
         st = self.status()
-        return bool(st.get("live_enabled") or st.get("mode") == "live")
+        return bool((cfg is not None and cfg.live.enabled) or st.get("live_enabled") or st.get("mode") == "live")
 
     def phone(self, req: dict) -> dict:
         """A phone page's data. `set`: what the viewer just picked (coin, chart, variant, theme, log filter)."""
@@ -708,7 +709,8 @@ def serve(runtime: str = cfgmod.RUNTIME, host: str = "127.0.0.1", port: int = 87
                 signed = [req.get(k) for k in ("payload", "sig", "key")]
                 if not all(isinstance(x, str) for x in signed):
                     raise devices.Refused("the request was malformed")
-                cfg, armed = conf(), hub.armed()
+                cfg = conf()
+                armed = hub.armed(cfg)
                 if self.path == "/app/session":
                     dev, cmd = devs.check(*signed, now, cfg, armed)
                     if cmd != {"op": "session"}:

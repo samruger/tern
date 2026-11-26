@@ -4728,6 +4728,13 @@ class WebApp(unittest.TestCase):
         self.assertEqual(self.post("/phone", b"{}", ck)[0].status, 401)   # the app cookie is dead too
         self.assertEqual(self.post("/phone", b"{}", self.browser_cookie())[0].status, 200)
 
+    def test_config_arms_live_without_a_status_file(self):
+        ck = self.app_cookie()
+        self.cfg.live.enabled = True
+        self.set_web()
+        r, b = self.post("/act", self.signed({"op": "set", "key": "gate.min_days", "value": 1}), ck)
+        self.assertEqual((r.status, b["error"]), (403, "live needs your fingerprint"))
+
     def test_pairing_endpoints(self):
         r, b = self.post("/app/pair", b'{"code": 1}')
         self.assertEqual(r.status, 403)
