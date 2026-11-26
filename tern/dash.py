@@ -1397,16 +1397,28 @@ class Screen:
             self.say("no variants from the engine yet"); return
         if self.older_engine():
             return
-        st, name, live = self.st, self.vn(self.variant), self.live_variant()
-        if st.get("live_enabled") and live == self.variant:
+        what, lines = self.live_ask(row)
+        if what == "off":
             def off() -> None:
                 self.send(op="live", on=False); self.say("disarming live")
             if self.clicked:                             # (the key is at once: it is the way out of live)
-                self.confirm("live off", [f"Turn live off? {name} stops trading real money; its open positions ride to settlement."],
-                             off, "turns it off", "live kept on")
+                self.confirm("live off", lines, off, "turns it off", "live kept on")
             else:
                 off()
             return
+        if what == "move":
+            self.modal = {"type": "arm", "title": "MOVE LIVE", "color": RED, "buf": "", "variant": self.variant,
+                          "lines": [*lines, "", "type live to move it, off to turn live off (esc cancels):", "> "]}
+            return
+        self.modal = {"type": "arm", "title": "ARM LIVE", "color": RED, "buf": "", "variant": self.variant,
+                      "lines": [*lines, "", "type live and press enter (esc cancels):", "> "]}
+
+    def live_ask(self, row: dict) -> tuple[str, list[str]]:
+        """What L on a variant's row does — "off" (live trades it), "move" (live trades another) or "arm" — and what
+        the screen says before it asks. The phone app asks the same."""
+        st, name, live = self.st, self.vn(row["name"]), self.live_variant()
+        if st.get("live_enabled") and live == row["name"]:
+            return "off", [f"Turn live off? {name} stops trading real money; its open positions ride to settlement."]
         L, rule = st.get("live_cfg") or {}, row.get("rule") or {}
         size = [f"It buys {rule.get('contracts', 0):g} contracts a strike, at most {money(rule.get('max_hour_cost', 0))} an hour a coin,",
                 f"{money(rule.get('max_order', 0))} an order and {money(rule.get('max_risk', 0))} at risk at once.",
@@ -1416,16 +1428,10 @@ class Screen:
             f"{name} has not passed its gate (7), and live.auto_needs_gate is off: it trades anyway."
         off = [] if row.get("on", True) else [f"{name} is off: live enters nothing until space turns it on."]
         if st.get("live_enabled"):
-            self.modal = {"type": "arm", "title": "MOVE LIVE", "color": RED, "buf": "", "variant": self.variant,
-                          "lines": [f"Live trades {self.vn(live)}. Move it to {name}? Real money would trade {name} instead.",
-                                    gate, *off, *size, "Open live positions ride to settlement.",
-                                    "", "type live to move it, off to turn live off (esc cancels):", "> "]}
-            return
-        self.modal = {"type": "arm", "title": "ARM LIVE", "color": RED, "buf": "", "variant": self.variant,
-                      "lines": [f"Live trading uses real money on Kalshi. It would trade {name}.", gate, *off,
-                                *size,
-                                *([] if st.get("keys") else ["", f"No key found yet: live stays off until {cfgmod.KEYFILE_ENV} exists."]),
-                                "", "type live and press enter (esc cancels):", "> "]}
+            return "move", [f"Live trades {self.vn(live)}. Move it to {name}? Real money would trade {name} instead.",
+                            gate, *off, *size, "Open live positions ride to settlement."]
+        return "arm", [f"Live trading uses real money on Kalshi. It would trade {name}.", gate, *off, *size,
+                       *([] if st.get("keys") else ["", f"No key found yet: live stays off until {cfgmod.KEYFILE_ENV} exists."])]
 
     def open_edit(self, variant: str) -> None:
         """The settings rows on a variant's settings, as a draft, over the variants."""

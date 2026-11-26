@@ -116,10 +116,34 @@
   #menu .row { min-height: 54px; } #menu .row::before { content: ""; width: 6px; align-self: stretch; border-radius: 3px; background: var(--c, var(--fill)); }
   #menu .row.on .name { color: var(--c); font-weight: 700; }
   #menu .list { max-width: 640px; margin: 0 auto; min-height: 100%; display: flex; flex-direction: column; justify-content: flex-end; }
-  #say { position: fixed; left: 12px; right: 12px; bottom: calc(var(--bar) + var(--safe) + 12px); z-index: 4; padding: 10px 14px; border-radius: 6px; background: var(--warn); color: var(--bg); font-weight: 700; }
+  #say { position: fixed; left: 12px; right: 12px; bottom: calc(var(--bar) + var(--safe) + 12px); z-index: 6; padding: 10px 14px; border-radius: 6px; background: var(--warn); color: var(--bg); font-weight: 700; }
   #say[hidden] { display: none; }
   .alert { background: var(--fill); border-left: 4px solid var(--warn); padding: 10px 12px; margin: 0 0 14px; border-radius: 0 6px 6px 0; color: var(--warn); } .alert.bad { border-color: var(--dn); color: var(--dn); }
-  @media (prefers-reduced-motion: no-preference) { #menu:not([hidden]) { animation: rise .16s ease-out; } @keyframes rise { from { transform: translateY(24px); opacity: 0; } } }
+  @media (prefers-reduced-motion: no-preference) { #menu:not([hidden]), #sheet:not([hidden]) .box { animation: rise .16s ease-out; } @keyframes rise { from { transform: translateY(24px); opacity: 0; } } }
+
+  /* the settings and the help */
+  details.set summary { display: flex; align-items: center; gap: 12px; min-height: 52px; padding: 8px 0; } details.set summary > .grow { flex: 1; min-width: 0; }
+  details.set summary::after { content: "▸"; color: var(--key); } details.set[open] summary::after { content: "▾"; }
+  .about { padding: 0 0 10px; } .about p { font-size: 14px; color: var(--fg); margin: 0 0 6px; } .about .head { color: var(--head); font-weight: 700; } .about .fact { color: var(--value); }
+  .row .pick { width: 100%; flex-wrap: wrap; margin: 0 0 4px; } .help p { margin: 0 0 10px; } .help .item { padding-left: 1.4em; text-indent: -1.4em; margin: 0 0 6px; }
+
+  /* the app's own: its controls, and the questions they ask, as the desk's boxes ask them, along the bottom */
+  .tools { display: grid; grid-template-columns: 1fr 1fr; gap: 0 10px; } .tools .act { margin-top: 10px; background: var(--fill); color: var(--text); font-weight: 400; }
+  .tools .act.off { color: var(--grey); }
+  .act.red { background: var(--dn); color: var(--bg); } .act.no { background: var(--bg); color: var(--text); font-weight: 400; }
+  .draft { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; margin: 4px 0 0; }
+  #sheet { position: fixed; inset: 0; z-index: 5; display: flex; flex-direction: column; justify-content: flex-end; background: color-mix(in srgb, var(--bg) 55%, transparent); }
+  #sheet[hidden] { display: none; }
+  #sheet .box { width: 100%; max-width: 640px; margin: 0 auto; max-height: 88dvh; overflow-y: auto; overscroll-behavior: contain; background: var(--fill);
+                border-top: 2px solid var(--c); border-radius: 8px 8px 0 0; padding: 16px 16px calc(16px + var(--safe)); }
+  #sheet h2 { margin: 0 0 10px; color: var(--c); } #sheet p.in { padding-left: 1em; } #sheet p.gap { height: 2px; }
+  #sheet .two { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; } #sheet .two .act { margin-top: 14px; }
+  #sheet .pick { margin: 12px 0 4px; flex-wrap: wrap; } #sheet .pick button { flex: 1 0 auto; background: var(--bg); } #sheet .pick button.on { background: var(--c); }
+  #sheet input { font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--line); border-radius: 6px; min-height: 48px; padding: 0 12px; width: 100%; margin-top: 10px; }
+  #sheet input:focus { outline: 2px solid var(--c); outline-offset: 0; }
+  .step { display: grid; grid-template-columns: 52px 1fr 52px; gap: 8px; margin: 12px 0 4px; }
+  .step button { min-height: 48px; border-radius: 6px; background: var(--bg); color: var(--key); font-weight: 700; font-size: 22px; text-align: center; }
+  #sheet .step input { margin: 0; text-align: center; font-weight: 700; }
 </style>
 </head>
 <body>
@@ -153,7 +177,7 @@
     for (const k of ["text", "grey", "key", "head", "fill", "tab", "up", "dn", "warn", "no", "value", "variant"]) css(k, pal[t[k]]);
     css("tabtext", pal[t.tab_text]);
   }
-  const PAGE = { contract: "contract", variant: "variants", report: "reports", home: "spot" };     // whose color a page has
+  const PAGE = { contract: "contract", variant: "variants", edit: "variants", report: "reports", home: "spot" };     // whose color a page has
   const pageColor = p => pal[theme.border[PAGE[p] || p]];
 
   // ------------------------------------------------------------ elements: made anew each time, and morphed onto what is there
@@ -309,6 +333,26 @@
   const tags = v => [v.selected && el("span.tag.sel", {}, "selected"), v.live && el("span.tag.live", {}, "live"), !v.on && el("span.tag", {}, "off"), v.passed && el("span.tag.pass", {}, "✓ gate")];
   const back = (to, name) => el("a", { href: "#/" + to, cls: "quiet", style: { "text-decoration": "none", display: "inline-block", padding: "9px 16px 11px 0" } }, "‹ " + name);
   const title = (t, ...more) => el("h1", {}, t, ...more);
+  const ago = t => { const s = Math.max(0, (last.now || Date.now() / 1000) - t); return s < 90 ? Math.round(s) + " s" : s < 5400 ? Math.round(s / 60) + " min" : s < 129600 ? Math.round(s / 3600) + " h" : Math.round(s / 86400) + " d"; };
+  const about = list => el("div.about", {}, list.map(([k, t]) => el("p", { cls: k === "head" || k === "fact" ? k : "" }, t)));
+  const setRow = r => el("details.set", { "data-k": r.key }, el("summary", {}, el("span.grow", {}, r.label), el("b.val", {}, r.shown)), about(r.about));    // what it is, opened
+  const choiceRow = r => el("div.row", { "data-k": r.key, style: { "flex-wrap": "wrap" } }, el("span.grow", {}, r.label), pick("log_filter", r.choices, r.value, "mini"));   // the viewer's own
+  function prose(lines, keys) {                             // the help's lines, wrapped for the desk: its sentences joined again, its lists kept a line each
+    const out = [], text = l => l.map(p => p[0]).join(""), lead = l => { const t = text(l); return t.length - t.trimStart().length; };
+    const cut = (l, n) => { const a = [], b = []; let at = 0; for (const [t, c, k] of l) { const i = Math.max(0, Math.min(t.length, n - at)); if (i) a.push([t.slice(0, i), c, k]); if (i < t.length) b.push([t.slice(i), c, k]); at += t.length; } return [a, b]; };
+    const join = (to, l) => { const was = text(to.l), [, rest] = cut(l, lead(l)); to.l.push([/\w-$/.test(was) ? "" : " ", -1, 0], ...rest); };
+    let cur = null;
+    for (const l of lines) {
+      const t = text(l), item = keys ? [null, l[0] ? l[0][0].trimEnd() : ""] : /^(\s{0,3}\S.*?)\s{2,}\S/.exec(t);
+      if (!t.trim()) cur = null;
+      else if (item && !(cur && cur.item && lead(l) >= 4)) {
+        const [name, rest] = cut(l, keys ? (l[0] || [""])[0].length : item[1].length);
+        out.push(cur = { item: true, l: [...cut(name, lead(name))[1].map(([x, c, b]) => [x.trimEnd(), c, b]), [" ", -1, 0], ...cut(rest, lead(rest))[1]] });
+      } else if (cur && (cur.item ? lead(l) >= 4 : !lead(l))) join(cur, l);
+      else out.push(cur = { item: lead(l) > 0, l: cut(l, lead(l))[1] });
+    }
+    return out.map(p => el("p", { cls: p.item ? "item" : "" }, paint(p.l)));
+  }
 
   // ------------------------------------------------------------ the pages
   let sort = "list", order = null;                          // the variants page's order, for going through them one at a time
@@ -369,8 +413,9 @@
       return [back("variants", "variants"), title(x.title, ...tags(x)), x.desc && !x.own && el("p.quiet", {}, x.desc), el("div.price", { cls: x.role }, x.pnl),
         chart("variant", "tall", plus(x.curve, `P&L over its last ${x.points} hours`), `P&L ${x.pnl}`), stats(x.stats.slice(1)),
         x.selected ? el("div.act.off", {}, "selected: the book and gate show it") : el("button.act", { "data-set": "variant", "data-v": x.name }, "Select " + x.title),
-        el("p.quiet.small", { style: { "margin-top": "8px" } }, "Selecting changes what you see here, nothing that trades."),
+        el("p.quiet.small", { style: { "margin-top": "8px" } }, "Selecting changes what you see here, nothing that trades."), controls() && controls().variant(x),
         el("h2", {}, "gate"), gateLines(x.gate), el("h2", {}, "what it buys"), el("div.slots", {}, x.rule.map(r => el("span", { style: { color: "var(--text)" } }, r))),
+        !controls() && el("div.rows", { style: { "margin-top": "12px" } }, go("edit/" + encodeURIComponent(x.name), el("span.grow", {}, "all its settings"), el("span.quiet", {}, "›"))),
         el("h2", {}, "open", el("span", {}, x.positions.length)), openRows(x.positions)];
     },
     log(d, x) {
@@ -398,11 +443,29 @@
       return [title("reports"), el("h2", { style: { "margin-top": 0 } }, "live", el("span", {}, "worked out now")), rows(...list(false)), el("h2", {}, "saved"), saved.length ? rows(...saved) : none("None yet.")];
     },
     report(d, x) {
-      return [back("reports", "reports"), title(x.label), el("p.quiet.small", {}, x.from), x.ready ? x.blocks.map(b => b.head ? el("div.scroll", {}, table(b.head, b.rows.map(r => r.map((t, i) => [t, i && /^[+-]\d/.test(t) ? (t[0] === "-" ? "dn" : "up") : ""])))) : el("p.small", {}, paint(b.text))) : none("Working it out…")];
+      return [back("reports", "reports"), title(x.label), el("p.quiet.small", {}, x.from), controls() && controls().report(x), x.ready ? x.blocks.map(b => b.head ? el("div.scroll", {}, table(b.head, b.rows.map(r => r.map((t, i) => [t, i && /^[+-]\d/.test(t) ? (t[0] === "-" ? "dn" : "up") : ""])))) : el("p.small", {}, paint(b.text))) : none("Working it out…")];
     },
     themes(d, x) {
       return [title("themes", el("small", {}, x.rows.length)), rows(...x.rows.map(t => el("button.row", { "data-set": "theme", "data-v": t.name, "data-k": t.name, "aria-pressed": String(t.name === d.theme) }, el("span", { style: { width: "1em", color: "var(--key)" } }, t.name === d.theme ? "▸" : ""),
         el("b.grow.trim", { style: { color: pal[t.color] } }, t.name), el("span.ramp", {}, t.ramp.map(c => el("i", { style: { background: pal[c] } }))))))];
+    },
+    help(d, x) {
+      return [title("help"), x.sections.map(s => [el("h2", {}, s.title.toLowerCase()), el("div.help", {}, prose(s.lines, s.title === "KEYS"))])];
+    },
+    settings(d, x) {
+      const c = controls();
+      return [title("settings"), el("h2", { style: { "margin-top": 0 } }, "engine", el("span", { cls: x.engine.alive ? "up" : "warn" }, x.engine.alive ? "running" : "not running")), c && c.engine(x),
+        x.groups.map(g => [el("h2", {}, g.name.toLowerCase()), rows(...g.rows.map(r => r.kind === "choice" ? choiceRow(r) : c ? c.setting(r) : setRow(r)))]),
+        el("h2", {}, "phones", el("span", {}, x.phones.length)), x.phones.length ? rows(...x.phones.map(p => el("div.row", { "data-k": p.id }, el("div.grow", {}, el("b", {}, p.name),
+          el("div.sub", {}, `paired ${new Date(p.paired * 1000).toLocaleDateString([], { month: "short", day: "numeric" })} · ${p.used ? "used " + ago(p.used) + " ago" : "not used yet"}`))))) : none("No phone is paired."),
+        el("p.quiet.small", { style: { "margin-top": "8px" } }, "Phones are paired and removed on the desk: settings, APP.")];
+    },
+    edit(d, x) {
+      if (x.none) return [back("variants", "variants"), none("Waiting for the engine.")];
+      const c = controls();
+      return [back("variant/" + encodeURIComponent(x.from), x.title), title(x.title, el("small", {}, x.own ? "your own" : "built in")),
+        c ? c.draft(x) : el("p.quiet.small", {}, "What it trades with. A new variant from it is made in the app, or on the desk (e)."),
+        rows(...x.rows.map(r => c ? c.rule(x, r) : setRow(r)))];
     },
   };
   function table(head, body) {
@@ -413,10 +476,308 @@
     return el("div", { style: { "margin-top": brief ? "12px" : 0 } }, g.checks.map(c => el("div", {}, el("div.line", { style: { "justify-content": "space-between" } }, el("span", {}, el("b", { cls: c.ok ? "up" : "warn" }, c.ok ? "✓ " : "· "), c.name), el("span", { cls: c.ok ? "up" : "warn" }, c.text)), meter(c.frac, c.ok))));
   }
 
+  // ------------------------------------------------------------ the app's controls: the paired app's, and no one else's
+  // tern web says "control" to the paired app's own session alone, and only the app has TernApp, its keys; the desk checks
+  // every command's signature besides. Until both are so, nothing here is drawn or sent: the rest of the page gets at it
+  // only through controls(). A command is signed on the phone (a fingerprint for live), then sent to /act as it came.
+  const CONTROLS = (() => {
+    const NAME_MAX = 12;                                    // a variant's name (variants.NAME_MAX)
+    const ENGINE = new Set(["live", "variant_new", "rename", "variant_delete", "variant_on", "set"]);     // what the engine answers
+    const waiting = new Map(), heard = new Map(), drafts = new Map();       // asked to be signed; sent, until the engine answers; a variant's draft
+    let asked = null, signs = 0, sheet = null;
+    const typedLive = t => t.trim().toLowerCase() === "live";
+    const armed = () => last.mode !== "paper";
+    const coin = s => ((last.coins || []).find(c => c.series === s) || {}).coin || s;
+    const g = v => String(+(+v).toPrecision(6));
+    const same = (a, b) => Array.isArray(a) && Array.isArray(b) ? JSON.stringify([...a].sort()) === JSON.stringify([...b].sort()) : a === b;
+    function fmt(r, v) {                                    // as the screen shows it (Screen.set_fmt)
+      if (r.kind === "cap") return v ? g(v) : "off";
+      if (v === null || v === undefined) return "?";
+      if (r.kind === "bool") return v ? "on" : "off";
+      if (r.kind === "p") return Math.round(v * 100) + "¢";
+      if (r.kind === "slots") return v.join(" ");
+      if (r.kind === "coins") return v.map(coin).join(" ");
+      if (r.kind === "n") return g(v);
+      return (v < 0 ? "-" : "") + "$" + Math.abs(v).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 }).replace(".00", "");
+    }
+    const decimals = r => r.kind === "p" || r.kind === "usd" ? 2 : r.kind === "cap" && r.key !== "rule.cap" ? 1 : 0;
+    const snap = (r, v) => +Math.max(r.lo, Math.min(r.hi, Math.round(v / r.step) * r.step)).toFixed(decimals(r));
+
+    // ---- sending: signed by the app, then to /act; what the desk says, then what the engine answers, in the say line
+    function act(cmd, live, then) {
+      if (!controls()) return;
+      const id = "s" + ++signs;
+      waiting.set(id, { what: cmd.op, then });
+      try { TernApp.sign(id, JSON.stringify(cmd), !!live); } catch (e) { waiting.delete(id); say("not sent: the app could not sign it"); }
+    }
+    window.ternSigned = async (id, body) => {
+      const w = waiting.get(id);
+      if (!w) return;
+      waiting.delete(id);
+      let ans = null, j = {};
+      try {
+        ans = await fetch("/act", { method: "POST", headers: { "Content-Type": "application/json" }, body });
+        j = await ans.json();
+      } catch (e) { if (!ans) { say("not sent: no answer from tern"); return; } }
+      if (!ans.ok) { say(j.error || `not sent: tern web answered ${ans.status}`); return; }
+      say(j.say || "sent");
+      if (j.id) heard.set(j.id, { at: Date.now(), said: j.say, what: w.what, then: w.then });
+      get();
+    };
+    window.ternRefused = (id, text) => { if (waiting.delete(id)) say(text || "not sent"); };
+    function hear(res) {
+      const now = Date.now();
+      for (const [cid, h] of heard) {
+        const text = res[cid];
+        if (text) { heard.delete(cid); if (text !== h.said) say(text); if (h.then) h.then(text); }
+        else if (ENGINE.has(h.what) && now - h.at > 15000) { heard.delete(cid); say("no answer from the engine (is it running? settings, start)"); }
+        else if (now - h.at > 60000) heard.delete(cid);
+      }
+    }
+
+    // ---- the question: words, maybe a value to set or a word to type, and no / yes
+    function ask(q) {
+      if (!sheet) {
+        sheet = el("div", { id: "sheet", role: "dialog", "aria-modal": "true", hidden: true });
+        document.body.append(sheet);
+        sheet.addEventListener("click", e => {
+          const c = controls(), b = e.target.closest("[data-ans], [data-do]");
+          if (!c || !asked) { shut(); return; }
+          if (e.target === sheet) { no(); return; }                         // the page around it
+          if (b && b.dataset.do) press(b);
+          else if (b) b.dataset.ans === "yes" ? yes() : no();
+        });
+        sheet.addEventListener("input", e => {
+          const c = controls();
+          if (c && asked && e.target.matches("input.type")) asked.buf = e.target.value;
+        });
+        sheet.addEventListener("change", e => {
+          const c = controls();
+          if (c && asked && e.target.matches("input.num")) { typed(e.target); draw(); }
+        });
+        sheet.addEventListener("keydown", e => {
+          const c = controls();
+          if (c && asked && e.key === "Enter" && e.target.matches("input")) { e.preventDefault(); yes(); }
+        });
+        window.addEventListener("popstate", () => {                         // the phone's back: no
+          if (asked && !(history.state && history.state.sheet)) { const q = asked; asked = null; sheet.hidden = true; document.body.style.overflow = ""; say(q.kept); }
+        });
+      }
+      const first = !asked;
+      asked = q; q.buf = q.buf || "";                       // (the same one: its view and its yes read what the steppers set)
+      if (first) { history.pushState({ sheet: 1 }, ""); sheet.hidden = false; document.body.style.overflow = "hidden"; }
+      draw();
+      const i = sheet.querySelector("input.type");
+      if (i) { i.value = asked.buf; i.focus(); }
+    }
+    function draw() {
+      const q = asked, v = q.view ? { ...q, ...q.view() } : q;
+      const line = t => typeof t !== "string" ? t : !t ? el("p.gap") : t.startsWith("  ") ? el("p.in", {}, t.trim()) : el("p", {}, t);
+      const lines = v.lines.reduce((a, t) => { const i = a.length - 1; if (typeof t === "string" && typeof a[i] === "string" && a[i].endsWith(",")) a[i] += " " + t; else a.push(t); return a; }, []);   // (the desk's lines broken at a comma, as one)
+      const box = el("div.box", { style: { "--c": `var(--${v.color || "warn"})` } }, el("h2", {}, v.title), lines.map(line),
+        v.type && el("input.type", { "aria-label": v.type === "live" ? "type live" : "name", maxlength: v.max || 12, autocomplete: "off", autocapitalize: "none", spellcheck: "false", enterkeyhint: "done" }),
+        v.does && el("p.quiet.small", { style: { "margin-top": "10px" } }, `yes ${v.does} · no doesn't`),
+        el("div.two", {}, el("button.act.no", { "data-ans": "no" }, "no"), el("button.act", { "data-ans": "yes", cls: v.color === "dn" ? "red" : "" }, "yes")));
+      if (sheet.firstChild) morph(sheet.firstChild, box); else sheet.append(box);
+    }
+    function shut(said) {
+      if (!asked) return;
+      asked = null; sheet.hidden = true; document.body.style.overflow = "";
+      if (history.state && history.state.sheet) history.back();
+      if (said) say(said);
+    }
+    const no = () => shut(asked.kept);
+    function yes() {
+      const q = asked, n = sheet.querySelector("input.num");
+      if (n && n.value !== n.dataset.was && !typed(n)) return;
+      if (q.yes(q.buf) !== false) shut();
+    }
+
+    // ---- a value: a stepper (or type one), on / off, or a few of several
+    function editor(r, v) {
+      if (r.kind === "bool") return el("div.pick", {}, [[true, "on"], [false, "off"]].map(([b, t]) => el("button", { cls: v === b ? "on" : "", "aria-pressed": String(v === b), "data-do": "nudge", "data-v": String(b) }, t)));
+      if (r.kind === "slots" || r.kind === "coins") return el("div.pick", {}, r.choices.map((c, i) => el("button", { cls: (v || []).includes(c) ? "on" : "", "aria-pressed": String((v || []).includes(c)), "data-do": "chip", "data-v": String(i) }, r.kind === "coins" ? coin(c) : c + "m")));
+      const shown = fmt(r, v);
+      return el("div.step", {}, el("button", { "data-do": "nudge", "data-v": "-1", "aria-label": "less" }, "−"),
+        el("input.num", { "data-k": r.key + ":" + shown, value: shown, "data-was": shown, inputmode: "decimal", "aria-label": r.label, autocomplete: "off" }),
+        el("button", { "data-do": "nudge", "data-v": "1", "aria-label": "more" }, "+"));
+    }
+    function typed(n) {                                     // what was typed, as the screen takes it: $ and , and ¢ left out, cents as cents
+      const q = asked, r = q.row, t = n.value.replace(/[\s$,¢]/g, "");
+      if (r.kind === "cap" && (t === "" || t === "off")) { q.value = null; return true; }
+      const v = Number(t);
+      if (!t || !isFinite(v)) { say(`not a number: ${n.value.trim()}`); n.value = n.dataset.was; return false; }
+      q.value = r.kind === "p" && v > 1 ? v / 100 : v;
+      return true;
+    }
+    function nudge(b) {
+      const q = asked, r = q.row;
+      if (r.kind === "bool") q.value = b.dataset.v === "true";
+      else {
+        const cur = q.value === null || q.value === undefined ? (r.kind === "cap" ? 0 : null) : q.value;
+        if (cur === null) { say("no value from the engine yet"); return; }
+        q.value = snap(r, cur + Number(b.dataset.v) * r.step);
+        if (r.kind === "cap" && !q.value) q.value = null;
+      }
+      draw();
+    }
+    function chip(b) {
+      const q = asked, r = q.row, c = r.choices[Number(b.dataset.v)], have = q.value || [];
+      const want = r.choices.filter(x => have.includes(x) !== (x === c));
+      if (!want.length) { say(`at least one of the ${r.label} stays on`); return; }
+      q.value = want; draw();
+    }
+    function inRange(r, v) {
+      if (v === null || typeof v !== "number" || r.lo - 1e-9 <= v && v <= r.hi + 1e-9) return true;
+      say(`${r.label} must be ${fmt(r, r.lo)} to ${fmt(r, r.hi)}`);
+      return false;
+    }
+
+    // ---- a variant: on / off, edit, rename, delete, live
+    function turn(x) {
+      const name = x.title, on = !x.on, go = () => act({ op: "variant_on", variant: x.name, on }, on && x.live);
+      if (on && x.live) ask({ title: "LIVE IS ARMED", color: "dn", type: "live", kept: `${name} kept off`, yes: t => typedLive(t) ? go() : say(`${name} kept off (type live exactly)`),
+        lines: [`Live is armed with ${name}: turned on, real money trades it from its next slot, past its gate.`, "", "type live and tap yes (no cancels):"] });
+      else if (on) ask({ title: `turn ${name} on`, lines: [`Turn ${name} on? It buys on paper from its next slot.`], does: "turns it on", kept: `${name} kept off`, yes: go });
+      else ask({ title: `turn ${name} off`, color: x.live ? "dn" : "warn", does: "turns it off", kept: `${name} kept on`, yes: go,
+        lines: [`Turn ${name} off? No new entries; its open ones settle.`, ...(x.live ? ["live trades it: live would enter nothing until it is on again."] : [])] });
+    }
+    function rename(x) {
+      const name = x.title, variant = x.name;
+      ask({ title: `rename ${name}`, color: "variant", type: "name", max: NAME_MAX, buf: name, kept: "name kept",
+        lines: [...(x.own ? [`Its record, the gate, live and tern report take the new name too: ${name} is left nowhere.`] :
+          [`Only what the screen calls it changes: its record, the gate and tern report keep it as ${variant}.`, `An empty name names it ${variant} again.`]),
+          "", `new variant name, up to ${NAME_MAX} characters:`],
+        yes: t => { const name = t.trim(); act({ op: "rename", variant, name }); } });
+    }
+    function remove(x) {
+      const name = x.title, variant = x.name;
+      if (x.live) { say(`${name} is what live trades: turn live off or move it first`); return; }
+      const kept = x.entries || x.open ? "Its record stays on file (tern report lists it)." : "It has not bought anything.";
+      ask({ title: `delete ${name}`, color: "dn", lines: [`Delete ${name}? It stops running. ${kept}`], does: "deletes it", kept: "kept",
+        yes: () => act({ op: "variant_delete", variant }, false, t => { if (/ deleted/.test(t) && route().page === "variant") location.hash = "#/variants"; }) });
+    }
+    function live(x) {
+      const { kind, lines } = x.live_ask, variant = x.name, move = kind === "move";
+      if (kind === "off") { ask({ title: "live off", lines, does: "turns it off", kept: "live kept on", yes: () => act({ op: "live", on: false }) }); return; }
+      ask({ title: move ? "MOVE LIVE" : "ARM LIVE", color: "dn", type: "live", kept: move ? "live not moved" : "not armed",
+        lines: [...lines, "", move ? "type live to move it, off to turn live off (no cancels):" : "type live and tap yes (no cancels):"],
+        yes: t => {
+          if (typedLive(t)) act({ op: "live", on: true, variant }, true);
+          else if (move && t.trim().toLowerCase() === "off") act({ op: "live", on: false });
+          else say((move ? "live not moved" : "not armed") + " (type live exactly)");
+        } });
+    }
+
+    // ---- the desk's settings, and the engine
+    function change(r) {
+      const q = { row: r, value: r.value, kept: `${r.label} kept`, view: () => {
+        const v = q.value, sec = r.key.includes(".") ? r.key.split(".")[0] + " " : "";
+        const loosens = armed() && r.risk && typeof v === "number" && r.value !== null && (v - r.value) * r.risk > 0;
+        const ask = same(v, r.value) ? [el("p.quiet", {}, `${r.label} is ${r.shown}.`)] : loosens ?
+          [`${r.risk > 0 ? "Raise" : "Lower"} ${sec}${r.label} from ${r.shown} to ${fmt(r, v)}?`, "Live is armed: this is real money on Kalshi.", "", "type live and tap yes (no cancels):"] :
+          [`Change ${r.label} from ${r.shown} to ${fmt(r, v)}?`];
+        return { title: loosens ? "LIVE IS ARMED" : `change ${r.label}`, color: loosens ? "dn" : "warn", type: loosens ? "live" : null, does: loosens || same(v, r.value) ? "" : "changes it",
+          lines: [about(r.about), editor(r, v), ...ask], loosens };
+      }, yes: t => {
+        const { loosens } = q.view(), key = r.key, value = r.kind === "n" && q.value !== null ? Math.trunc(q.value) : q.value;
+        if (value === null || value === undefined) { say("no value from the engine yet"); return; }
+        if (same(value, r.value)) { say(q.kept); return; }
+        if (!inRange(r, value)) return false;
+        if (!loosens) act({ op: "set", key, value });
+        else if (typedLive(t)) act({ op: "set", key, value }, true);
+        else say(`${r.label} kept (type live exactly)`);
+      } };
+      ask(q);
+    }
+    function engine(x) {
+      if (x.engine.alive) ask({ title: "pause engine", does: "pauses it", kept: "engine kept running", yes: () => act({ op: "engine", run: false }),
+        lines: ["Pause the engine? Nothing trades, paper or live, until it starts again (here, or reopening the dash). It saves its state before it stops."] });
+      else ask({ title: "start engine", color: x.engine.live ? "dn" : "warn", does: "starts it", kept: "engine not started", yes: () => act({ op: "engine", run: true }),
+        lines: ["Start the engine? The variants that are on trade on paper from the next slot.", ...(x.engine.live ? [`Live is on: ${x.engine.live} would trade real money.`] : [])] });
+    }
+
+    // ---- a variant's settings, into a draft: nothing is sent until it is saved as a new variant
+    const field = r => r.key.slice("rule.".length);
+    const draftOf = x => drafts.get(x.from) || {};
+    const draftLines = (x, d) => x.rows.filter(r => field(r) in d).map(r => `  ${r.label}  ${fmt(r, r.value)} → ${fmt(r, d[field(r)])}`);
+    function setRule(x, r) {
+      const f = field(r), d0 = draftOf(x);
+      const q = { row: r, value: f in d0 ? d0[f] : r.value, color: "variant", kept: "", view: () => ({ title: r.label,
+        lines: [about(r.about), editor(r, q.value), same(q.value, r.value) ? el("p.quiet", {}, `${x.title} has ${r.shown}.`) : `Into the draft: ${r.label} ${r.shown} → ${fmt(r, q.value)}?`] }),
+      yes: () => {
+        let v = q.value;
+        if (typeof v === "number") v = f === "cap" || r.kind === "n" ? Math.trunc(v) : +v.toFixed(decimals(r));
+        if (r.kind === "cap" && !v) v = null;
+        if (!inRange(r, v)) return false;
+        const d = { ...draftOf(x) }, other = { band_lo: "band_hi", band_hi: "band_lo" }[f];
+        if (other) {
+          const o = x.rows.find(z => field(z) === other), edge = other in d ? d[other] : o && o.value;
+          if (typeof edge === "number" && (f === "band_lo" ? v >= edge : v <= edge)) { say(`${r.label} must stay ${f === "band_lo" ? "below" : "above"} ${Math.round(edge * 100)}¢`); return false; }
+        }
+        if (same(v, r.value)) delete d[f]; else d[f] = v;
+        if (Object.keys(d).length) drafts.set(x.from, d); else drafts.delete(x.from);
+        render(shown);
+      } };
+      ask(q);
+    }
+    function keep(x) {                                      // save as new: a name, or none for one picked
+      const rule = draftOf(x), from = x.from;
+      ask({ title: "save as a new variant", color: "variant", type: "name", max: NAME_MAX, kept: "not saved yet: the draft is still open",
+        lines: [`A new variant: ${x.title} with`, ...(draftLines(x, rule).length ? draftLines(x, rule) : ["  the same settings"]), "",
+          `It starts with an empty record. ${x.title} and its record stay as they are.`, `name, up to ${NAME_MAX} characters (empty picks one):`],
+        yes: t => {
+          const name = t.trim();
+          act({ op: "variant_new", from, name, rule }, false, said => { if (said.startsWith("new variant")) { drafts.delete(from); if (route().page === "edit") location.hash = "#/variants"; } });
+        } });
+    }
+    function discard(x) {
+      ask({ title: "discard changes", lines: [`Throw away the changes to ${x.title}?`, ...draftLines(x, draftOf(x))], does: "throws them away", kept: "changes kept",
+        yes: () => { drafts.delete(x.from); say("changes thrown away"); render(shown); } });
+    }
+
+    // a tap on one of them, in the page or in the question
+    function press(b) {
+      const x = data, v = b.dataset.v, row = () => (x.groups ? x.groups.flatMap(z => z.rows) : x.rows || []).find(r => r.key === v);
+      const DO = { on: turn, rename, delete: remove, live, engine, keep, discard, edit: () => { location.hash = "#/edit/" + encodeURIComponent(x.name); },
+        save: () => act({ op: "report_save", report: x.id }), change: () => row() && change(row()), rule: () => row() && setRule(x, row()), nudge: () => nudge(b), chip: () => chip(b) };
+      if (DO[b.dataset.do] && (asked ? b.closest("#sheet") : !b.closest("#sheet"))) DO[b.dataset.do](x);
+    }
+    main.addEventListener("click", e => {
+      const c = controls(), b = e.target.closest("[data-do]");
+      if (!c || !b) return;
+      e.preventDefault(); press(b);
+    });
+
+    const tool = (what, text, cls) => el("button.act", { "data-do": what, cls }, text);
+    return {
+      hear,
+      variant: x => [el("div.tools", {}, tool("on", x.on ? "turn off" : "turn on"), tool("edit", "edit"), tool("rename", "rename"),
+          x.own ? tool("delete", "delete") : el("div.act.off", {}, "built in")),
+        tool("live", x.live_ask.kind === "off" ? "live off" : x.live_ask.kind === "move" ? "move live here" : "go live", "red")],
+      report: x => x.id.startsWith("saved:") ? null : tool("save", "save this report"),
+      engine: x => tool("engine", x.engine.alive ? "pause the engine" : "start the engine", x.engine.alive ? "" : "red"),
+      setting: r => el("button.row", { "data-do": "change", "data-v": r.key, "data-k": r.key }, el("span.grow", {}, r.label), el("b.val", {}, r.shown), el("span.quiet", {}, "›")),
+      rule(x, r) {
+        const d = draftOf(x), f = field(r), changed = f in d;
+        return el("button.row", { "data-do": "rule", "data-v": r.key, "data-k": r.key }, el("span.grow", {}, r.label, changed && el("div.sub", {}, "was " + r.shown)),
+          el("b", { cls: changed ? "warn" : "val" }, changed ? fmt(r, d[f]) : r.shown), el("span.quiet", {}, "›"));
+      },
+      draft(x) {
+        const n = Object.keys(draftOf(x)).length;
+        return [el("p.quiet.small", {}, `Changes go into a draft. Saved, it is a new variant from ${x.title}, which stays as it is.`),
+          el("div.draft", {}, el("b", { cls: n ? "warn" : "quiet" }, n ? `${n} change${n > 1 ? "s" : ""}, not saved` : "no changes yet")),
+          el("div.tools", {}, tool("keep", "save as new"), n ? tool("discard", "discard") : el("div.act.off", {}, "discard"))];
+      },
+    };
+  })();
+  const controls = () => last && last.control && window.TernApp && TernApp.paired() ? CONTROLS : null;
+  // ------------------------------------------------------------ (the controls end here)
+
   // ------------------------------------------------------------ the menu and the status line
-  const NAMES = ["home", "ladder", "book", "variants", "log", "gate", "reports", "themes"];
+  const NAMES = ["home", "ladder", "book", "variants", "log", "gate", "reports", "settings", "themes", "help"];
   const route = () => { const [p, ...a] = location.hash.replace(/^#\/?/, "").split("/"); let arg = a.join("/"); try { arg = decodeURIComponent(arg); } catch (e) {} return { page: PAGES[p] ? p : "home", arg: arg || null }; };
-  const parent = p => ({ contract: "ladder", variant: "variants", report: "reports" })[p] || p;
+  const parent = p => ({ contract: "ladder", variant: "variants", edit: "variants", report: "reports" })[p] || p;
   let open = false, last = null;
   function drawMenu() {
     const at = parent(route().page), m = (last || {}).menu || {}, coin = last && last.coins.find(c => c.series === last.series);
@@ -452,7 +813,7 @@
   let sid = null; try { sid = sessionStorage.getItem("tern-sid"); } catch (e) {}
   const prefs = () => { try { return JSON.parse(store("tern-prefs") || "null"); } catch (e) { return null; } };
   let data = null, shown = "", view = null, busy = false, again = null, fails = 0, lastAt = 0, sayT = 0, etag = null;
-  const EVERY = { log: 3000, gate: 3000, reports: 4000, report: 3000, themes: 6000, variants: 2000 };
+  const EVERY = { log: 3000, gate: 3000, reports: 4000, report: 3000, themes: 6000, variants: 2000, settings: 2000, edit: 2000, help: 6000 };
   function say(t) { $("say").textContent = t; $("say").hidden = false; clearTimeout(sayT); sayT = setTimeout(() => { $("say").hidden = true; }, 4000); }
   async function get(set) {
     if (busy) { again = { ...(again || {}), ...(set || {}) }; return; }
@@ -475,6 +836,7 @@
         store("tern-prefs", JSON.stringify(d.prefs));
         if (d.look) dress(d.look);
         fails = 0; lastAt = Date.now(); last = d;
+        if (controls() && d.results) controls().hear(d.results);                      // the engine's answers to what this app sent
         if (leaving) await leaving;
         const now = route();
         if (now.page + "/" + now.arg !== key) { again = again || {}; continue; }          // moved on meanwhile
@@ -612,7 +974,7 @@
       drawAll();
     } catch (e) { /* the phone's own */ }
   })();
-  if (history.state && history.state.menu) history.replaceState(null, "");
+  if (history.state && (history.state.menu || history.state.sheet)) history.replaceState(null, "");
   await get();
   let due = 0;
   setInterval(() => {

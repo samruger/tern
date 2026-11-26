@@ -4128,7 +4128,9 @@ class Phone(Rig, unittest.TestCase):
             self.assertNotIn("pair a phone", [r["label"] for r in rows])
             self.assertEqual([g["name"] for g in data["groups"]][-1], "SCREEN")
             self.assertEqual(data["phones"], [])
-            self.assertEqual(data["engine"], {"alive": dash.engine_alive(d)})
+            self.assertEqual(data["engine"], {"alive": dash.engine_alive(d), "live": ""})
+            k.cfg.live.enabled, k.cfg.live.variant = True, "band90"; self.sync()
+            self.assertEqual(self.page(scr, "settings")["engine"]["live"], "band90")   # (start engine says it trades real money)
             log = next(r for r in rows if r["key"] == "screen.log")
             self.assertEqual([c[0] for c in log["choices"]], list(dash.LOG_FILTERS))
             devs = devices.Devices(os.path.join(d, "devices.json"))
@@ -4163,6 +4165,204 @@ class Phone(Rig, unittest.TestCase):
             text = fh.read()
         for no in ("http://", "https://", "innerHTML", "insertAdjacentHTML", "document.write", "eval("):
             self.assertNotIn(no, text)
+
+    def test_variant_page_says_what_live_would_do(self):
+        """The app asks what L asks: arm, move or off, in the screen's own words."""
+        with tempfile.TemporaryDirectory() as d:
+            k, scr = self.setup(d)
+            ask = self.page(scr, "variant", "band90")["live_ask"]
+            self.assertEqual(ask["kind"], "arm")
+            self.assertEqual(ask["lines"], scr.live_ask(scr.vrow("band90"))[1])
+            self.assertIn("It would trade band90", ask["lines"][0])
+            k.cfg.live.enabled, k.cfg.live.variant = True, "band90"; self.sync()
+            ask = self.page(scr, "variant", "band90")["live_ask"]
+            self.assertEqual((ask["kind"], ask["lines"]), ("off", ["Turn live off? band90 stops trading real money; its open positions ride to settlement."]))
+            ask = self.page(scr, "variant", "late")["live_ask"]
+            self.assertEqual(ask["kind"], "move")
+            self.assertEqual(ask["lines"][0], "Live trades band90. Move it to late? Real money would trade late instead.")
+
+    def page_text(self):
+        from tern import phone
+        with open(phone.PAGE) as fh:
+            return fh.read()
+
+    CONTROLS_FROM = "// ------------------------------------------------------------ the app's controls"
+    CONTROLS_TO = "// ------------------------------------------------------------ (the controls end here)"
+
+    def controls_part(self):
+        """phone.html as (the part with the app's controls, the rest)."""
+        text = self.page_text()
+        a, b = text.index(self.CONTROLS_FROM), text.index(self.CONTROLS_TO)
+        self.assertLess(a, b)
+        return text[a:b], text[:a] + text[b:]
+
+    def test_controls_are_the_paired_apps_only(self):
+        """Every control, the sheet that asks and the way to the phone's keys are in one part of the page; the rest of
+        the page reaches that part only through controls(), which is null unless the desk said this is the paired app
+        and the app's own bridge is there and paired."""
+        import re
+        inside, outside = self.controls_part()
+        for mark in ("data-do", "data-ans", r"TernApp\.sign\(", '"/act"', "ternSigned", "ternRefused", r"\bop:", 'id: "sheet"'):
+            self.assertRegex(inside, mark)
+            self.assertIsNone(re.search(mark, outside), mark)
+        guard = re.search(r"\n  const controls = \(\) => (.+);\n", inside)
+        self.assertIsNotNone(guard)
+        self.assertEqual(guard[1], "last && last.control && window.TernApp && TernApp.paired() ? CONTROLS : null")
+        # the part makes one thing, CONTROLS, in a closure of its own, and only the guard hands it out
+        self.assertEqual(re.findall(r"^  (?:const|let|var|function|async function|class) (\w+)", inside, re.M), ["CONTROLS", "controls"])
+        self.assertEqual(len(re.findall(r"\bCONTROLS\b", inside)), 2)
+        self.assertNotRegex(outside, r"\bCONTROLS\b")
+        self.assertGreater(len(re.findall(r"\bcontrols\(\)", outside)), 4)          # (the pages ask it)
+        # what sends, and what a tap on a control does, ask the guard first
+        self.assertRegex(inside, r"function act\([^)]*\) \{\n\s+if \(!controls\(\)\) return")
+        for m in re.finditer(r'addEventListener\("(?:click|change|input|keydown)", e => \{\n(.*)\n', inside):
+            self.assertIn("controls()", m[1])
+
+    def test_the_page_sends_only_what_the_desk_takes(self):
+        """Every command the page can build is a flat literal of an op /act takes, with only that op's fields."""
+        import re
+        from tern import web
+        inside, _ = self.controls_part()
+        fields = {**web.ENGINE_OPS, "engine": ("run",), "report_save": ("report",)}
+        built = re.findall(r'\{ op: "(\w+)"((?:, [^{}]*?)?) \}', inside)
+        self.assertEqual(len(built), len(re.findall(r"\bop\s*:", inside)))          # no op made any other way
+        self.assertNotRegex(inside, r"\.op\s*=[^=]|\[\"op\"\]")
+        self.assertEqual({op for op, _ in built}, set(fields))                        # every one the app may send, and no other
+        for op, rest in built:
+            keys = {part.split(":")[0].strip() for part in rest.split(",")[1:]}
+            self.assertLessEqual(keys, set(fields[op]), op)
+        live = re.findall(r'act\(\{ op: "(\w+)"([^{}]*)\}, true\)', inside)            # the fingerprint: live on, and what loosens
+        self.assertEqual(sorted(op for op, _ in live), ["live", "set"])
+        self.assertIn("on: true", live[[op for op, _ in live].index("live")][1])
+        self.assertNotRegex(inside, r'op: "live", on: false \}, ')                  # live off: the everyday key
+        self.assertRegex(inside, r'act\(\{ op: "variant_on", variant: x\.name, on \}, on && x\.live\)')   # (the live one turned on)
+        import tern.variants as varmod
+        self.assertEqual(int(re.search(r"const NAME_MAX = (\d+);", inside)[1]), varmod.NAME_MAX)
+
+    DRIVE = """
+      const wait = async (f, ms = 8000) => { for (let t = 0; t < ms; t += 50) { const v = f(); if (v) return v; await new Promise(r => setTimeout(r, 50)); } return null; };
+      const $ = s => document.querySelector(s), open = () => $("#sheet") && !$("#sheet").hidden && $("#sheet h2").textContent;
+      const back = () => wait(() => !(history.state && history.state.sheet));         // (the sheet's own history entry, gone)
+      const yes = async () => { const n = __log.length; $('#sheet [data-ans="yes"]').click(); await wait(() => __log.length > n); await back(); };
+      const tap = async s => { const b = await wait(() => $(s)); if (b) b.click(); return wait(open); };
+      const out = {};
+      window.addEventListener("load", async () => {
+        await wait(() => $("main h1") && $("main h1").textContent.includes("mine"));
+        out.buttons = [...document.querySelectorAll("[data-do]")].map(b => b.dataset.do);
+        if (window.TernApp && out.buttons.length) {
+          out.on = [await tap('[data-do="on"]'), $("#sheet .box").textContent]; await yes();
+          out.said = await wait(() => !$("#say").hidden && $("#say").textContent.startsWith("the engine says") && $("#say").textContent);
+          out.live = [await tap('[data-do="live"]'), $("#sheet .box").textContent];
+          const i = $("#sheet input.type"); i.value = "live"; i.dispatchEvent(new Event("input", { bubbles: true })); await yes();
+          location.hash = "#/settings";
+          out.set = await tap('[data-do="change"][data-v="gate.min_days"]');
+          $('#sheet [data-do="nudge"][data-v="1"]').click(); out.setAsk = $("#sheet .box").textContent; await yes();
+          location.hash = "#/edit/mine";
+          await tap('[data-do="rule"][data-v="rule.contracts"]');
+          $('#sheet [data-do="nudge"][data-v="1"]').click(); out.ruleAsk = $("#sheet .box").textContent; $('#sheet [data-ans="yes"]').click(); await back();
+          out.draft = await wait(() => $(".draft") && $(".draft").textContent.includes("1 change") && $("main").textContent);
+          out.keep = await tap('[data-do="keep"]'); await yes();
+          out.after = await wait(() => location.hash === "#/variants" && location.hash);
+        }
+        out.log = window.__log || []; out.t = Math.round(performance.now());
+        const pre = document.createElement("pre"); pre.id = "out"; pre.textContent = JSON.stringify(out); document.body.append(pre);
+      });
+    """
+    STUB = """
+      window.__log = [];
+      window.TernApp = { paired: () => true, sign: (id, cmd, live) => { __log.push([JSON.parse(cmd), live]);
+        setTimeout(() => ternSigned(id, JSON.stringify({ payload: cmd, sig: "c2ln", key: live ? "live" : "everyday" })), 5); } };
+    """
+
+    def browse(self, hub, d, stub, control, budget=6000):
+        """phone.html in headless chromium, against a tern web of the test's own: /phone is the hub's, /act takes what
+        the stub app signed. What the page did comes back as JSON."""
+        import http.server, json, re, subprocess, threading
+        from tern import phone, web
+        sent: list = []
+        with open(phone.PAGE) as fh:
+            page = fh.read()
+        page = page.replace("<script>\n", "<script>" + (self.STUB if stub else "") + self.DRIVE + "</script>\n<script>\n", 1)
+        look = {**web._foot_colors(), "attr": {}, "fonts": [], "login": False}
+
+        class H(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def send(self, code, body, ctype="application/json"):
+                body = body if isinstance(body, bytes) else json.dumps(body).encode()
+                self.send_response(code); self.send_header("Content-Type", ctype); self.send_header("Content-Length", str(len(body))); self.end_headers()
+                self.wfile.write(body)
+
+            def do_GET(self):
+                self.send(200, page.encode(), "text/html; charset=utf-8") if self.path == "/" else self.send(200, look) if self.path == "/look" else self.send(404, {})
+
+            def do_POST(self):
+                req = json.loads(self.rfile.read(int(self.headers["Content-Length"])) or b"{}")
+                if self.path == "/act":
+                    sent.append(req)
+                    self.send(200, {"id": f"c{len(sent)}", "say": "sent"})
+                else:
+                    out = hub.phone(req)
+                    if control:
+                        out["control"] = True
+                        out["results"] = {f"c{i + 1}": ("new variant mine2, from mine" if json.loads(r["payload"])["op"] == "variant_new" else f"the engine says {i + 1}")
+                                          for i, r in enumerate(sent)}
+                    self.send(200, out)
+
+        srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        try:
+            url = "http://127.0.0.1:%d/#/variant/mine" % srv.server_address[1]
+            run = subprocess.run(["chromium", "--headless=new", "--disable-gpu", "--no-first-run", "--no-default-browser-check", f"--user-data-dir={d}/chrome",
+                                  f"--virtual-time-budget={budget}", "--dump-dom", url], capture_output=True, text=True, timeout=90)
+        finally:
+            srv.shutdown(); srv.server_close()
+        m = re.search(r'<pre id="out">(.*?)</pre>', run.stdout, re.S)
+        self.assertIsNotNone(m, run.stderr[-2000:])
+        import html
+        return json.loads(html.unescape(m[1])), sent
+
+    def test_the_controls_in_a_browser(self):
+        """In headless chromium: the paired app (a stub TernApp) gets the controls, they ask first, and what they send is
+        what the app signed; a browser without the app's bridge, or a session the desk didn't call the app's, gets none."""
+        import json, shutil
+        if not shutil.which("chromium"):
+            raise unittest.SkipTest("needs chromium")
+        with tempfile.TemporaryDirectory() as d:
+            k, hub = self.hub(d)
+            self.new(k, "base", "mine", cap=3); self.sync()
+            got, sent = self.browse(hub, d, stub=True, control=True)
+            self.assertEqual(got["buttons"], ["on", "edit", "rename", "delete", "live"])
+            self.assertEqual(got["on"][0], "turn mine off")
+            self.assertIn("Turn mine off? No new entries; its open ones settle.", got["on"][1])
+            self.assertEqual(got["said"], "the engine says 1")                       # /act's say, then the engine's answer
+            self.assertEqual(got["live"][0], "ARM LIVE")
+            self.assertIn("Live trading uses real money on Kalshi. It would trade mine.", got["live"][1])
+            self.assertEqual(got["set"], "change days of hours traded")
+            self.assertIn("Change days of hours traded from 14 to 15?", got["setAsk"])
+            self.assertIn("1 change, not saved", got["draft"])
+            self.assertEqual(got["keep"], "save as a new variant")
+            self.assertEqual(got["after"], "#/variants")                              # saved: the draft is gone, and so is its page
+            self.assertEqual(got["log"], [[{"op": "variant_on", "variant": "mine", "on": False}, False],
+                                          [{"op": "live", "on": True, "variant": "mine"}, True],
+                                          [{"op": "set", "key": "gate.min_days", "value": 15}, False],
+                                          [{"op": "variant_new", "from": "mine", "name": "", "rule": {"contracts": 6}}, False]])
+            self.assertEqual([json.loads(b["payload"]) for b in sent], [c for c, _ in got["log"]])
+            self.assertEqual([b["key"] for b in sent], ["everyday", "live", "everyday", "everyday"])
+            for stub, control in ((False, True), (True, False)):
+                got, sent = self.browse(hub, d, stub=stub, control=control, budget=3000)
+                self.assertEqual((got["buttons"], got["log"], sent), ([], [], []), (stub, control))
+
+    def test_the_pages_menu_has_help_and_settings(self):
+        import re
+        from tern import phone
+        text = self.page_text()
+        names = re.search(r"const NAMES = \[(.*?)\];", text)[1]
+        for p in ("settings", "help"):
+            self.assertIn(f'"{p}"', names)
+        for p in phone.PAGES:
+            self.assertRegex(text, rf"\n    {p}\(d, x\) \{{", p)                      # a way to draw each page
 
 
 class AndroidApp(unittest.TestCase):

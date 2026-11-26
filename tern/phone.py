@@ -1,8 +1,8 @@
 """The web's phone pages: which browsers get them, and what each page shows, as data that phone.html draws.
 
 View only, as the rest of the web: a viewer's coin, strike, variant, theme and chart are that viewer's own, and nothing
-here sends the engine a command. Each viewer has a WebScreen like any other browser's (its drawing unused), so the
-numbers are the ones the boxes show.
+here sends the engine a command (the paired app's go by /act, signed on the phone: this only says what they would ask).
+Each viewer has a WebScreen like any other browser's (its drawing unused), so the numbers are the ones the boxes show.
 """
 
 from __future__ import annotations
@@ -282,8 +282,9 @@ def one_variant(scr, arg) -> dict:
         says = describe(rule, v.get("paper_limits", False)).split(" · ")
     except (KeyError, TypeError):                # an engine from before a field was added
         says = []
+    kind, lines = scr.live_ask(v)
     return {**variant(scr, v), "desc": v.get("desc") or "", "stats": stats, "gate": gate_of(v), "curve": thin(v.get("curve") or []),
-            "points": len(v.get("curve") or []), "rule": says, "positions": positions(scr, view),
+            "points": len(v.get("curve") or []), "rule": says, "positions": positions(scr, view), "live_ask": {"kind": kind, "lines": lines},
             "all": [[x["name"], scr.vn(x["name"])] for x in scr.st.get("variants") or []]}
 
 
@@ -391,7 +392,9 @@ def settings_page(scr, arg) -> dict:
         about = aboutmod.DESK.get(r.key) or [("text", r.what[:1].upper() + r.what[1:] + ".")]
         groups[-1]["rows"].append(setting_row(scr, r, scr.set_value(r.key), about))
     devs = getattr(getattr(scr, "hub", None), "devices", None)        # the process's one (its file lock is not taken twice)
-    return {"groups": groups, "phones": devs.all() if devs is not None else [], "engine": {"alive": dash.engine_alive(scr.runtime)}}
+    live = scr.live_variant() if scr.st.get("live_enabled") else None
+    return {"groups": groups, "phones": devs.all() if devs is not None else [],
+            "engine": {"alive": dash.engine_alive(scr.runtime), "live": scr.vn(live) if live else ""}}
 
 
 def edit_page(scr, arg) -> dict:
