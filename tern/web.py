@@ -585,6 +585,7 @@ def serve(runtime: str = cfgmod.RUNTIME, host: str = "127.0.0.1", port: int = 87
     cookie_name = "__Host-" + webauth.COOKIE if tls else webauth.COOKIE   # __Host-: only this host, https, path /
     hub = Hub(runtime)
     devs = devices.Devices(devices.FILE)         # the one for this process (a second would fight over its file lock)
+    hub.devices = devs                           # the phone pages list the phones from it
     app_cookie = "__Host-tern_a" if tls else "tern_a"
     pair_limiter = webauth.Limiter()
     conf_state = {"stamp": None, "cfg": cfgmod.Config()}

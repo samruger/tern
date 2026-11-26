@@ -4082,6 +4082,80 @@ class Phone(Rig, unittest.TestCase):
             hub.alive = lambda: False
             self.assertIn("paused", hub.phone({"page": "home"})["engine"]["text"])
 
+    def page(self, scr, name, arg=None):
+        from tern import phone
+        return phone.page(scr, {"page": name, "arg": arg})["data"]
+
+    def test_help_page_has_every_key_a_place(self):
+        import json
+        from tern import dash, phone
+        with tempfile.TemporaryDirectory() as d:
+            k, scr = self.setup(d)
+            data = self.page(scr, "help")
+            json.dumps(data)
+            titles = [s["title"] for s in data["sections"]]
+            self.assertIn("KEYS", titles)
+            keys = next(s for s in data["sections"] if s["title"] == "KEYS")
+            text = "\n".join("".join(sp[0] for sp in line) for line in keys["lines"])
+            name = {"\n": "enter", "\r": "enter", " ": "space"}
+            for ch in [*dash.KEYS_ON, "t", "T", "P"]:
+                self.assertIn(name.get(ch, ch), [a for a, _ in phone.APP_KEYS], ch)
+            self.assertEqual(sorted({a for a, _ in phone.APP_KEYS}),
+                             sorted({name.get(c, c) for c in [*dash.KEYS_ON, "t", "T", "P"]}))
+            for a, where in phone.APP_KEYS:
+                self.assertIn(where, text)
+            self.assertIn(("L", "a variant \u2192 go live"), phone.APP_KEYS)
+            self.assertIn(("P", "settings \u2192 engine"), phone.APP_KEYS)
+            self.assertIn(("s", "a report \u2192 save"), phone.APP_KEYS)
+            self.assertIn("COMMANDS", titles)
+            self.assertIn("help", phone.menu(scr))
+
+    def test_settings_page_rows_and_phones(self):
+        import json
+        from tern import config as cfgmod, dash, devices, phone
+        with tempfile.TemporaryDirectory() as d:
+            k, scr = self.setup(d)
+            data = self.page(scr, "settings")
+            json.dumps(data)
+            rows = [r for g in data["groups"] for r in g["rows"]]
+            want = cfgmod.SETTINGS + dash.SCREEN_SETTINGS
+            self.assertEqual([r["key"] for r in rows], [s.key for s in want])
+            for r, s in zip(rows, want):
+                self.assertEqual((r["label"], r["kind"], r["lo"], r["hi"], r["step"], r["risk"]), (s.label, s.kind, s.lo, s.hi, s.step, s.risk))
+                self.assertEqual(r["value"], scr.set_value(s.key))
+                self.assertEqual(r["shown"], scr.set_fmt(s, scr.set_value(s.key)))
+                self.assertTrue(r["about"])
+            self.assertNotIn("pair a phone", [r["label"] for r in rows])
+            self.assertEqual([g["name"] for g in data["groups"]][-1], "SCREEN")
+            self.assertEqual(data["phones"], [])
+            self.assertEqual(data["engine"], {"alive": dash.engine_alive(d)})
+            log = next(r for r in rows if r["key"] == "screen.log")
+            self.assertEqual([c[0] for c in log["choices"]], list(dash.LOG_FILTERS))
+            devs = devices.Devices(os.path.join(d, "devices.json"))
+            import types
+            scr.hub = types.SimpleNamespace(devices=devs)
+            self.assertEqual(self.page(scr, "settings")["phones"], [])
+            self.assertIn("settings", phone.menu(scr))
+
+    def test_edit_page_rows_hold_the_variants_rule(self):
+        import json
+        from tern import phone, variants as varmod
+        with tempfile.TemporaryDirectory() as d:
+            k, scr = self.setup(d)
+            self.new(k, "base", "mine", cap=3); self.sync()
+            data = self.page(scr, "edit", "mine")
+            json.dumps(data)
+            rule = scr.vrow("mine")["rule"]
+            self.assertEqual(data["from"], "mine")
+            self.assertEqual(data["max_own"], varmod.MAX_OWN)
+            self.assertEqual([r["key"] for r in data["rows"]], [s.key for s in varmod.RULE_SETTINGS])
+            for r, s in zip(data["rows"], varmod.RULE_SETTINGS):
+                self.assertEqual(r["value"], rule.get(s.name))
+                self.assertEqual(r["shown"], scr.set_fmt(s, rule.get(s.name)))
+                self.assertTrue(r["about"])
+            self.assertEqual(next(r for r in data["rows"] if r["key"] == "rule.cap")["value"], 3)
+            self.assertIn("edit", phone.PAGES)
+
     def test_the_page_keeps_to_its_policy(self):
         """Nothing from elsewhere, and text is put in as text."""
         from tern import phone

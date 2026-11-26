@@ -13,16 +13,24 @@ import re
 import time
 import zlib
 
+from . import about as aboutmod
 from . import config as cfgmod
 from . import dash
 from . import reports
+from . import variants as varmod
 from .variants import describe
 
 PAGE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "phone.html")
-PAGES = ("home", "ladder", "contract", "book", "variants", "variant", "log", "gate", "reports", "report", "themes")
+PAGES = ("home", "ladder", "contract", "book", "variants", "variant", "log", "gate", "reports", "report", "themes", "help", "settings", "edit")
 UI_COOKIE = "tern_ui"                            # "full" or "phone": what the viewer chose over what was detected
 UI = ("phone", "full")
 PHONE = re.compile(r"iPhone|iPod|Android.*\bMobile\b|Windows Phone|Opera Mini")
+# Every key the desk's screen has, and where the app does it (the screen's own KEYS legend is for a keyboard)
+APP_KEYS = [("enter", "a variant \u2192 select"), ("space", "a variant \u2192 on / off"), ("e", "a variant \u2192 edit"),
+            ("r", "a variant \u2192 rename"), ("D", "a variant \u2192 delete"), ("L", "a variant \u2192 go live"),
+            ("C", "the home page \u2192 coin"), ("c", "the chart \u2192 span"), ("V", "the book \u2192 paper / live"),
+            ("s", "a report \u2192 save"), ("t", "the themes page \u2192 pick one"), ("T", "the themes page \u2192 pick one"),
+            ("P", "settings \u2192 engine")]
 POINTS = 160                                     # values in a chart
 LOG_ENTRIES = 60
 ROLE = {dash.GREEN: "up", dash.RED: "dn", dash.YELLOW: "warn", dash.MAGENTA: "no"}
@@ -173,7 +181,7 @@ def menu(scr) -> dict:
             "ladder": [f"{star} in band" if star else "", "warn"],
             "log": [f"{bad} warning{'' if bad == 1 else 's'} today" if bad else "", "warn"],
             "gate": ["passed", "up"] if g.get("passed") else [f"{sum(1 for c in checks if c.get('ok'))} of {len(checks)}" if checks else "", "warn"],
-            "themes": [scr.P.name, ""]}
+            "themes": [scr.P.name, ""], "help": ["", ""], "settings": ["", ""]}
 
 
 # ---------------------------------------------------------------- pages
@@ -357,8 +365,59 @@ def theme_list(scr, arg) -> dict:
     return {"rows": out}
 
 
+def help_page(scr, arg) -> dict:
+    """The help's sections as the screen words them, the keys as the app has them."""
+    P, out = scr.P, []
+    for title, lines in scr.help_sections(60):
+        if title == "KEYS":
+            lines = [[(f"{a:<6}", P(P.c("key"), bold=True)), (where, P(dash.WHITE))] for a, where in APP_KEYS]
+        out.append({"title": title, "lines": [[[l, -1, 0]] if isinstance(l, str) else spans(scr, l) for l in lines]})
+    return {"sections": out}
+
+
+def setting_row(scr, r, value, about: list) -> dict:
+    """One setting as the app draws it. value: the setting's own (a list for slots and coins, None for a cap that is off)."""
+    choices = [[k, v] for k, v in dash.LOG_FILTERS.items()] if r.kind == "choice" else scr.set_choices(r) if r.kind in ("slots", "coins") else []
+    return {"key": r.key, "label": r.label, "value": value, "shown": scr.set_fmt(r, value), "kind": r.kind, "lo": r.lo, "hi": r.hi,
+            "step": r.step, "choices": choices, "about": [[a, b] for a, b in about], "risk": r.risk}
+
+
+def settings_page(scr, arg) -> dict:
+    """The desk's and the screen's settings, grouped, with what each is; the phones paired are listed, not changed here."""
+    groups: list = []
+    for r in cfgmod.SETTINGS + dash.SCREEN_SETTINGS:
+        if r.group or not groups:
+            groups.append({"name": r.group, "rows": []})
+        about = aboutmod.DESK.get(r.key) or [("text", r.what[:1].upper() + r.what[1:] + ".")]
+        groups[-1]["rows"].append(setting_row(scr, r, scr.set_value(r.key), about))
+    devs = getattr(getattr(scr, "hub", None), "devices", None)        # the process's one (its file lock is not taken twice)
+    return {"groups": groups, "phones": devs.all() if devs is not None else [], "engine": {"alive": dash.engine_alive(scr.runtime)}}
+
+
+def edit_page(scr, arg) -> dict:
+    """A variant's rule as the editor's rows; the draft is the app's own until it saves."""
+    v = scr.vrow(arg) or scr.vrow(scr.variant)
+    if v is None:
+        return {"none": "waiting for the engine"}
+    rule = v.get("rule") or {}
+    ctx = {"vol": None, "price": None, "limits": v.get("paper_limits", False), "name": scr.vn(v["name"])}
+    told = None
+    if all(rule.get(f.name) is not None for f in varmod.RULE_SETTINGS if f.name not in ("cap", "max_vol")):
+        ctx["vol"], ctx["price"] = scr.vols(rule["series"]), scr.price(rule["series"][0])
+        told = {"cap": None, "max_vol": None, **rule}
+    rows = []
+    for f in varmod.RULE_SETTINGS:
+        try:
+            about = aboutmod.rule(f.name, told, ctx) if told else []
+        except (KeyError, TypeError, ValueError):
+            about = []
+        rows.append(setting_row(scr, f, rule.get(f.name), about or [("text", f.what[:1].upper() + f.what[1:] + ".")]))
+    return {"from": v["name"], "title": scr.vn(v["name"]), "own": bool(v.get("own")), "rows": rows, "max_own": varmod.MAX_OWN}
+
+
 MAKE = {"home": home, "ladder": ladder, "contract": contract, "book": book, "variants": variants, "variant": one_variant,
-        "log": log, "gate": gate, "reports": report_list, "report": one_report, "themes": theme_list}
+        "log": log, "gate": gate, "reports": report_list, "report": one_report, "themes": theme_list,
+        "help": help_page, "settings": settings_page, "edit": edit_page}
 
 
 def page(scr, req: dict) -> dict:
