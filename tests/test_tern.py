@@ -2393,14 +2393,14 @@ class OwnVariants(Rig, unittest.TestCase):
             self.assertIn("no new variant", self.new(k, "band80", "wide"))     # a built-in one's display name
             self.assertIn("not renamed", k._command({"op": "rename", "variant": "late", "name": "My rule"}))
             self.assertIn("is now slow", k._command({"op": "rename", "variant": "my-rule", "name": "slow"}))
-            self.assertEqual(k.shadow.own.title("my-rule"), "slow")
+            self.assertEqual((k.shadow.own.active(), k.shadow.own.title("slow")), (["slow"], "slow"))
             dele = lambda v: k._command({"op": "variant_delete", "variant": v})
             self.assertIn("built in", dele("base"))
             self.assertIn("no variant", dele("gone"))
-            k.cfg.live.enabled, k.cfg.live.variant = True, "my-rule"
-            self.assertIn("what live trades", dele("my-rule"))
+            k.cfg.live.enabled, k.cfg.live.variant = True, "slow"
+            self.assertIn("what live trades", dele("slow"))
             k.cfg.live.enabled = False
-            self.assertIn("slow deleted", dele("my-rule"))
+            self.assertIn("slow deleted", dele("slow"))
             self.assertEqual(k.shadow.own.all, {})                             # it bought nothing: nothing is left
 
     def test_a_deleted_one_settles_stays_on_file_and_never_lends_its_key(self):
@@ -2419,6 +2419,48 @@ class OwnVariants(Rig, unittest.TestCase):
             k._command({"op": "variant_new", "name": "x1", "from": "base", "rule": {"cap": 6}})
             self.assertEqual(k.shadow.own.active(), ["x1-2"])
             self.assertEqual(k.shadow.summary(["x1-2"])[0]["entries"], 0)
+
+    def test_a_rename_moves_the_record_and_leaves_the_old_name_nowhere(self):
+        with tempfile.TemporaryDirectory() as d:
+            k = self.desk(d)
+            k._command({"op": "variant_new", "name": "y", "from": "base", "rule": {"cap": 6}})
+            k._shadow()                                                        # y buys: an open row and a day
+            k.shadow.days["y"] = ["2026-11-25", 0.0, False]
+            k.shadow.settle({self.T: True}); k.shadow.save()                   # settled on file
+            k._command({"op": "variant_new", "from": "y", "rule": {"cap": 5}})  # made from y before the rename
+            k._shadow()                                                        # an open row again
+            k._command({"op": "variant_on", "variant": "y", "on": False})
+            k.cfg.live.variant = "y"
+            entries = k.shadow.summary(["y"])[0]["entries"]
+            self.assertIn("variant y is now base-6", k._command({"op": "rename", "variant": "y", "name": "base-6"}))
+            own = k.shadow.own
+            self.assertEqual(own.active(), ["base-6", "y-2"])                  # in the order they were
+            self.assertEqual((own.all["y-2"]["from"], own.off, k.cfg.live.variant), ("base-6", {"base-6"}, "base-6"))
+            self.assertEqual(k.shadow.summary(["base-6"])[0]["entries"], entries)
+            self.assertEqual(k.renamed, {"y": "base-6"})
+            files = ["shadow.json", "shadow-settled.jsonl", "variants.json", "config.json", "settings-log.jsonl"]
+            for f in files:
+                self.assertNotRegex(open(os.path.join(d, f)).read(), r'"(on\.)?y"', f)
+            k = self.desk(d)                                                   # and after a restart
+            self.assertEqual(k.shadow.summary(["base-6"])[0]["entries"], entries)
+            self.assertFalse(k.shadow.bought("y"))
+            self.assertIn("keeps its name", k._command({"op": "rename", "variant": "base-6", "name": "base-6"}))
+            # y-2 was a typo's copy: renamed, and a copy made from it later takes the new name, not y's
+            k._command({"op": "rename", "variant": "y-2", "name": "base-7"})
+            k._command({"op": "variant_new", "from": "base-7", "rule": {"cap": 4}})
+            self.assertEqual(k.shadow.own.active(), ["base-6", "base-7", "base-2"])  # the first free base-N
+            k._command({"op": "rename", "variant": "band90", "name": "high favs"})   # a built-in one's display name too
+            k._command({"op": "variant_new", "from": "band90", "rule": {"cap": 4}})
+            self.assertIn("high-favs-2", k.shadow.own.active())
+
+    def test_the_screen_follows_a_rename(self):
+        from tern import dash
+        s = dash.Screen.__new__(dash.Screen)
+        s.raw = {"variants": [{"name": "base-6"}, {"name": "base"}], "renamed": {"y": "base-6"}}
+        s.variant = s.var_sel = s.edit_var = "y"
+        s.var_new, s.save_prefs, s.say = None, lambda: None, lambda m: None
+        s.apply_selected()
+        self.assertEqual((s.variant, s.var_sel, s.edit_var), ("base-6", "base-6", "base-6"))
 
     def test_only_so_many(self):
         from tern import variants

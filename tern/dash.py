@@ -422,7 +422,7 @@ HELP_KEYS = [
                 ("", "and its record stay as they are"),
                 ("space", "turn it on / off (asks y)"),
                 ("D", "delete it, if it is one you made"),
-                ("r", "rename it: its record keeps its own name")]),
+                ("r", "rename it: its record takes the new name")]),
      ("trade", [("L", "live: on with the selected variant, off, or"),
                 ("", "moved to it (type \"live\")")]),
      ("settings", [("↑↓", "pick a setting"),
@@ -631,6 +631,13 @@ class Screen:
         picked: the one live trades, else the first."""
         raw = self.raw
         names = [v["name"] for v in raw.get("variants") or []]
+        moved = raw.get("renamed") or {}         # one of your own renamed: its key moved, and the screen goes with it
+        if self.variant in moved:
+            self.variant = moved[self.variant]; self.save_prefs()
+        if self.var_sel in moved:
+            self.var_sel = moved[self.var_sel]
+        if self.edit_var in moved:
+            self.edit_var = moved[self.edit_var]
         if names and self.variant not in names:
             was, live = self.variant, (raw.get("live_cfg") or {}).get("variant")
             self.variant = live if live in names else names[0]
@@ -798,7 +805,8 @@ class Screen:
         self.hits.append((y, x0, x1, what, arg))
 
     def vn(self, name: str | None) -> str:
-        """A variant's display name (r renames it); its record stays under its own name."""
+        """A variant's display name (r renames it). One of your own has its record under the same name; a built-in
+        one's stays under its own."""
         if not name:
             return "?"
         mine = next((v for v in self.raw.get("variants") or [] if v["name"] == name), {})
@@ -1449,8 +1457,10 @@ class Screen:
         name, mx = self.vn(v), namesmod.VARIANT_NAME_MAX
         self.modal = {"type": "rename", "title": f"rename {name}", "color": CYAN, "buf": name, "max": mx,
                       "target": {"variant": v},
-                      "lines": ["Only what the screen calls it changes: its record, the gate and tern report",
-                                f"keep it as {v}.", f"enter on an empty line names it {v} again", "",
+                      "lines": (["Its record, the gate, live and tern report take the new name too:",
+                                 f"{name} is left nowhere.", "", ] if self.vrow(v).get("own") else
+                                ["Only what the screen calls it changes: its record, the gate and tern report",
+                                 f"keep it as {v}.", f"enter on an empty line names it {v} again", ""]) + [
                                 f"new variant name, up to {mx} characters (ctrl+u clears, esc keeps it):", "> " + name]}
 
     def cur_book(self):

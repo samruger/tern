@@ -264,6 +264,39 @@ class Shadow:
         os.replace(self.open_path + ".tmp", self.open_path)
         self.dirty = False
 
+    def rekey(self, old: str, new: str) -> None:
+        """A rename: the variant's record moves from key old to new, its settled rows on file too, so the old key is
+        left nowhere. The settled file is rewritten first (a copy, then a swap), so a failure there changes nothing."""
+        if old == new:
+            return
+        if old in self.agg:
+            tmp = self.done_path + ".tmp"
+            with open(self.done_path) as src, open(tmp, "w") as out:
+                for line in src:
+                    try:
+                        r = json.loads(line)
+                    except json.JSONDecodeError:
+                        r = None
+                    if isinstance(r, dict) and r.get("v") == old:
+                        r["v"] = new
+                        line = json.dumps(r, separators=(",", ":")) + "\n"
+                    out.write(line)
+                out.flush(); os.fsync(out.fileno())
+            os.replace(tmp, self.done_path)
+        for r in self.rows:
+            if r.get("v") == old:
+                r["v"] = new
+        for d in (self.agg, self.recent, self.fees, self.days):
+            if old in d:
+                d[new] = d.pop(old)
+        for r in self.recent.get(new, ()):
+            r["v"] = new
+        self.by_sv = {((new, sv) if v == old else (v, sv)): a for (v, sv), a in self.by_sv.items()}
+        self.changes += 1
+        self._today, self._sums = (None, {}), (-1, {})
+        self.dirty = True
+        self.save()
+
     def _fee(self, n: float, p: float) -> float:
         return taker_fee(n, p, self.rate)
 

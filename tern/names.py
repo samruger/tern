@@ -95,6 +95,36 @@ class SettingsLog:
         return self.sv
 
 
+    def rekey(self, old: str, new: str) -> None:
+        """A rename moved a variant's record from key old to new: the lines that named it say new now."""
+        try:
+            with open(self.path) as fh:
+                lines = fh.readlines()
+        except OSError:
+            return
+        out, hit = [], False
+        for raw in lines:
+            try:
+                d = json.loads(raw)
+            except json.JSONDecodeError:
+                d = None
+            if isinstance(d, dict):
+                k = d.get("key")
+                if k == "on." + old:
+                    d["key"], hit = "on." + new, True
+                if k in ("variant", "live.variant"):
+                    for f in ("from", "to"):
+                        if d.get(f) == old:
+                            d[f], hit = new, True
+                raw = json.dumps(d, separators=(",", ":")) + "\n"
+            out.append(raw)
+        if hit:
+            with open(self.path + ".tmp", "w") as fh:
+                fh.writelines(out)
+                fh.flush(); os.fsync(fh.fileno())
+            os.replace(self.path + ".tmp", self.path)
+
+
 def show(key: str, v) -> str:
     """A setting's value the way the screen and the report say it: 82¢, 25 20 15, BTC ETH, on, 5."""
     r = LABELS.get(key) or cfgmod.setting(key)

@@ -124,8 +124,10 @@ their paper as it was: only live keeps to their limits ($100, $25 and $30, from 
 - **`space` turns one off or on**, built in or your own. Off, it takes no new entries, open ones settle, and the hours
   don't count.
 - **`D` deletes one of yours** (it asks `y`). If it bought anything its record stays on file and open entries settle.
-- **`r` renames one** on the screen (up to 12 characters; empty gives its own name back). Its record, the gate,
-  `config.json` and `tern report` keep its own name, so renaming never splits a record.
+- **`r` renames one** (up to 12 characters). One of yours takes the new name everywhere: its record, the gate,
+  `config.json`, the settings log, `tern report` and the variants made from it, so the old name is left nowhere, and a
+  copy made from it later is called after the new name. A built-in one only looks renamed (empty gives its own name
+  back): its record, the gate, `config.json` and `tern report` keep its own name.
 - **To start one over**, press `e` and `s`: the same settings, an empty record.
 
 Built-in variants take
@@ -463,6 +465,7 @@ The major ones, newest first.
 
 | Date | Change |
 |---|---|
+| 2026-11-25 | **Renaming one of your own variants moves its record to the new name**, with the settings log, live and the variants made from it, so the old name is left nowhere. A copy made without a name is called after what its parent is called now (base-6 gives base-8), not its old key. |
 | 2026-11-24 | **Android app:** the phone pages as an app, which finds the desk at home or from outside and takes only its certificate. |
 | 2026-11-24 | **Swiping on the phone pages:** left and right go to the next page and the one before, and around. The spot page is gone: home has its chart and spans. |
 | 2026-11-24 | **Phone pages:** the web screen gives phones a layout of their own, one page at a time with a menu button. View only. |

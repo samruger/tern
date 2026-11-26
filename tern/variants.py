@@ -65,6 +65,12 @@ RULE = {r.name: r for r in RULE_SETTINGS}
 FIELDS = tuple(RULE)
 
 
+def keyish(name: str) -> str:
+    """A name as a key would be: lowercase letters, digits and dashes, starting with a letter, at most NAME_MAX."""
+    base = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-") or "rule"
+    return ("v" + base if not base[0].isalpha() else base)[:NAME_MAX].strip("-")
+
+
 def check(field: str, value, rule: dict):
     """The value as it will be stored in rule, or ValueError with a message the screen can show."""
     r = RULE.get(field)
@@ -277,12 +283,12 @@ class VariantSet:
     def title(self, name: str) -> str:
         return self.all[name]["title"] if name in self.all else name
 
-    def _key(self, name: str) -> str:
-        """A key for records: lowercase letters, digits and dashes, starting with a letter, never used before."""
-        base = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-") or "rule"
-        base = ("v" + base if not base[0].isalpha() else base)[:NAME_MAX].strip("-")
+    def _key(self, name: str, but: str = "") -> str:
+        """A key for records: lowercase letters, digits and dashes, starting with a letter, never used before.
+        but: the variant being renamed, whose own key is free for it."""
+        base = keyish(name)
         out, i, used = base, 2, self.used()
-        while out in self.all or out in self.reserved or out in used:
+        while out != but and (out in self.all or out in self.reserved or out in used):
             tail = f"-{i}"
             out, i = base[:NAME_MAX - len(tail)].strip("-") + tail, i + 1
         return out
@@ -296,8 +302,9 @@ class VariantSet:
                 any(low in (k, self.all[k]["title"].lower()) for k in self.active() if k != but):
             raise ValueError(f"{title!r} is already a variant's name")
 
-    def add(self, rule: dict, name: str = "", parent: str = "", taken=(), deleted: bool = False) -> str:
-        """A new variant; returns its key. Without a name it is called after its parent: band80-2."""
+    def add(self, rule: dict, name: str = "", parent: str = "", taken=(), deleted: bool = False, called: str = "") -> str:
+        """A new variant; returns its key. Without a name it is called after what its parent is called (called, else
+        its title here, else its key): band80-2."""
         if not deleted and len(self.active()) >= MAX_OWN:
             raise ValueError(f"at most {MAX_OWN} variants of your own: delete one first (D)")
         bad = why_bad(rule)
@@ -308,7 +315,7 @@ class VariantSet:
             self._free(name, taken=taken)
             key = self._key(name)
         else:
-            stem = (re.sub(r"-\d+$", "", parent) or "rule")[:NAME_MAX - 3]
+            stem = re.sub(r"-\d+$", "", keyish(called or self.title(parent) or "rule"))[:NAME_MAX - 3].strip("-") or "rule"
             low = {n.lower() for n in taken} | {v["title"].lower() for v in self.all.values()} | self.used()
             # band80-2, band80-3 ...: the first number nothing has had
             i = 2
@@ -324,12 +331,28 @@ class VariantSet:
         (self.off.discard if on else self.off.add)(name)
         self.save()
 
-    def rename(self, key: str, to: str, taken=()) -> tuple[str, str]:
+    def renamed(self, key: str, to: str, taken=()) -> tuple[str, str]:
+        """(the name it will have, the key its record will be under) for a rename, or ValueError. Empty: its key."""
         to = clean(to) or key
         self._free(to, but=key, taken=taken)
-        was, self.all[key]["title"] = self.all[key]["title"], to
+        return to, self._key(to, but=key)
+
+    def rename(self, key: str, to: str, new: str) -> str:
+        """The variant is called `to` and its key is `new` (from renamed()): everything here that names it moves
+        with it, in the order it was in. Returns what it was called."""
+        was = self.all[key]["title"]
+        self.all = {(new if k == key else k): v for k, v in self.all.items()}
+        self.all[new]["title"] = to
+        for v in self.all.values():
+            if v.get("from") == key:
+                v["from"] = new
+        for d in (self.by, self.unsized, self.trimmed):
+            if key in d:
+                d[new] = d.pop(key)
+        if key in self.off:
+            self.off.discard(key); self.off.add(new)
         self.save()
-        return was, to
+        return was
 
     def delete(self, key: str, used: bool) -> None:
         """used: it has bought something, so its rule is kept for its record; otherwise nothing is left of it."""

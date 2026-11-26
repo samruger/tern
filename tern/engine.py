@@ -207,6 +207,7 @@ class Desk:
         self.rec = Recorder(runtime)
         self.closed: dict[str, dict] = {}      # hourly events that have closed and still owe their results
         self.names = namesmod.Names(runtime)   # the built-in variants' display names
+        self.renamed: dict[str, str] = {}      # old key -> new, for the variants of your own renamed since the start: screens follow
         if self.shadow.own.damaged:
             self.log("variants.json has something unreadable in it: those variants are not running", "error")
         if self.shadow.own.off_lost and self.cfg.live.enabled:   # live's variant may be one that was turned off
@@ -1011,7 +1012,7 @@ class Desk:
         rule = shadowmod.rule_of(parent, self.cfg, sh.own)
         try:
             changes = varmod.checked(c.get("rule") or {}, rule)
-            key = sh.own.add({**rule, **changes}, c.get("name") or "", parent, self.names.shown())
+            key = sh.own.add({**rule, **changes}, c.get("name") or "", parent, self.names.shown(), called=self.vname(parent))
         except ValueError as ex:
             return f"no new variant: {ex}"
         sh.changes += 1
@@ -1049,16 +1050,28 @@ class Desk:
             ((" · live trades it" if on else " · it is live's: live enters nothing while it is off") if self._armed_with(name) else "")
 
     def _rename(self, c: dict) -> str:
-        """A variant gets a new name on the screen; its record keeps its own."""
+        """A variant gets a new name on the screen. One of your own takes it everywhere: its record, the settings log,
+        live.variant and the variants made from it all move to the new name, so the old one is left nowhere. A built-in
+        one only looks renamed: its record keeps the name in shadow.TABLE."""
         to, v = c.get("name") if isinstance(c.get("name"), str) else "", c.get("variant")
-        own = self.shadow.own
+        sh, own = self.shadow, self.shadow.own
         try:
             if own.has(v):
-                was, now = own.rename(v, to, self.names.shown())
-                self.shadow.changes += 1
-            else:
-                was, now = self.names.rename_variant(v, to, [x for k in own.active() for x in (k, own.title(k))])
-        except ValueError as ex:
+                now, key = own.renamed(v, to, self.names.shown())
+                was = own.title(v)
+                if (was, key) == (now, v):
+                    return f"{now} keeps its name"
+                sh.rekey(v, key)                 # the settled file first: if that fails, nothing has moved
+                self.slog.rekey(v, key)
+                own.rename(v, now, key)
+                sh.changes += 1
+                if self.cfg.live.variant == v:
+                    self.cfg.live.variant = key
+                    cfgmod.save(self.cfg, self.runtime)
+                self.renamed = {**{o: (key if n == v else n) for o, n in self.renamed.items()}, v: key}
+                return f"variant {was} is now {now}"
+            was, now = self.names.rename_variant(v, to, [x for k in own.active() for x in (k, own.title(k))])
+        except (ValueError, OSError) as ex:
             return f"not renamed: {ex}"
         if was == now:
             return f"{now} keeps its name"
@@ -1148,7 +1161,7 @@ class Desk:
               "spot": sp, "events": evs, "hist": hist, "view": self.view,
               "live": book_view(self.live),
               "gate": gate, "shadow": shadow, "variants": variants, "gate_cfg": self.cfg.gate.__dict__,
-              "views": views, "live_cfg": self.cfg.live.__dict__,
+              "views": views, "live_cfg": self.cfg.live.__dict__, "renamed": self.renamed,
               "settings": {r.key: cfgmod.get_setting(self.cfg, r.key) for r in cfgmod.SETTINGS},
               "logs": [list(x) for x in list(self.logs)[-200:]], "results": self.results,
               "auto_live": self._live_rule_on(gate), "variant_names": dict(self.names.variants),
