@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import base64
 import binascii
+import contextlib
+import fcntl
 import hashlib
 import hmac
 import json
@@ -25,7 +27,7 @@ FILE = os.path.join(webauth.DIR, "app-devices.json")
 MAX = 3                   # phones that may be paired at once
 SKEW = 30.0               # seconds the phone's clock may differ from the desk's
 
-_LOCK = threading.Lock()
+_LOCK = threading.RLock()
 
 
 class Refused(Exception):
@@ -41,7 +43,7 @@ def words(everyday_b64: str, live_b64: str) -> str:
 def needs_live(cmd: dict, cfg: "cfgmod.Config", armed: bool) -> bool:
     """True if the command needs the fingerprint key: arming live, or loosening a limit while live is armed."""
     if cmd.get("op") == "live":
-        return cmd.get("on") is True
+        return bool(cmd.get("on"))                # the engine arms on any truthy value
     if cmd.get("op") == "set" and armed:
         row = cfgmod.setting(str(cmd.get("key")))
         value = cmd.get("value")
@@ -57,14 +59,38 @@ class Devices:
         self.path = path
         self._mtime = None
         self._data: dict = {"secret": "", "phones": {}}
+        self._depth = 0
 
-    def _load(self) -> None:
+    @contextlib.contextmanager
+    def _locked(self):
+        """Hold this process's lock and a file lock, so the desk and tern-web never overwrite each other."""
+        with _LOCK:
+            if self._depth:
+                self._depth += 1
+                try:
+                    yield
+                finally:
+                    self._depth -= 1
+                return
+            os.makedirs(os.path.dirname(self.path), mode=0o700, exist_ok=True)
+            fd = os.open(self.path + ".lock", os.O_RDWR | os.O_CREAT, 0o600)
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX)
+                self._depth = 1
+                self._load(force=True)            # another process may have changed the file
+                yield
+            finally:
+                self._depth = 0
+                os.close(fd)                      # closing releases the file lock
+
+    def _load(self, force: bool = False) -> None:
         """Re-read the file if it changed. Call with the lock held."""
         try:
             mtime = os.stat(self.path).st_mtime_ns
         except FileNotFoundError:
+            self._data, self._mtime = {"secret": "", "phones": {}}, None
             return
-        if mtime != self._mtime:
+        if force or mtime != self._mtime:
             with open(self.path) as fh:
                 self._data = json.load(fh)
             self._mtime = mtime
@@ -74,8 +100,7 @@ class Devices:
         self._mtime = os.stat(self.path).st_mtime_ns
 
     def all(self) -> list[dict]:
-        with _LOCK:
-            self._load()
+        with self._locked():
             return [{"id": i, "name": p["name"], "paired": p["paired"], "used": p["used"]}
                     for i, p in self._data["phones"].items()]
 
@@ -85,8 +110,7 @@ class Devices:
                 sign.p256_key(base64.b64decode(k, validate=True))
         except (ValueError, binascii.Error):
             raise Refused("that phone's keys aren't P-256 keys") from None
-        with _LOCK:
-            self._load()
+        with self._locked():
             if len(self._data["phones"]) >= MAX:
                 raise Refused(f"{MAX} phones are paired already: remove one first")
             i = secrets.token_hex(6)
@@ -96,8 +120,7 @@ class Devices:
             return i
 
     def remove(self, id: str) -> bool:
-        with _LOCK:
-            self._load()
+        with self._locked():
             if self._data["phones"].pop(id, None) is None:
                 return False
             self._save()
@@ -105,7 +128,6 @@ class Devices:
 
     def _secret(self) -> bytes:
         """Call with the lock held."""
-        self._load()
         if not self._data.get("secret"):
             self._data["secret"] = secrets.token_hex(32)
             self._save()
@@ -113,7 +135,7 @@ class Devices:
 
     def secret(self) -> bytes:
         """32 bytes that sign the app's session cookies. Made on first use."""
-        with _LOCK:
+        with self._locked():
             return self._secret()
 
     def check(self, payload: str, sig_b64: str, key: str, now: float, cfg=None, armed: bool = False) -> tuple[dict, dict]:
@@ -126,36 +148,41 @@ class Devices:
                 and isinstance(req.get("n"), int) and not isinstance(req["n"], bool)
                 and isinstance(req.get("ts"), (int, float)) and not isinstance(req["ts"], bool)):
             raise Refused("the request was malformed")
-        with _LOCK:
-            self._load()
+        with self._locked():
             phone = self._data["phones"].get(req["d"])
             if phone is None:
                 raise Refused("this phone isn't paired: pair it again from the desk")
             if key not in ("everyday", "live"):
                 raise Refused("not signed by this phone's key")
-            try:
-                ok = sign.p256_verify(base64.b64decode(phone[key]), payload.encode(), base64.b64decode(sig_b64))
-            except (ValueError, binascii.Error):
-                ok = False
-            if not ok:
-                raise Refused("not signed by this phone's key")
-            if abs(now - req["ts"]) > SKEW:
-                raise Refused(f"the phone's clock is {abs(now - req['ts']):.0f} s off the desk's")
+            pub = phone[key]
+        try:                                      # slow: done outside the file lock
+            ok = sign.p256_verify(base64.b64decode(pub), payload.encode(), base64.b64decode(sig_b64))
+        except (ValueError, binascii.Error):
+            ok = False
+        if not ok:
+            raise Refused("not signed by this phone's key")
+        if abs(now - req["ts"]) > SKEW:
+            raise Refused(f"the phone's clock is {abs(now - req['ts']):.0f} s off the desk's")
+        if req["cmd"].get("op") == "live" and not isinstance(req["cmd"].get("on"), bool):
+            raise Refused("the request was malformed")
+        if key == "everyday" and cfg is not None and needs_live(req["cmd"], cfg, armed):
+            raise Refused("live needs your fingerprint")
+        with self._locked():                      # the file was just re-read: the phone may be gone or have moved on
+            phone = self._data["phones"].get(req["d"])
+            if phone is None or phone[key] != pub:
+                raise Refused("this phone isn't paired: pair it again from the desk")
             if req["n"] <= phone["n"]:
                 raise Refused("sent twice: refused")
-            if key == "everyday" and cfg is not None and needs_live(req["cmd"], cfg, armed):
-                raise Refused("live needs your fingerprint")
             phone["n"], phone["used"] = req["n"], now
             self._save()
-            summary = {"id": req["d"], "name": phone["name"], "paired": phone["paired"], "used": now}
-            return summary, req["cmd"]
+            return ({"id": req["d"], "name": phone["name"], "paired": phone["paired"], "used": now}, req["cmd"])
 
     def _sig(self, msg: str) -> str:
         return hmac.new(self._secret(), msg.encode(), hashlib.sha256).hexdigest()
 
     def session_token(self, dev_id: str, now: float) -> str:
         """A cookie for the app's web view: the device, an expiry 30 days out, and an HMAC over both."""
-        with _LOCK:
+        with self._locked():
             msg = f"{dev_id}.{int(now + webauth.TTL)}"
             return f"{msg}.{self._sig(msg)}"
 
@@ -163,8 +190,7 @@ class Devices:
         """The device a cookie belongs to, or None if it is forged, expired or its phone was removed."""
         try:
             dev_id, exp, sig = (tok or "").split(".")
-            with _LOCK:
-                self._load()
+            with self._locked():
                 if (not hmac.compare_digest(self._sig(f"{dev_id}.{exp}"), sig) or int(exp) <= now
                         or dev_id not in self._data["phones"]):
                     return None

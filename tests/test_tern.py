@@ -9,6 +9,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -5090,6 +5091,28 @@ class Devices(unittest.TestCase):
         self.assertTrue(devices.needs_live(low, cfg, True))
         self.assertFalse(devices.needs_live(low, cfg, False))
         self.assertFalse(devices.needs_live({"op": "set", "key": "nope", "value": 1}, cfg, True))
+
+    def test_live_on_must_be_a_real_bool(self):
+        i, signer = self._paired()
+        cfg = cfgmod.Config()
+        for n, on in enumerate((1, "yes", [1], 1.0), 1):
+            with self.assertRaises(devices.Refused):
+                self._send(i, signer, n, {"op": "live", "on": on, "variant": "base"}, cfg=cfg)
+        self.assertTrue(devices.needs_live({"op": "live", "on": 1}, cfg, False))
+
+    def test_a_removal_during_a_check_sticks(self):
+        i, signer = self._paired()
+        a, b = self.dev, devices.Devices(path=self.path)
+        real = sign.p256_verify
+
+        def verify_then_remove(*args):
+            ok = real(*args)
+            self.assertTrue(b.remove(i))          # the desk removes the phone while a check is mid-way
+            return ok
+        with mock.patch.object(sign, "p256_verify", verify_then_remove):
+            with self.assertRaisesRegex(devices.Refused, "isn't paired"):
+                self._send(i, signer, 1, {"op": "live", "on": False})
+        self.assertEqual(devices.Devices(path=self.path).all(), [])
 
     def test_session_tokens(self):
         i, _ = self._paired()
