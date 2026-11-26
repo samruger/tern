@@ -5202,7 +5202,7 @@ class Devices(unittest.TestCase):
         o = devices.offered(live, 101.0)
         self.assertEqual((o["id"], o["name"], o["words"]), (oid, "pixel", devices.words(e, l)))
         self.assertEqual(devices.offer_state(live, oid, 101.0), {"state": "waiting"})
-        self.assertIn("paired", devices.answer(live, oid, True, self.dev))
+        self.assertIn("paired", devices.answer(live, oid, True, self.dev, now=101.0))
         st = devices.offer_state(live, oid, 102.0)
         self.assertEqual(st["state"], "paired")
         self.assertIn(st["device"], [p["id"] for p in self.dev.all()])
@@ -5235,7 +5235,7 @@ class Devices(unittest.TestCase):
         self.assertEqual(devices.offered(live, 2001.0)["name"], "a" * 24)
         with self.assertRaisesRegex(devices.Refused, "another phone is waiting to be paired"):
             self._offer(live, code, now=2001.0)
-        self.assertIn("no", devices.answer(live, oid, False, self.dev).lower())
+        self.assertIn("no", devices.answer(live, oid, False, self.dev, now=2001.0).lower())
         self.assertEqual(devices.offer_state(live, oid, 2002.0)["state"], "declined")
         self.assertEqual(self.dev.all(), [])
         code = devices.new_code(live, 3000.0)
@@ -5243,6 +5243,15 @@ class Devices(unittest.TestCase):
         self.assertEqual(devices.offer_state(live, oid, 3000.0 + 301)["state"], "expired")
         self.assertIsNone(devices.offered(live, 3000.0 + 301))
         self.assertEqual(oct(os.stat(os.path.join(live, "app-pair.json")).st_mode & 0o777), "0o600")
+
+    def test_answer_after_expiry_adds_nothing(self):
+        live = self._live()
+        code = devices.new_code(live, 100.0)
+        oid, _ = self._offer(live, code, now=100.0)
+        self.assertIn("ran out", devices.answer(live, oid, True, self.dev, now=100.0 + 301))
+        self.assertEqual(self.dev.all(), [])
+        self.assertEqual(devices.offer_state(live, oid, 100.0 + 302)["state"], "expired")
+        self.assertEqual(devices.offer_state(live, oid, 100.0 + 303), {"state": "expired"})
 
     def test_switches(self):
         from tern import __main__ as cli

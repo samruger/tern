@@ -288,12 +288,14 @@ def offered(live: str, now: float) -> dict | None:
     return None
 
 
-def answer(live: str, offer_id: str, yes: bool, devices: "Devices") -> str:
+def answer(live: str, offer_id: str, yes: bool, devices: "Devices", now: float | None = None) -> str:
     """The desk's yes or no. Returns the line the screen says."""
     with _pair(live) as st:
         o = st.get("offer")
         if not o or o["id"] != offer_id or o["state"] != "waiting":
             return "that pairing is over"
+        if o["until"] <= (time.time() if now is None else now):
+            return "that pairing ran out"         # it stays expired: the phone may have given up already
         if not yes:
             o["state"] = "declined"
             return f"{o['name']} not paired"
