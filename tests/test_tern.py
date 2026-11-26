@@ -4181,6 +4181,27 @@ class Phone(Rig, unittest.TestCase):
             self.assertEqual(ask["kind"], "move")
             self.assertEqual(ask["lines"][0], "Live trades band90. Move it to late? Real money would trade late instead.")
 
+    def test_a_renamed_variants_pages_follow_it_and_a_gone_one_is_gone(self):
+        """One of your own renamed takes a new key: its old name's pages show it under the new one (the page moves there);
+        a name that is neither a variant nor a renamed one is gone, never another variant shown in its place."""
+        from tern import phone
+        with tempfile.TemporaryDirectory() as d:
+            k, scr = self.setup(d)
+            self.new(k, "base", "mine", cap=3); self.sync()
+            k._command({"op": "rename", "variant": "mine", "name": "ours"}); self.sync()
+            self.assertIsNone(scr.vrow("mine"))
+            self.assertEqual(phone.page(scr, {"page": "home"})["renamed"], {"mine": "ours"})
+            self.assertEqual(self.page(scr, "variant", "mine")["name"], "ours")
+            self.assertEqual(self.page(scr, "edit", "mine")["from"], "ours")
+            k._command({"op": "rename", "variant": "ours", "name": "theirs"}); self.sync()       # again: the first name still finds it
+            self.assertEqual((self.page(scr, "variant", "mine")["name"], self.page(scr, "edit", "ours")["from"]), ("theirs", "theirs"))
+            for page in ("variant", "edit"):
+                self.assertEqual(self.page(scr, page, "nosuch"), {"none": "nosuch is gone"})
+                self.assertEqual(self.page(scr, page, "theirs")["title"], "theirs")
+                self.assertEqual(self.page(scr, page)["title"], scr.vn(scr.variant))              # no name: the selected one
+            k._command({"op": "variant_delete", "variant": "theirs"}); self.sync()
+            self.assertEqual(self.page(scr, "variant", "mine"), {"none": "mine is gone"})
+
     def page_text(self):
         from tern import phone
         with open(phone.PAGE) as fh:
@@ -4268,13 +4289,36 @@ class Phone(Rig, unittest.TestCase):
         const pre = document.createElement("pre"); pre.id = "out"; pre.textContent = JSON.stringify(out); document.body.append(pre);
       });
     """
+    RENAME = """
+      const wait = async (f, ms = 8000) => { for (let t = 0; t < ms; t += 50) { const v = f(); if (v) return v; await new Promise(r => setTimeout(r, 50)); } return null; };
+      const $ = s => document.querySelector(s), open = () => $("#sheet") && !$("#sheet").hidden && $("#sheet h2").textContent;
+      const back = () => wait(() => !(history.state && history.state.sheet));
+      const tap = async s => { const b = await wait(() => $(s)); if (b) b.click(); return wait(open); };
+      const out = {};
+      window.addEventListener("load", async () => {
+        location.hash = "#/edit/mine";
+        await tap('[data-do="rule"][data-v="rule.contracts"]');
+        $('#sheet [data-do="nudge"][data-v="1"]').click(); $('#sheet [data-ans="yes"]').click(); await back();
+        await wait(() => $(".draft") && $(".draft").textContent.includes("1 change"));
+        location.hash = "#/variant/mine";
+        out.rename = await tap('[data-do="rename"]');
+        const i = $("#sheet input.type"); i.value = "ours"; i.dispatchEvent(new Event("input", { bubbles: true }));
+        $('#sheet [data-ans="yes"]').click(); await back();
+        out.moved = await wait(() => location.hash === "#/variant/ours" && $("main h1").textContent === "ours" && location.hash);
+        out.buttons = [...document.querySelectorAll("main [data-do]")].map(b => b.dataset.do);
+        location.hash = "#/edit/ours";
+        out.draft = await wait(() => $(".draft") && $(".draft").textContent.includes("1 change") && $(".draft").textContent);
+        out.log = __log;
+        const pre = document.createElement("pre"); pre.id = "out"; pre.textContent = JSON.stringify(out); document.body.append(pre);
+      });
+    """
     STUB = """
       window.__log = [];
       window.TernApp = { paired: () => true, sign: (id, cmd, live) => { __log.push([JSON.parse(cmd), live]);
         setTimeout(() => ternSigned(id, JSON.stringify({ payload: cmd, sig: "c2ln", key: live ? "live" : "everyday" })), 5); } };
     """
 
-    def browse(self, hub, d, stub, control, budget=6000):
+    def browse(self, hub, d, stub, control, budget=6000, drive=None, run=None):
         """phone.html in headless chromium, against a tern web of the test's own: /phone is the hub's, /act takes what
         the stub app signed. What the page did comes back as JSON."""
         import http.server, json, re, subprocess, threading
@@ -4282,7 +4326,7 @@ class Phone(Rig, unittest.TestCase):
         sent: list = []
         with open(phone.PAGE) as fh:
             page = fh.read()
-        page = page.replace("<script>\n", "<script>" + (self.STUB if stub else "") + self.DRIVE + "</script>\n<script>\n", 1)
+        page = page.replace("<script>\n", "<script>" + (self.STUB if stub else "") + (drive or self.DRIVE) + "</script>\n<script>\n", 1)
         look = {**web._foot_colors(), "attr": {}, "fonts": [], "login": False}
 
         class H(http.server.BaseHTTPRequestHandler):
@@ -4301,6 +4345,8 @@ class Phone(Rig, unittest.TestCase):
                 req = json.loads(self.rfile.read(int(self.headers["Content-Length"])) or b"{}")
                 if self.path == "/act":
                     sent.append(req)
+                    if run:
+                        run(json.loads(req["payload"]))
                     self.send(200, {"id": f"c{len(sent)}", "say": "sent"})
                 else:
                     out = hub.phone(req)
@@ -4353,6 +4399,21 @@ class Phone(Rig, unittest.TestCase):
             for stub, control in ((False, True), (True, False)):
                 got, sent = self.browse(hub, d, stub=stub, control=control, budget=3000)
                 self.assertEqual((got["buttons"], got["log"], sent), ([], [], []), (stub, control))
+
+    def test_a_rename_in_the_app_takes_its_page_and_draft_along(self):
+        """In headless chromium: renaming one of your own moves the page to the new name, and its draft goes with it."""
+        import shutil
+        if not shutil.which("chromium"):
+            raise unittest.SkipTest("needs chromium")
+        with tempfile.TemporaryDirectory() as d:
+            k, hub = self.hub(d)
+            self.new(k, "base", "mine", cap=3); self.sync()
+            got, sent = self.browse(hub, d, stub=True, control=True, drive=self.RENAME, run=lambda cmd: (k._command(cmd), k._status()))
+            self.assertEqual(got["rename"], "rename mine")
+            self.assertEqual(got["log"], [[{"op": "rename", "variant": "mine", "name": "ours"}, False]])
+            self.assertEqual(got["moved"], "#/variant/ours")
+            self.assertEqual(got["buttons"], ["on", "edit", "rename", "delete", "live"])     # its own, under its own name
+            self.assertIn("1 change, not saved", got["draft"])
 
     def test_the_pages_menu_has_help_and_settings(self):
         import re

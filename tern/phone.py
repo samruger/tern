@@ -267,10 +267,23 @@ def variants(scr, arg) -> dict:
     return {"rows": [{**variant(scr, v), "curve": thin(v.get("curve") or [], 40)} for v in scr.st.get("variants") or []]}
 
 
+def the_variant(scr, arg):
+    """The variant a page asked for: arg followed through renames (one of your own renamed takes a new key), or with no
+    arg the selected one. None when there is none: (None, what to say)."""
+    if not arg:
+        v = scr.vrow(scr.variant)
+        return (v, "") if v else (None, "waiting for the engine")
+    moved, seen, name = scr.raw.get("renamed") or {}, set(), arg
+    while scr.vrow(name) is None and name in moved and name not in seen:
+        seen.add(name); name = moved[name]
+    v = scr.vrow(name)
+    return (v, "") if v else (None, f"{arg} is gone" if scr.st.get("variants") else "waiting for the engine")
+
+
 def one_variant(scr, arg) -> dict:
-    v = scr.vrow(arg) or scr.vrow(scr.variant)
+    v, gone = the_variant(scr, arg)
     if v is None:
-        return {"none": "waiting for the engine"}
+        return {"none": gone}
     view = (scr.st.get("views") or {}).get(v["name"]) or {}
     today = v.get("today") or [0, 0, 0]
     stats = [["P&L", dash.money(v["pnl"], True), signed(v["pnl"])], ["today", dash.money(today[0], True), signed(today[0])],
@@ -399,9 +412,9 @@ def settings_page(scr, arg) -> dict:
 
 def edit_page(scr, arg) -> dict:
     """A variant's rule as the editor's rows; the draft is the app's own until it saves."""
-    v = scr.vrow(arg) or scr.vrow(scr.variant)
+    v, gone = the_variant(scr, arg)
     if v is None:
-        return {"none": "waiting for the engine"}
+        return {"none": gone}
     rule = v.get("rule") or {}
     ctx = {"vol": None, "price": None, "limits": v.get("paper_limits", False), "name": scr.vn(v["name"])}
     told = None
@@ -439,7 +452,8 @@ def page(scr, req: dict) -> dict:
     out = {"page": name, "now": time.time(), "engine": engine(scr), "mode": "live" if st.get("mode") == "live" else "armed" if st.get("live_enabled") else "paper",
            "error": st.get("live_error") or "", "coins": coins(scr), "series": scr.series, "coin": cfgmod.coin(scr.series), "chart": scr.chart,
            "charts": list(dash.CHARTS), "selected": {"name": scr.variant, "title": scr.vn(scr.variant)} if scr.variant else None,
-           "theme": scr.P.name, "menu": menu(scr), "flash": scr.flash if scr.flashing() else ""}
+           "theme": scr.P.name, "menu": menu(scr), "flash": scr.flash if scr.flashing() else "",
+           "renamed": scr.raw.get("renamed") or {}}
     data = MAKE[name](scr, arg)
     out["etag"] = f"{zlib.crc32(json.dumps([name, arg, data]).encode()):08x}"
     if req.get("etag") != out["etag"]:           # (the same as the browser has: not sent again)

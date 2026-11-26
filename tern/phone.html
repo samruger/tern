@@ -409,7 +409,7 @@
           el("div.num", { style: { "min-width": "8em" } }, el("b", { cls: v.role }, v.pnl), el("div.sub", { cls: v.today ? role(v.today) : "" }, "today " + usd(v.today, true)))))) : none("Waiting for the engine.")];
     },
     variant(d, x) {
-      if (x.none) return [back("variants", "variants"), none("Waiting for the engine.")];
+      if (x.none) return [back("variants", "variants"), none(x.none[0].toUpperCase() + x.none.slice(1) + ".")];
       return [back("variants", "variants"), title(x.title, ...tags(x)), x.desc && !x.own && el("p.quiet", {}, x.desc), el("div.price", { cls: x.role }, x.pnl),
         chart("variant", "tall", plus(x.curve, `P&L over its last ${x.points} hours`), `P&L ${x.pnl}`), stats(x.stats.slice(1)),
         x.selected ? el("div.act.off", {}, "selected: the book and gate show it") : el("button.act", { "data-set": "variant", "data-v": x.name }, "Select " + x.title),
@@ -461,7 +461,7 @@
         el("p.quiet.small", { style: { "margin-top": "8px" } }, "Phones are paired and removed on the desk: settings, APP.")];
     },
     edit(d, x) {
-      if (x.none) return [back("variants", "variants"), none("Waiting for the engine.")];
+      if (x.none) return [back("variants", "variants"), none(x.none[0].toUpperCase() + x.none.slice(1) + ".")];
       const c = controls();
       return [back("variant/" + encodeURIComponent(x.from), x.title), title(x.title, el("small", {}, x.own ? "your own" : "built in")),
         c ? c.draft(x) : el("p.quiet.small", {}, "What it trades with. A new variant from it is made in the app, or on the desk (e)."),
@@ -525,6 +525,9 @@
       get();
     };
     window.ternRefused = (id, text) => { if (waiting.delete(id)) say(text || "not sent"); };
+    function follow(moved) {                                // drafts under a variant's old name, to its new one
+      for (const [was, to] of Object.entries(moved)) if (was !== to && drafts.has(was) && !drafts.has(to)) { drafts.set(to, drafts.get(was)); drafts.delete(was); }
+    }
     function hear(res) {
       const now = Date.now();
       for (const [cid, h] of heard) {
@@ -751,7 +754,7 @@
 
     const tool = (what, text, cls) => el("button.act", { "data-do": what, cls }, text);
     return {
-      hear,
+      hear, follow,
       variant: x => [el("div.tools", {}, tool("on", x.on ? "turn off" : "turn on"), tool("edit", "edit"), tool("rename", "rename"),
           x.own ? tool("delete", "delete") : el("div.act.off", {}, "built in")),
         tool("live", x.live_ask.kind === "off" ? "live off" : x.live_ask.kind === "move" ? "move live here" : "go live", "red")],
@@ -820,7 +823,8 @@
     busy = true;
     try {
       do {
-        const r = route(), key = r.page + "/" + r.arg, send = { ...(again || {}), ...(set || {}) };
+        const r = route(), send = { ...(again || {}), ...(set || {}) };
+        let key = r.page + "/" + r.arg;
         again = set = null;
         const { view: v, ...picked } = send;
         if (v) view = v; else if (picked.variant) view = null;
@@ -837,9 +841,16 @@
         if (d.look) dress(d.look);
         fails = 0; lastAt = Date.now(); last = d;
         if (controls() && d.results) controls().hear(d.results);                      // the engine's answers to what this app sent
+        if (controls() && d.renamed) controls().follow(d.renamed);                    // (a draft goes with its variant's new name)
         if (leaving) await leaving;
         const now = route();
         if (now.page + "/" + now.arg !== key) { again = again || {}; continue; }          // moved on meanwhile
+        const to = d.data && r.arg && (r.page === "variant" ? d.data.name : r.page === "edit" ? d.data.from : null);
+        if (to && to !== r.arg) {                                                     // one of your own, renamed: its page goes with it
+          key = r.page + "/" + to; history.replaceState(history.state, "", `#/${r.page}/` + encodeURIComponent(to));
+          if (back.y.has(shown)) back.y.set(key, back.y.get(shown));
+          if (shown === r.page + "/" + r.arg) shown = key;                           // (the same page, under its new name)
+        }
         if (d.data) { data = d.data; etag = d.etag; }
         render(key);
       } while (again);
