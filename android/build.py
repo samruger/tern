@@ -26,7 +26,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
 CONF = os.path.expanduser("~/.config/tern")
 KEPT, KEY, KEY_PASS = (os.path.join(CONF, n) for n in ("android.json", "android.jks", "android.pass"))
-MIN, TARGET, VERSION = 29, 36, "1.0"
+MIN, TARGET, VERSION = 29, 36, "1.1"
 
 
 def run(*cmd: str, **kw) -> str:

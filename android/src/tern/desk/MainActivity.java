@@ -8,6 +8,7 @@ import android.graphics.Color;
 import android.graphics.Insets;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
+import android.hardware.biometrics.BiometricManager;
 import android.net.ConnectivityManager;
 import android.net.Network;
 import android.net.Uri;
@@ -17,6 +18,9 @@ import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.SystemClock;
+import android.provider.Settings;
+import android.text.InputFilter;
 import android.text.InputType;
 import android.view.Gravity;
 import android.view.View;
@@ -56,7 +60,7 @@ import java.util.regex.Pattern;
 
 /** The desk's web pages, full screen: from the first of its addresses that answers with the approved certificate. */
 public final class MainActivity extends Activity {
-    private static final String ADDRESSES = "tern.desk.ADDRESSES";
+    private static final String ADDRESSES = "tern.desk.ADDRESSES", PAIR = "tern.desk.PAIR";
     private static final int TEXT = 0xffc0caf5, GREY = 0xff737aa2, HEAD = 0xff7aa2f7, FILL = 0xff24283b, WARN = 0xffe0af68;
     private static final int SIGN_IN = 30 * 86400;          // how long a sign-in lasts (webauth.TTL)
     private static final Pattern COOKIE = Pattern.compile("(?:^|;\\s*)((?:__Host-tern_s|tern_ui)=[^;]*)");
@@ -71,6 +75,14 @@ public final class MainActivity extends Activity {
     private boolean failed, fresh, busy, resumed, editing;  // editing: a screen the person has to leave by themselves
     private int turn;                                       // an older look for the desk than this one is dropped
     private ConnectivityManager.NetworkCallback network;
+    private Keys keys;
+    private volatile boolean deskPage;                      // an approved desk page is up: the only time the bridge answers
+    private boolean bridged, signing, fingerWait;           // the bridge is on this web view; a sign-in is under way; back from settings
+    private int pairing;                                    // an older pairing's answers are dropped
+    private final Act.Count count = new Act.Count() {       // the signed count, kept before it is used
+        @Override public long kept() { return prefs.getLong("n", 1); }
+        @Override public boolean keep(long next) { return prefs.edit().putLong("n", next).commit(); }
+    };
     private final Runnable look = () -> { if (resumed && !editing) check(); };
 
     // ---------------------------------------------------------------- starting and stopping
@@ -79,6 +91,7 @@ public final class MainActivity extends Activity {
     @Override protected void onCreate(Bundle state) {
         super.onCreate(state);
         prefs = getSharedPreferences("tern", MODE_PRIVATE);
+        keys = new Keys(this);
         preset();
         if (state != null) route = state.getString("route", "");
         root = new FrameLayout(this);
@@ -98,12 +111,15 @@ public final class MainActivity extends Activity {
             @Override public void onAvailable(Network n) { main.removeCallbacks(look); main.postDelayed(look, 800); }
         };
         getSystemService(ConnectivityManager.class).registerDefaultNetworkCallback(network);
-        if (ADDRESSES.equals(getIntent().getAction()) || bases().isEmpty()) form(null); else { waiting(); connect(); }
+        if (ADDRESSES.equals(getIntent().getAction()) || bases().isEmpty()) form(null);
+        else if (PAIR.equals(getIntent().getAction())) pairIntro(null);
+        else { waiting(); connect(); }
     }
 
     @Override protected void onNewIntent(Intent intent) {
         super.onNewIntent(intent);
         if (ADDRESSES.equals(intent.getAction())) form(null);
+        else if (PAIR.equals(intent.getAction()) && !bases().isEmpty()) pairIntro(null);
     }
 
     @Override protected void onResume() {
@@ -112,6 +128,7 @@ public final class MainActivity extends Activity {
         web.onResume();
         main.removeCallbacks(look);
         main.postDelayed(look, 300);
+        if (fingerWait) pairFinger();                       // back from adding a fingerprint
     }
 
     @Override protected void onPause() {
@@ -131,6 +148,7 @@ public final class MainActivity extends Activity {
         main.removeCallbacksAndMessages(null);
         getSystemService(ConnectivityManager.class).unregisterNetworkCallback(network);
         worker.shutdownNow();
+        keys.close();
         root.removeAllViews();
         web.destroy();
         super.onDestroy();
@@ -140,7 +158,7 @@ public final class MainActivity extends Activity {
     @Override public void onBackPressed() { back(); }       // before Android 13
 
     private void back() {
-        if (editing && !bases().isEmpty()) { hideKeys(); editing = false; if (base != null && !failed) show(null); else waiting(); connect(); return; }
+        if (editing && !bases().isEmpty()) { hideKeys(); editing = false; fingerWait = false; pairing++; if (base != null && !failed) show(null); else waiting(); connect(); return; }
         if (screen == null && web.canGoBack()) { web.goBack(); return; }
         moveTaskToBack(true);
     }
@@ -179,7 +197,7 @@ public final class MainActivity extends Activity {
 
     /** Whether the address in use still answers; another is looked for if not. */
     private void check() {
-        if (busy) return;
+        if (busy || signing) return;
         if (base == null || failed || screen != null) { connect(); return; }
         String was = base, pin = pin();
         int t = turn;
@@ -218,12 +236,13 @@ public final class MainActivity extends Activity {
 
     private void open(String to) {
         boolean same = to.equals(base) && !failed && web.getUrl() != null && Link.at(web.getUrl(), to);
-        if (!same) {
-            String at = route();
-            base = to; failed = false; fresh = true;
-            for (String b : bases()) share(b, to, false);
-            web.loadUrl(to + "/" + at);
-        }
+        if (same) { show(null); return; }
+        String at = route();
+        base = to; failed = false; fresh = true;
+        for (String b : bases()) share(b, to, false);
+        if (device() != null) { signIn(to, at); return; }
+        if (!prefs.getBoolean("offered", false)) { prefs.edit().putBoolean("offered", true).apply(); failed = true; pairIntro(null); return; }
+        web.loadUrl(to + "/" + at);
         show(null);
     }
 
@@ -271,6 +290,7 @@ public final class MainActivity extends Activity {
         web.clearSslPreferences();                          // the certificate is asked about anew each time
         web.setWebChromeClient(new WebChromeClient());
         web.setWebViewClient(new Pages());
+        bridged = false; deskPage = false;
         root.addView(web, 0, new FrameLayout.LayoutParams(-1, -1));
     }
 
@@ -307,18 +327,26 @@ public final class MainActivity extends Activity {
         }
 
         @Override public void onPageStarted(WebView v, String url, android.graphics.Bitmap icon) {
+            if (base == null || !Link.at(url, base)) deskPage = false;
             if (!url.equals("about:blank") && (base == null || !Link.at(url, base))) v.stopLoading();
         }
 
         @Override public void onPageFinished(WebView v, String url) {
             if (base == null || !Link.at(url, base)) return;
             SslCertificate c = v.getCertificate();
-            if (c != null && !approved(c)) { failed = true; v.loadUrl("about:blank"); if (!editing) connect(); return; }
+            if (c != null && !approved(c)) { failed = true; deskPage = false; v.loadUrl("about:blank"); if (!editing) connect(); return; }
+            deskPage = c != null;
             String path = Uri.parse(url).getPath();
             boolean signedIn = "/login".equals(last) && "/".equals(path);
             if (signedIn) for (String b : bases()) share(base, b, true);
             if (fresh || signedIn) { v.clearHistory(); fresh = false; }                     // back doesn't go to the sign-in
             last = path == null ? "" : path;
+            if (deskPage && !bridged && device() != null) {   // a page sees it from its next load on
+                bridged = true;
+                v.addJavascriptInterface(new Bridge(bridge), Bridge.NAME);
+                v.reload();
+                return;
+            }
             paint(); main.postDelayed(MainActivity.this::paint, 1500);
         }
 
@@ -425,10 +453,12 @@ public final class MainActivity extends Activity {
             button("Not now", false, () -> form(null))));
     }
 
-    private EditText field(String k, String hint) {
+    private EditText field(String k, String hint) { return input(prefs.getString(k, ""), hint, InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI); }
+
+    private EditText input(String value, String hint, int type) {
         EditText e = new EditText(this);
-        e.setText(prefs.getString(k, "")); e.setHint(hint); e.setTextColor(TEXT); e.setHintTextColor(GREY); e.setTypeface(Typeface.MONOSPACE); e.setTextSize(16); e.setSingleLine(true);
-        e.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI); e.setPadding(dp(12), dp(12), dp(12), dp(12)); e.setBackground(fill(FILL));
+        e.setText(value); e.setHint(hint); e.setTextColor(TEXT); e.setHintTextColor(GREY); e.setTypeface(Typeface.MONOSPACE); e.setTextSize(16); e.setSingleLine(true);
+        e.setInputType(type); e.setPadding(dp(12), dp(12), dp(12), dp(12)); e.setBackground(fill(FILL));
         LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(-1, -2);
         p.bottomMargin = dp(14);
         e.setLayoutParams(p);
@@ -454,6 +484,254 @@ public final class MainActivity extends Activity {
             editing = false;
             waiting(); connect();
         })));
+    }
+
+    // ---------------------------------------------------------------- signing in, and the page's commands
+
+    private String device() { return prefs.getString("device", null); }
+
+    private static double now() { return System.currentTimeMillis() / 1000.0; }
+
+    /** The app's own sign-in: signed by the everyday key, sent over the pinned connection, its cookie put in the web view's
+        jar; then the pages. The password page is for a phone that isn't paired. */
+    private void signIn(String to, String at) {
+        String dev = device(), pin = pin();
+        int t = turn;
+        signing = true;
+        show(column(text("tern", HEAD, 22), text("Signing in…", GREY, 16)));
+        keys.sign(Keys.EVERYDAY, "sign in to tern", "your fingerprint signs this phone in to the desk",
+            () -> Act.payload(dev, Act.next(count), now(), Act.SESSION), new Keys.Done() {
+                @Override public void signed(String text, byte[] sig) {
+                    String body = Act.body(text, Act.b64(sig), false);
+                    worker.execute(() -> {
+                        Link.Reply r;
+                        try {
+                            r = Link.post(to, "/app/session", body, pin, 8000);
+                        } catch (IOException e) {
+                            String why = "no answer from tern: " + e.getMessage();
+                            main.post(() -> { signing = false; if (t == turn && !editing) notSignedIn(to, at, why); });
+                            return;
+                        }
+                        main.post(() -> signedIn(t, to, at, r));
+                    });
+                }
+                @Override public void refused(String why) { signing = false; if (t == turn && !editing) notSignedIn(to, at, why); }
+                @Override public void gone() { signing = false; unpair(Keys.GONE); }
+            });
+    }
+
+    private void signedIn(int t, String to, String at, Link.Reply r) {
+        signing = false;
+        if (t != turn || editing) return;
+        String cookie = r.code == 200 ? Act.appCookie(r.cookies) : null;
+        if (cookie == null) { notSignedIn(to, at, Act.error(r)); return; }
+        CookieManager jar = CookieManager.getInstance();
+        String c = cookie + "; Max-Age=" + SIGN_IN + "; Path=/; Secure; HttpOnly; SameSite=Strict";
+        for (String b : bases()) if (!b.equals(to)) jar.setCookie(b, c);
+        jar.setCookie(to, c, ok -> { if (t == turn && !editing) { web.loadUrl(to + "/" + at); show(null); } });
+    }
+
+    private void notSignedIn(String to, String at, String why) {
+        failed = true; editing = true;
+        show(column(text("Not signed in", WARN, 20), text(why, TEXT, 15),
+            button("Try again", true, () -> { editing = false; waiting(); connect(); }),
+            button("Pair this phone again", false, () -> pairIntro(null)),
+            button("View only", false, () -> { editing = false; base = to; failed = false; fresh = true; web.loadUrl(to + "/" + at); show(null); }),
+            button("Addresses", false, () -> form(null))));
+    }
+
+    /** This phone is no longer paired: its keys, device and app cookie go. */
+    private void forget() {
+        prefs.edit().remove("device").apply();
+        CookieManager jar = CookieManager.getInstance();
+        for (String b : bases()) jar.setCookie(b, Act.COOKIE + "=; Max-Age=0; Path=/; Secure; HttpOnly; SameSite=Strict");
+        failed = true;
+    }
+
+    private void unpair(String note) {
+        Keys.delete();
+        forget();
+        pairIntro(note);
+    }
+
+    /** TernApp, for the page: it answers only while an approved desk page is up. */
+    private final Bridge.To bridge = new Bridge.To() {
+        @Override public boolean paired() { return deskPage && device() != null; }
+        @Override public void sign(String id, String cmdJson, boolean live) { main.post(() -> signFor(id, cmdJson, live)); }
+    };
+
+    /** A command from the page, signed with the key it says (live: a fingerprint every time), back to the page to send. */
+    private void signFor(String id, String cmdJson, boolean live) {
+        if (id == null || !deskPage) return;
+        String dev = device();
+        if (dev == null) { page("ternRefused", id, "not sent: this phone isn't paired"); return; }
+        if (cmdJson == null || !Act.command(cmdJson)) { page("ternRefused", id, "not sent: that isn't a command"); return; }
+        keys.sign(live ? Keys.LIVE : Keys.EVERYDAY, live ? "live: your fingerprint" : "send to tern",
+            live ? "this is for live trading, with real money" : "your fingerprint signs this for the desk",
+            () -> Act.payload(dev, Act.next(count), now(), cmdJson), new Keys.Done() {
+                @Override public void signed(String text, byte[] sig) { page("ternSigned", id, Act.body(text, Act.b64(sig), live)); }
+                @Override public void refused(String why) { page("ternRefused", id, why); }
+                @Override public void gone() { page("ternRefused", id, Keys.GONE); unpair(Keys.GONE); }
+            });
+    }
+
+    /** An answer to the page, as JavaScript string literals: only to a desk page. */
+    private void page(String fn, String id, String text) {
+        if (deskPage) web.evaluateJavascript("window." + fn + "&&" + fn + "(" + Act.quote(id) + "," + Act.quote(text) + ")", null);
+    }
+
+    // ---------------------------------------------------------------- pairing: new keys, a fingerprint, the desk's code, a yes on the desk
+
+    private void pairIntro(String note) {
+        editing = true; turn++; busy = false; signing = false; fingerWait = false; pairing++;
+        hideKeys();
+        show(column(note == null ? null : text(note, WARN, 16), text("Pair this phone", HEAD, 20),
+            text("Paired, this phone can send the desk commands, not only look. It makes two keys that never leave its secure hardware: "
+                + "an everyday one, and one for live that asks for your fingerprint every time.", TEXT, 15),
+            text("On the desk: settings (9), APP, pair a phone. It shows a 6-digit code for 5 minutes.", GREY, 14),
+            button("Next", true, this::pairFinger), button(device() == null ? "Not now" : "Keep the pairing it has", false, this::leave)));
+    }
+
+    private void leave() { hideKeys(); editing = false; fingerWait = false; pairing++; waiting(); connect(); }
+
+    private void pairFinger() {
+        fingerWait = false;
+        int r = Keys.ready(this);
+        if (r == BiometricManager.BIOMETRIC_SUCCESS) { pairCode(null); return; }
+        if (r == BiometricManager.BIOMETRIC_ERROR_NONE_ENROLLED) {
+            fingerWait = true;                              // looked at again when the app is back
+            show(column(text("Add a fingerprint", HEAD, 20), text("The keys need a fingerprint on this phone. Add one in the phone's settings, then come back here.", TEXT, 15),
+                button("Open settings", true, this::enroll), button("Not now", false, this::leave)));
+        } else if (r == BiometricManager.BIOMETRIC_ERROR_HW_UNAVAILABLE) {
+            show(column(text("The fingerprint reader isn't ready", WARN, 20), text("Try again in a moment.", TEXT, 15),
+                button("Try again", true, this::pairFinger), button("Not now", false, this::leave)));
+        } else {
+            show(column(text("This phone can't be paired", WARN, 20), text("It has no fingerprint reader strong enough for the keys. You can still look at the pages.", TEXT, 15),
+                button("Back", true, this::leave)));
+        }
+    }
+
+    private void enroll() {
+        Intent i = Build.VERSION.SDK_INT >= 30
+            ? new Intent(Settings.ACTION_BIOMETRIC_ENROLL).putExtra(Settings.EXTRA_BIOMETRIC_AUTHENTICATORS_ALLOWED, BiometricManager.Authenticators.BIOMETRIC_STRONG)
+            : new Intent(Settings.ACTION_SECURITY_SETTINGS);
+        try {
+            startActivity(i);
+        } catch (ActivityNotFoundException e) {
+            try { startActivity(new Intent(Settings.ACTION_SECURITY_SETTINGS)); } catch (ActivityNotFoundException x) { /* only by hand, then */ }
+        }
+    }
+
+    private void pairCode(String wrong) {
+        EditText code = input("", "123456", InputType.TYPE_CLASS_NUMBER), name = input(prefs.getString("name", Build.MODEL), "phone", InputType.TYPE_CLASS_TEXT);
+        code.setFilters(new InputFilter[] { new InputFilter.LengthFilter(6) });
+        name.setFilters(new InputFilter[] { new InputFilter.LengthFilter(24) });
+        TextView bad = text(wrong == null ? "" : wrong, WARN, 14);
+        show(column(text("Pair this phone", HEAD, 20), text("The code the desk shows", GREY, 14), code, text("This phone's name, for the desk's list", GREY, 14), name, bad,
+            button("Pair", true, () -> {
+                String c = code.getText().toString().trim(), typed = name.getText().toString().trim(), n = typed.isEmpty() ? Build.MODEL : typed;
+                if (!c.matches("[0-9]{6}")) { bad.setText("the code is the 6 digits the desk shows"); return; }
+                prefs.edit().putString("name", n).apply();
+                hideKeys();
+                pairStart(c, n);
+            }),
+            button("Not now", false, this::leave)));
+    }
+
+    /** New keys in place of any before: from here this phone is not paired until the desk says yes. */
+    private void pairStart(String code, String name) {
+        int p = ++pairing;
+        List<String> all = bases();
+        String pin = pin();
+        if (all.isEmpty()) { form(null); return; }
+        if (pin == null) { pairCode("the desk's certificate isn't approved yet: open its pages once first"); return; }
+        forget();
+        show(column(text("Pairing…", HEAD, 20), text("Making this phone's keys.", GREY, 15)));
+        worker.execute(() -> {
+            String e, l;
+            try {
+                Keys.make(this);
+                e = Keys.publicB64(Keys.EVERYDAY);
+                l = Keys.publicB64(Keys.LIVE);
+            } catch (GeneralSecurityException | IOException | RuntimeException x) {
+                String why = x.getMessage() == null ? x.getClass().getSimpleName() : x.getMessage();
+                main.post(() -> { if (p == pairing) pairCode("the keys weren't made: " + why); });
+                return;
+            }
+            main.post(() -> { if (p == pairing) pairSign(p, all, pin, code, name, e, l); });
+        });
+    }
+
+    private void pairSign(int p, List<String> all, String pin, String code, String name, String e, String l) {
+        keys.sign(Keys.EVERYDAY, "pair this phone with tern", "your fingerprint signs this phone's new keys", () -> Act.pairText(code, name, e, l), new Keys.Done() {
+            @Override public void signed(String text, byte[] sig) { if (p == pairing) pairAsk(p, all, pin, Act.pairBody(code, name, e, l, Act.b64(sig)), Act.words(e, l)); }
+            @Override public void refused(String why) { if (p == pairing) pairCode(why.replaceFirst("^not sent", "not paired")); }
+            @Override public void gone() { if (p == pairing) pairCode("the keys didn't take: try again"); }
+        });
+    }
+
+    /** The keys, signed, to the desk at whichever address has the approved certificate. */
+    private void pairAsk(int p, List<String> all, String pin, String body, String words) {
+        show(column(text("Pairing…", HEAD, 20), text("Asking the desk.", GREY, 15)));
+        worker.execute(() -> {
+            List<Link.Answer> got = Link.find(all, pin);
+            Link.Answer a = got.get(0);
+            String why, offer = null;
+            if (got.size() != 1 || !pin.equals(a.pin)) why = "no answer from tern with the approved certificate";
+            else {
+                try {
+                    Link.Reply r = Link.post(a.base, "/app/pair", body, pin, 8000);
+                    offer = r.code == 200 ? Act.field(r.body, "offer") : null;
+                    why = offer == null ? Act.error(r) : words.equals(Act.field(r.body, "words")) ? null : "the desk got other keys than this phone's: not paired";
+                } catch (IOException x) {
+                    why = "no answer from tern: " + x.getMessage();
+                }
+            }
+            String said = why, id = offer;
+            main.post(() -> {
+                if (p != pairing) return;
+                if (said != null) pairCode(said); else pairWait(p, a.base, id, words);
+            });
+        });
+    }
+
+    private void pairWait(int p, String at, String offer, String words) {
+        show(column(text("Press y on the desk", HEAD, 20), text("The desk shows this phone's words. If they are these, press y there:", TEXT, 15), text(words, WARN, 26),
+            text("If they aren't, press n there.", GREY, 14), button("Cancel", false, () -> pairIntro(null))));
+        poll(p, at, offer, SystemClock.elapsedRealtime() + Act.PAIR_WAIT);
+    }
+
+    /** Every 2 s, for up to 5 minutes: has the desk said yes? */
+    private void poll(int p, String at, String offer, long until) {
+        String pin = pin();
+        main.postDelayed(() -> {
+            if (p != pairing) return;
+            worker.execute(() -> {
+                String state, more;
+                try {
+                    Link.Reply r = Link.post(at, "/app/paired", Act.offerBody(offer), pin, 8000);
+                    state = r.code == 200 ? String.valueOf(Act.field(r.body, "state")) : "refused";
+                    more = r.code == 200 ? Act.field(r.body, "device") : Act.error(r);
+                } catch (IOException e) {
+                    state = "waiting"; more = null;                 // no answer this time
+                }
+                String s = state, m = more;
+                main.post(() -> polled(p, at, offer, until, s, m));
+            });
+        }, Act.POLL);
+    }
+
+    private void polled(int p, String at, String offer, long until, String state, String more) {
+        if (p != pairing) return;
+        if ("paired".equals(state) && more != null) {
+            prefs.edit().putString("device", more).apply();
+            pairing++; editing = false; failed = true;
+            waiting(); connect();                               // signs in, then the pages
+        } else if ("declined".equals(state)) pairIntro("not paired: the desk said no");
+        else if ("refused".equals(state)) pairIntro("not paired: " + more);
+        else if ("unknown".equals(state)) pairIntro("that pairing is over: make a new code on the desk");
+        else if ("expired".equals(state) || SystemClock.elapsedRealtime() >= until) pairIntro("the pairing ran out: make a new code on the desk");
+        else poll(p, at, offer, until);
     }
 
     private void hideKeys() { getSystemService(InputMethodManager.class).hideSoftInputFromWindow(root.getWindowToken(), 0); }

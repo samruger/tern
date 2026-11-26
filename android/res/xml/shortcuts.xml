@@ -3,4 +3,7 @@
     <shortcut android:shortcutId="addresses" android:icon="@mipmap/icon" android:shortcutShortLabel="@string/addresses">
         <intent android:action="tern.desk.ADDRESSES" android:targetPackage="tern.desk" android:targetClass="tern.desk.MainActivity" />
     </shortcut>
+    <shortcut android:shortcutId="pair" android:icon="@mipmap/icon" android:shortcutShortLabel="@string/pair">
+        <intent android:action="tern.desk.PAIR" android:targetPackage="tern.desk" android:targetClass="tern.desk.MainActivity" />
+    </shortcut>
 </shortcuts>

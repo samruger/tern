@@ -2,6 +2,7 @@
 <resources>
     <color name="bg">#1a1b26</color>
     <string name="addresses">Addresses</string>
+    <string name="pair">Pair this phone</string>
     <style name="Tern" parent="@android:style/Theme.Material.NoActionBar">
         <item name="android:windowBackground">@color/bg</item>
         <item name="android:statusBarColor">@color/bg</item>

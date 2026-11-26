@@ -4511,16 +4511,156 @@ class AndroidApp(unittest.TestCase):
         *out, ms = self.java("find", pin, dead, silent)
         self.assertEqual(out, [f"{dead} -", f"{silent} -"]); self.assertLess(int(ms), 14000)
 
-    def test_it_asks_for_the_network_only_and_trusts_no_authority(self):
+    def test_it_asks_for_the_network_and_the_fingerprint_only_and_trusts_no_authority(self):
         import re
         with open(os.path.join(self.HERE, "AndroidManifest.xml")) as fh:
             man = fh.read()
-        self.assertEqual(sorted(re.findall(r'uses-permission android:name="android.permission.(\w+)"', man)), ["ACCESS_NETWORK_STATE", "INTERNET"])
+        self.assertEqual(sorted(re.findall(r'uses-permission android:name="android.permission.(\w+)"', man)), ["ACCESS_NETWORK_STATE", "INTERNET", "USE_BIOMETRIC"])
         self.assertIn('android:allowBackup="false"', man)
         with open(os.path.join(self.HERE, "res", "xml", "network.xml")) as fh:
             net = fh.read()
         self.assertIn("<trust-anchors />", net); self.assertNotIn("<certificates", net); self.assertNotIn('Permitted="true"', net)
 
+    def test_the_keys_need_a_fingerprint_and_the_bridge_only_desk_pages(self):
+        """What can't be run without a phone, read from the source: the keys' rules, and where the bridge goes on."""
+        import re
+        def src(n):
+            with open(os.path.join(self.HERE, "src", "tern", "desk", n), encoding="utf-8") as fh:
+                return fh.read()
+        keys, main = src("Keys.java"), src("MainActivity.java")
+        for want in ("setUserAuthenticationRequired(true)", "setInvalidatedByBiometricEnrollment(true)", "setIsStrongBoxBacked(strongBox)",
+                     "setUserAuthenticationParameters(window, KeyProperties.AUTH_BIOMETRIC_STRONG)", "setUserAuthenticationValidityDurationSeconds(window)",
+                     "make(EVERYDAY, WINDOW, strongBox)", "make(LIVE, 0, strongBox)", "WINDOW = 300", '"secp256r1"', "new BiometricPrompt.CryptoObject(crypto)",
+                     "BiometricManager.Authenticators.BIOMETRIC_STRONG", "KeyPermanentlyInvalidatedException", "UserNotAuthenticatedException"):
+            self.assertIn(want, keys)
+        self.assertIn('"your fingerprints changed: pair this phone again"', keys)
+        self.assertEqual(main.count("addJavascriptInterface"), 1)
+        finished = main[main.index("public void onPageFinished"):main.index("public void onReceivedError")]
+        self.assertIn("addJavascriptInterface", finished)
+        self.assertLess(finished.index("!approved(c)"), finished.index("addJavascriptInterface"))         # after the certificate is checked
+        self.assertIn("return deskPage && device() != null", main)
+        self.assertRegex(main, r"private void page\(String fn, String id, String text\) \{\s*if \(deskPage\)")
+
+    def test_a_post_goes_only_to_the_approved_certificate(self):
+        desk, pin, got = self.server("desk")
+        other, other_pin, other_got = self.server("other")
+        self.assertEqual(self.java("post", pin, other, "/app/pair", "{}")[0][:3], "no ")        # another machine: nothing is sent to it
+        self.assertEqual(self.java("post", "", desk, "/app/pair", "{}")[0][:3], "no ")          # none approved: nothing is sent at all
+        self.assertEqual([x for x in got + other_got if x], [])
+
+
+class ActJava(unittest.TestCase):
+    """The app's signed requests, made by its own Java (software keys in place of the phone's): the desk takes them."""
+
+    HERE = AndroidApp.HERE
+    ENV = {**os.environ, "LC_ALL": "C.UTF-8"}
+
+    @classmethod
+    def setUpClass(cls):
+        if not shutil.which("javac"):
+            raise unittest.SkipTest("needs a JDK")
+        cls.tmp = tempfile.TemporaryDirectory(); cls.addClassCleanup(cls.tmp.cleanup)
+        src = os.path.join(cls.HERE, "src", "tern", "desk")
+        subprocess.run(["javac", "--release", "17", "-encoding", "UTF-8", "-Xlint:all,-options", "-Werror", "-d", cls.tmp.name,
+                        os.path.join(src, "Act.java"), os.path.join(src, "Link.java"), os.path.join(cls.HERE, "ActTest.java")], check=True, capture_output=True)
+
+    def cmd(self, *a) -> list:
+        return ["java", "-cp", self.tmp.name, "tern.desk.ActTest", *a]
+
+    def java(self, *a) -> list:
+        return subprocess.run(self.cmd(*a), check=True, capture_output=True, text=True, encoding="utf-8", env=self.ENV, timeout=60).stdout.split("\n")[:-1]
+
+    def test_a_signed_command_is_what_the_desk_checks(self):
+        ts = time.time()
+        cmd = '{"op":"set","key":"gate.min_days","value":3.5,"note":"a\\"b\\\\c \u00fc \u2028"}'
+        with tempfile.TemporaryDirectory() as d:
+            code = devices.new_code(d, ts)
+            e, l, words, payload, sig, body, pair = self.java("sign", "dev1", repr(ts), cmd, code, 'Pixel "8" \u00fc')
+            self.assertEqual(words, devices.words(e, l))
+            self.assertRegex(words, r"^[0-9A-F]{4} [0-9A-F]{4} [0-9A-F]{4}$")
+            self.assertTrue(sign.p256_verify(base64.b64decode(e), payload.encode(), base64.b64decode(sig)))
+            self.assertEqual([k for k, _ in json.loads(payload, object_pairs_hook=lambda kv: kv)], ["d", "n", "ts", "cmd"])
+            self.assertTrue(payload.startswith('{"d":"dev1","n":7,"ts":') and payload.endswith(',"cmd":' + cmd + "}"), payload)
+            self.assertAlmostEqual(json.loads(payload)["ts"], ts, places=2)
+            with mock.patch.object(devices.secrets, "token_hex", return_value="dev1"):
+                devs = devices.Devices(os.path.join(d, "app-devices.json"))
+                self.assertEqual(devs.add("pixel", e, l), "dev1")
+            dev, got = devs.check(payload, sig, "everyday", ts + 1)
+            self.assertEqual((dev["id"], got), ("dev1", json.loads(cmd)))
+            with self.assertRaisesRegex(devices.Refused, "sent twice"):
+                devs.check(payload, sig, "everyday", ts + 1)
+            b = json.loads(body)
+            self.assertEqual((list(b), b["payload"], b["key"]), (["payload", "sig", "key"], payload, "live"))
+            self.assertTrue(sign.p256_verify(base64.b64decode(l), payload.encode(), base64.b64decode(b["sig"])))
+            p = json.loads(pair)
+            self.assertEqual(p, {"code": code, "name": 'Pixel "8" \u00fc', "everyday": e, "live": l, "sig": p["sig"]})
+            self.assertTrue(devices.offer(d, *(p[k] for k in ("code", "name", "everyday", "live", "sig")), ts))     # the desk's own check
+
+    def test_the_count_is_kept_before_it_is_used(self):
+        self.assertEqual(self.java("count"), ["1 2 2 3 3 4", "41 42", "refused"])
+
+    def test_text_for_the_page_is_quoted_safely(self):
+        cases = ["plain", 'a"b', "back\\slash", "new\nline", "\u2028\u2029", "</script><b>", "it's", "\u00fc \U0001F600", "\x01\x1f\x7f", ""]
+        out = self.java("quote", *cases)
+        self.assertEqual([json.loads(q) for q in out], cases)
+        self.assertTrue(all(q.isascii() and q[0] == q[-1] == '"' for q in out), out)
+
+    def test_only_one_json_object_is_a_command(self):
+        cases = {'{"op":"x"}': "yes", ' {"op":"x","a":[1,2.5,-3e2,true,false,null,{"b":"\\u00fc"}]} ': "yes", "{}": "yes", "[]": "no", '"x"': "no",
+                 '{"op":"x"},"n":99': "no", '{"op":"x"}{"op":"y"}': "no", '{"op":}': "no", '{"op":"x"': "no", "": "no", '{"a":1,}': "no",
+                 "{'a':1}": "no", '{"a":01}': "no", '{"a":"\x01"}': "no", '{"a":NaN}': "no", '{"a":1}//': "no", '{"a":"\\q"}': "no"}
+        self.assertEqual(dict(zip(cases, self.java("command", *cases))), cases)
+
+    def test_what_the_desk_answers_is_read(self):
+        self.assertEqual(self.java("field", '{"offer":"ab12","words":"ABCD EF01 2345","n":1.5,"x":{"offer":"no"}}', "offer", "words", "n", "missing"),
+                         ["ab12", "ABCD EF01 2345", "null", "null"])
+        self.assertEqual(self.java("field", "the app is off", "error"), ["null"])
+        self.assertEqual(self.java("cookie", "tern_ui=phone; Path=/", "__Host-tern_a=dev.123.abc; Max-Age=2592000; Path=/; HttpOnly; SameSite=Strict; Secure"),
+                         ["__Host-tern_a=dev.123.abc"])
+        self.assertEqual(self.java("cookie", "__Host-tern_s=x; Path=/"), ["null"])
+
+    def test_it_pairs_signs_in_and_acts_with_the_desk(self):
+        import http.client, socket, ssl, threading
+        from tern import engine, web
+        d = self.enterContext(tempfile.TemporaryDirectory())
+        files = {"AUTH_FILE": os.path.join(d, "web.json"), "CERT_FILE": os.path.join(d, "c.pem"), "KEY_FILE": os.path.join(d, "k.pem")}
+        self.enterContext(mock.patch.multiple(webauth, **files))
+        self.enterContext(mock.patch.object(devices, "FILE", os.path.join(d, "app-devices.json")))
+        webauth.set_password("correct horse battery")
+        pin = webauth.make_cert([])
+        run = os.path.join(d, "run"); os.makedirs(run)
+        cfg = cfgmod.Config(); cfg.web.app = True; cfgmod.save(cfg, run)
+        with socket.socket() as sk:
+            sk.bind(("127.0.0.1", 0)); port = sk.getsockname()[1]
+        threading.Thread(target=web.serve, args=(run, "127.0.0.1", port), daemon=True).start()
+        for _ in range(50):
+            try:
+                socket.create_connection(("127.0.0.1", port), 0.2).close(); break
+            except OSError:
+                time.sleep(0.1)
+        live = engine.live_dir(run)
+        code = devices.new_code(live, time.time())
+        p = subprocess.Popen(self.cmd("flow", f"https://127.0.0.1:{port}", pin, code, "Pixel \u00fc"), stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                             text=True, encoding="utf-8", env=self.ENV)
+        self.addCleanup(p.kill)
+        said, oid, words = p.stdout.readline().rstrip("\n").split(" ", 2)
+        self.assertEqual(said, "offer", p.stderr.read() if said != "offer" else "")
+        mine, theirs = words.split(" / ")
+        self.assertEqual(mine, theirs)
+        self.assertEqual(devices.offered(live, time.time()), {"id": oid, "name": "Pixel \u00fc", "words": mine})
+        self.assertEqual(devices.answer(live, oid, True, devices.Devices(devices.FILE)), "Pixel \u00fc paired")
+        out, err = p.communicate(timeout=60)
+        state, session, act, late, now = out.splitlines()
+        dev = devices.Devices(devices.FILE).all()[0]["id"]
+        self.assertEqual(state, f"state paired {dev}", err)
+        self.assertRegex(session, rf"^session 200 __Host-tern_a={dev}\.\d+\.[0-9a-f]+ Pixel \u00fc$")
+        self.assertEqual(late, "late 403 the phone's clock is 100 s off the desk's")
+        self.assertEqual(now, "now true")
+        c = http.client.HTTPSConnection("127.0.0.1", port, context=ssl._create_unverified_context(), timeout=10)
+        self.addCleanup(c.close)
+        c.request("POST", "/act", act[4:].encode(), {"Cookie": session.split(" ")[2]})
+        r = c.getresponse()
+        self.assertEqual((r.status, json.loads(r.read())["error"]), (403, "unknown command"))           # past the cookie, signature and count
 
 class Reports(Rig, unittest.TestCase):
     """The reports screen (o): the reports tern works out from its records, and the saved ones."""

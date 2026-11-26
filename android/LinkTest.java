@@ -14,6 +14,16 @@ final class LinkTest {
             case "at":
                 for (String u : Arrays.copyOfRange(a, 2, a.length)) System.out.println(Link.at(u, a[1]));
                 break;
+            case "post":                                    // post PIN BASE PATH BODY
+                try {
+                    Link.Reply r = Link.post(a[2], a[3], a[4], a[1].isEmpty() ? null : a[1], 4000);
+                    System.out.println(r.code);
+                    System.out.println(r.body);
+                    System.out.println(String.join("|", r.cookies));
+                } catch (java.io.IOException e) {
+                    System.out.println("no " + e.getMessage());
+                }
+                break;
             default:                                        // find PIN BASE...
                 long t = System.nanoTime();
                 for (Link.Answer x : Link.find(Arrays.asList(a).subList(2, a.length), a[1].isEmpty() ? null : a[1]))
