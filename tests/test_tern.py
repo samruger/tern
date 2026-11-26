@@ -4591,7 +4591,7 @@ class AndroidApp(unittest.TestCase):
         keys, main = src("Keys.java"), src("MainActivity.java")
         for want in ("setUserAuthenticationRequired(true)", "setInvalidatedByBiometricEnrollment(true)", "setIsStrongBoxBacked(strongBox)",
                      "setUserAuthenticationParameters(window, KeyProperties.AUTH_BIOMETRIC_STRONG)", "setUserAuthenticationValidityDurationSeconds(window)",
-                     "make(EVERYDAY, WINDOW, strongBox)", "make(LIVE, 0, strongBox)", "WINDOW = 300", '"secp256r1"', "new BiometricPrompt.CryptoObject(crypto)",
+                     "make(everyday(set), WINDOW, strongBox)", "make(live(set), 0, strongBox)", "WINDOW = 300", '"secp256r1"', "new BiometricPrompt.CryptoObject(crypto)",
                      "BiometricManager.Authenticators.BIOMETRIC_STRONG", "KeyPermanentlyInvalidatedException", "UserNotAuthenticatedException"):
             self.assertIn(want, keys)
         self.assertIn('"your fingerprints changed: pair this phone again"', keys)
@@ -4679,6 +4679,14 @@ class ActJava(unittest.TestCase):
         self.assertEqual(self.java("cookie", "tern_ui=phone; Path=/", "__Host-tern_a=dev.123.abc; Max-Age=2592000; Path=/; HttpOnly; SameSite=Strict; Secure"),
                          ["__Host-tern_a=dev.123.abc"])
         self.assertEqual(self.java("cookie", "__Host-tern_s=x; Path=/"), ["null"])
+
+    def test_the_live_prompt_says_what_it_signs(self):
+        cases = {'{"op":"live","on":true,"variant":"base"}': "live on, trading base", '{"op":"live","on":false}': "live off",
+                 '{"op":"variant_on","variant":"mine","on":true}': "turn on mine",
+                 '{"op":"set","key":"gate.min_days","value":3}': "set gate.min_days to 3",
+                 '{"op":"set","key":"rule.cap","value":null}': "set rule.cap to off",
+                 '{"op":"set","key":"gate.x","value":0.25}': "set gate.x to 0.25", '{"op":"report_save"}': "report save", "{}": "a command"}
+        self.assertEqual(dict(zip(cases, self.java("said", *cases))), cases)
 
     def test_it_pairs_signs_in_and_acts_with_the_desk(self):
         import http.client, socket, ssl, threading

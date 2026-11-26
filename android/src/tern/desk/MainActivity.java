@@ -79,6 +79,7 @@ public final class MainActivity extends Activity {
     private volatile boolean deskPage;                      // an approved desk page is up: the only time the bridge answers
     private boolean bridged, signing, fingerWait;           // the bridge is on this web view; a sign-in is under way; back from settings
     private int pairing;                                    // an older pairing's answers are dropped
+    private int newKeys = -1;                               // the key set a pairing under way made, until the desk answers
     private final Act.Count count = new Act.Count() {       // the signed count, kept before it is used
         @Override public long kept() { return prefs.getLong("n", 1); }
         @Override public boolean keep(long next) { return prefs.edit().putLong("n", next).commit(); }
@@ -158,7 +159,7 @@ public final class MainActivity extends Activity {
     @Override public void onBackPressed() { back(); }       // before Android 13
 
     private void back() {
-        if (editing && !bases().isEmpty()) { hideKeys(); editing = false; fingerWait = false; pairing++; if (base != null && !failed) show(null); else waiting(); connect(); return; }
+        if (editing && !bases().isEmpty()) { hideKeys(); editing = false; fingerWait = false; pairing++; dropNew(); if (base != null && !failed) show(null); else waiting(); connect(); return; }
         if (screen == null && web.canGoBack()) { web.goBack(); return; }
         moveTaskToBack(true);
     }
@@ -490,6 +491,9 @@ public final class MainActivity extends Activity {
 
     private String device() { return prefs.getString("device", null); }
 
+    /** Which of the two key sets (Keys) the pairing in use has. */
+    private int keySet() { return prefs.getInt("keys", 0) == 1 ? 1 : 0; }
+
     private static double now() { return System.currentTimeMillis() / 1000.0; }
 
     /** The app's own sign-in: signed by the everyday key, sent over the pinned connection, its cookie put in the web view's
@@ -499,7 +503,7 @@ public final class MainActivity extends Activity {
         int t = turn;
         signing = true;
         show(column(text("tern", HEAD, 22), text("Signing in…", GREY, 16)));
-        keys.sign(Keys.EVERYDAY, "sign in to tern", "your fingerprint signs this phone in to the desk",
+        keys.sign(Keys.everyday(keySet()), "sign in to tern", "your fingerprint signs this phone in to the desk",
             () -> Act.payload(dev, Act.next(count), now(), Act.SESSION), new Keys.Done() {
                 @Override public void signed(String text, byte[] sig) {
                     String body = Act.body(text, Act.b64(sig), false);
@@ -543,6 +547,10 @@ public final class MainActivity extends Activity {
     /** This phone is no longer paired: its keys, device and app cookie go. */
     private void forget() {
         prefs.edit().remove("device").apply();
+        dropCookie();
+    }
+
+    private void dropCookie() {
         CookieManager jar = CookieManager.getInstance();
         for (String b : bases()) jar.setCookie(b, Act.COOKIE + "=; Max-Age=0; Path=/; Secure; HttpOnly; SameSite=Strict");
         failed = true;
@@ -550,8 +558,15 @@ public final class MainActivity extends Activity {
 
     private void unpair(String note) {
         Keys.delete();
+        newKeys = -1;
         forget();
         pairIntro(note);
+    }
+
+    /** A pairing that didn't end in a yes: the keys it made go, and the pairing the phone has stays as it was. */
+    private void dropNew() {
+        if (newKeys >= 0 && newKeys != keySet()) Keys.delete(newKeys);
+        newKeys = -1;
     }
 
     /** TernApp, for the page: it answers only while an approved desk page is up. */
@@ -566,8 +581,9 @@ public final class MainActivity extends Activity {
         String dev = device();
         if (dev == null) { page("ternRefused", id, "not sent: this phone isn't paired"); return; }
         if (cmdJson == null || !Act.command(cmdJson)) { page("ternRefused", id, "not sent: that isn't a command"); return; }
-        keys.sign(live ? Keys.LIVE : Keys.EVERYDAY, live ? "live: your fingerprint" : "send to tern",
-            live ? "this is for live trading, with real money" : "your fingerprint signs this for the desk",
+        int set = keySet();
+        keys.sign(live ? Keys.live(set) : Keys.everyday(set), live ? "live: your fingerprint" : "send to tern",
+            live ? "for live trading, with real money: " + Act.said(cmdJson) : "your fingerprint signs this for the desk",
             () -> Act.payload(dev, Act.next(count), now(), cmdJson), new Keys.Done() {
                 @Override public void signed(String text, byte[] sig) { page("ternSigned", id, Act.body(text, Act.b64(sig), live)); }
                 @Override public void refused(String why) { page("ternRefused", id, why); }
@@ -584,6 +600,7 @@ public final class MainActivity extends Activity {
 
     private void pairIntro(String note) {
         editing = true; turn++; busy = false; signing = false; fingerWait = false; pairing++;
+        dropNew();
         hideKeys();
         show(column(note == null ? null : text(note, WARN, 16), text("Pair this phone", HEAD, 20),
             text("Paired, this phone can send the desk commands, not only look. It makes two keys that never leave its secure hardware: "
@@ -592,7 +609,7 @@ public final class MainActivity extends Activity {
             button("Next", true, this::pairFinger), button(device() == null ? "Not now" : "Keep the pairing it has", false, this::leave)));
     }
 
-    private void leave() { hideKeys(); editing = false; fingerWait = false; pairing++; waiting(); connect(); }
+    private void leave() { hideKeys(); editing = false; fingerWait = false; pairing++; dropNew(); waiting(); connect(); }
 
     private void pairFinger() {
         fingerWait = false;
@@ -638,40 +655,41 @@ public final class MainActivity extends Activity {
             button("Not now", false, this::leave)));
     }
 
-    /** New keys in place of any before: from here this phone is not paired until the desk says yes. */
+    /** New keys in the set not in use: the pairing this phone has (if any) keeps working until the desk says yes. */
     private void pairStart(String code, String name) {
         int p = ++pairing;
         List<String> all = bases();
         String pin = pin();
         if (all.isEmpty()) { form(null); return; }
         if (pin == null) { pairCode("the desk's certificate isn't approved yet: open its pages once first"); return; }
-        forget();
+        int set = 1 - keySet();
+        newKeys = set;
         show(column(text("Pairing…", HEAD, 20), text("Making this phone's keys.", GREY, 15)));
         worker.execute(() -> {
             String e, l;
             try {
-                Keys.make(this);
-                e = Keys.publicB64(Keys.EVERYDAY);
-                l = Keys.publicB64(Keys.LIVE);
+                Keys.make(this, set);
+                e = Keys.publicB64(Keys.everyday(set));
+                l = Keys.publicB64(Keys.live(set));
             } catch (GeneralSecurityException | IOException | RuntimeException x) {
                 String why = x.getMessage() == null ? x.getClass().getSimpleName() : x.getMessage();
                 main.post(() -> { if (p == pairing) pairCode("the keys weren't made: " + why); });
                 return;
             }
-            main.post(() -> { if (p == pairing) pairSign(p, all, pin, code, name, e, l); });
+            main.post(() -> { if (p == pairing) pairSign(p, set, all, pin, code, name, e, l); });
         });
     }
 
-    private void pairSign(int p, List<String> all, String pin, String code, String name, String e, String l) {
-        keys.sign(Keys.EVERYDAY, "pair this phone with tern", "your fingerprint signs this phone's new keys", () -> Act.pairText(code, name, e, l), new Keys.Done() {
-            @Override public void signed(String text, byte[] sig) { if (p == pairing) pairAsk(p, all, pin, Act.pairBody(code, name, e, l, Act.b64(sig)), Act.words(e, l)); }
+    private void pairSign(int p, int set, List<String> all, String pin, String code, String name, String e, String l) {
+        keys.sign(Keys.everyday(set), "pair this phone with tern", "your fingerprint signs this phone's new keys", () -> Act.pairText(code, name, e, l), new Keys.Done() {
+            @Override public void signed(String text, byte[] sig) { if (p == pairing) pairAsk(p, set, all, pin, Act.pairBody(code, name, e, l, Act.b64(sig)), Act.words(e, l)); }
             @Override public void refused(String why) { if (p == pairing) pairCode(why.replaceFirst("^not sent", "not paired")); }
             @Override public void gone() { if (p == pairing) pairCode("the keys didn't take: try again"); }
         });
     }
 
     /** The keys, signed, to the desk at whichever address has the approved certificate. */
-    private void pairAsk(int p, List<String> all, String pin, String body, String words) {
+    private void pairAsk(int p, int set, List<String> all, String pin, String body, String words) {
         show(column(text("Pairing…", HEAD, 20), text("Asking the desk.", GREY, 15)));
         worker.execute(() -> {
             List<Link.Answer> got = Link.find(all, pin);
@@ -690,19 +708,19 @@ public final class MainActivity extends Activity {
             String said = why, id = offer;
             main.post(() -> {
                 if (p != pairing) return;
-                if (said != null) pairCode(said); else pairWait(p, a.base, id, words);
+                if (said != null) pairCode(said); else pairWait(p, set, a.base, id, words);
             });
         });
     }
 
-    private void pairWait(int p, String at, String offer, String words) {
+    private void pairWait(int p, int set, String at, String offer, String words) {
         show(column(text("Press y on the desk", HEAD, 20), text("The desk shows this phone's words. If they are these, press y there:", TEXT, 15), text(words, WARN, 26),
             text("If they aren't, press n there.", GREY, 14), button("Cancel", false, () -> pairIntro(null))));
-        poll(p, at, offer, SystemClock.elapsedRealtime() + Act.PAIR_WAIT);
+        poll(p, set, at, offer, SystemClock.elapsedRealtime() + Act.PAIR_WAIT);
     }
 
     /** Every 2 s, for up to 5 minutes: has the desk said yes? */
-    private void poll(int p, String at, String offer, long until) {
+    private void poll(int p, int set, String at, String offer, long until) {
         String pin = pin();
         main.postDelayed(() -> {
             if (p != pairing) return;
@@ -711,27 +729,31 @@ public final class MainActivity extends Activity {
                 try {
                     Link.Reply r = Link.post(at, "/app/paired", Act.offerBody(offer), pin, 8000);
                     state = r.code == 200 ? String.valueOf(Act.field(r.body, "state")) : "refused";
-                    more = r.code == 200 ? Act.field(r.body, "device") : Act.error(r);
+                    more = r.code != 200 ? Act.error(r) : Act.field(r.body, "paired".equals(state) ? "device" : "why");
                 } catch (IOException e) {
                     state = "waiting"; more = null;                 // no answer this time
                 }
                 String s = state, m = more;
-                main.post(() -> polled(p, at, offer, until, s, m));
+                main.post(() -> polled(p, set, at, offer, until, s, m));
             });
         }, Act.POLL);
     }
 
-    private void polled(int p, String at, String offer, long until, String state, String more) {
+    private void polled(int p, int set, String at, String offer, long until, String state, String more) {
         if (p != pairing) return;
         if ("paired".equals(state) && more != null) {
-            prefs.edit().putString("device", more).apply();
-            pairing++; editing = false; failed = true;
+            int old = keySet();
+            if (!prefs.edit().putString("device", more).putInt("keys", set).commit()) { pairIntro("not paired: the app could not keep the pairing"); return; }
+            newKeys = -1;
+            if (old != set) Keys.delete(old);                  // the pairing before: its keys and cookie go now
+            dropCookie();
+            pairing++; editing = false;
             waiting(); connect();                               // signs in, then the pages
-        } else if ("declined".equals(state)) pairIntro("not paired: the desk said no");
+        } else if ("declined".equals(state)) pairIntro("not paired: " + (more != null ? more : "the desk said no"));
         else if ("refused".equals(state)) pairIntro("not paired: " + more);
         else if ("unknown".equals(state)) pairIntro("that pairing is over: make a new code on the desk");
         else if ("expired".equals(state) || SystemClock.elapsedRealtime() >= until) pairIntro("the pairing ran out: make a new code on the desk");
-        else poll(p, at, offer, until);
+        else poll(p, set, at, offer, until);
     }
 
     private void hideKeys() { getSystemService(InputMethodManager.class).hideSoftInputFromWindow(root.getWindowToken(), 0); }

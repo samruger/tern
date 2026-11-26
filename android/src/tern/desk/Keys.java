@@ -31,7 +31,9 @@ import java.util.concurrent.Executors;
 import java.util.function.Supplier;
 
 /** The phone's two keys, kept in its secure hardware: the everyday one (a fingerprint in the last 5 minutes) and the live
-    one (a fingerprint every time). They never leave the phone; the desk has their public halves. */
+    one (a fingerprint every time). They never leave the phone; the desk has their public halves.
+    There are two places for the pair, set 0 and set 1: a new pairing makes its keys in the set not in use, so the pairing the
+    phone has keeps working until the desk says yes (the Keystore can't rename a key). */
 final class Keys {
     static final String EVERYDAY = "tern.everyday", LIVE = "tern.live";
     static final String GONE = "your fingerprints changed: pair this phone again";
@@ -79,15 +81,23 @@ final class Keys {
         return s;
     }
 
-    /** Both keys, new, in place of any before. Refused if the phone would keep them outside its secure hardware. */
-    static void make(Activity a) throws GeneralSecurityException, IOException {
-        delete();
+    /** The everyday key's alias in a set (0: the names the first app used, 1: the other place). */
+    static String everyday(int set) { return set == 1 ? EVERYDAY + ".1" : EVERYDAY; }
+
+    static String live(int set) { return set == 1 ? LIVE + ".1" : LIVE; }
+
+    private static boolean isLive(String alias) { return LIVE.equals(alias) || live(1).equals(alias); }
+
+    /** Both keys of a set, new, in place of any before in that set; the other set is left as it is. Refused if the phone
+        would keep them outside its secure hardware. */
+    static void make(Activity a, int set) throws GeneralSecurityException, IOException {
+        delete(set);
         boolean strongBox = a.getPackageManager().hasSystemFeature(PackageManager.FEATURE_STRONGBOX_KEYSTORE);
         try {
-            make(EVERYDAY, WINDOW, strongBox);
-            make(LIVE, 0, strongBox);
+            make(everyday(set), WINDOW, strongBox);
+            make(live(set), 0, strongBox);
         } catch (GeneralSecurityException | IOException | RuntimeException e) {
-            delete();
+            delete(set);
             throw e;
         }
     }
@@ -131,11 +141,17 @@ final class Keys {
         return l == KeyProperties.SECURITY_LEVEL_TRUSTED_ENVIRONMENT || l == KeyProperties.SECURITY_LEVEL_STRONGBOX || l == KeyProperties.SECURITY_LEVEL_UNKNOWN_SECURE;
     }
 
+    /** Both sets' keys. */
     static void delete() {
+        delete(0);
+        delete(1);
+    }
+
+    static void delete(int set) {
         try {
             KeyStore s = store();
-            s.deleteEntry(EVERYDAY);
-            s.deleteEntry(LIVE);
+            s.deleteEntry(everyday(set));
+            s.deleteEntry(live(set));
         } catch (GeneralSecurityException | IOException e) { /* none to delete */ }
     }
 
@@ -165,7 +181,7 @@ final class Keys {
 
     /** On the worker. */
     private void attempt(String alias, String title, String why, Supplier<String> text, Done done, boolean asked) {
-        boolean live = LIVE.equals(alias);
+        boolean live = isLive(alias);
         try {
             Signature s = begin(alias);
             if (live) { main.post(() -> ask(title, why, s, () -> worker.execute(() -> end(s, text, done)), done)); return; }

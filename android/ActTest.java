@@ -70,6 +70,9 @@ final class ActTest {
             case "field":                                   // field JSON KEY...
                 for (String k : Arrays.copyOfRange(a, 2, a.length)) System.out.println(Act.field(a[1], k));
                 break;
+            case "said":                                    // what the fingerprint prompt says each command does
+                for (String t : Arrays.copyOfRange(a, 1, a.length)) System.out.println(Act.said(t));
+                break;
             case "cookie":                                  // the app's cookie among these Set-Cookie lines
                 System.out.println(Act.appCookie(Arrays.asList(a).subList(1, a.length)));
                 break;

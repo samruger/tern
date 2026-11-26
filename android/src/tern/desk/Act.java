@@ -124,6 +124,31 @@ final class Act {
         return v instanceof String ? (String) v : null;
     }
 
+    /** What a command does, in a few plain words, for the fingerprint prompt: "live on, trading base". */
+    static String said(String cmdJson) {
+        Map<String, Object> c = object(cmdJson);
+        String op = c.get("op") instanceof String ? (String) c.get("op") : "a command";
+        String v = c.get("variant") instanceof String ? (String) c.get("variant") : null;
+        boolean on = Boolean.TRUE.equals(c.get("on"));
+        String t;
+        switch (op) {
+            case "live": t = on ? "live on" + (v == null ? "" : ", trading " + v) : "live off"; break;
+            case "variant_on": t = (on ? "turn on " : "turn off ") + (v == null ? "a variant" : v); break;
+            case "set": t = "set " + shown(c.get("key")) + " to " + shown(c.get("value")); break;
+            default: t = op.replace('_', ' ') + (v == null ? "" : " " + v);
+        }
+        return t.length() > 120 ? t.substring(0, 119) + "\u2026" : t;
+    }
+
+    private static String shown(Object v) {
+        if (v instanceof Double) {
+            double d = (Double) v;
+            return d == Math.rint(d) && Math.abs(d) < 1e15 ? Long.toString((long) d) : v.toString();
+        }
+        if (v == NULL || v == null) return "off";
+        return v instanceof String || v instanceof Boolean ? v.toString() : "a list";
+    }
+
     /** What a refusal says, as the desk wrote it. */
     static String error(Link.Reply r) {
         String e = field(r.body, "error");
