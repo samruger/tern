@@ -290,6 +290,18 @@ def service_runs(runtime: str) -> bool:
     return "LoadState=loaded" in env and f"TERN_RUNTIME={os.path.realpath(runtime)}" in env
 
 
+def write_command(cmd_dir: str, cmd: dict) -> str:
+    """Put a command where the engine picks it up (tmp + replace, so it is never read half written); returns its id."""
+    cid = uuid.uuid4().hex[:12]
+    cmd["id"] = cid
+    cmd["ts"] = time.time()                          # the desk ignores commands older than a few seconds
+    path = os.path.join(cmd_dir, f"{time.time():.6f}-{cid}.json")
+    with open(path + ".tmp", "w") as fh:
+        json.dump(cmd, fh)
+    os.replace(path + ".tmp", path)
+    return cid
+
+
 def start_engine(runtime: str) -> str:
     if engine_alive(runtime):
         return "engine already running"
@@ -703,13 +715,7 @@ class Screen:
 
     def send(self, **cmd) -> str:
         """Put a command where the engine picks it up; returns its id (its result comes back under it)."""
-        cid = uuid.uuid4().hex[:12]
-        cmd["id"] = cid
-        cmd["ts"] = time.time()                      # the desk ignores commands older than a few seconds
-        path = os.path.join(self.cmd_dir, f"{time.time():.6f}-{cid}.json")
-        with open(path + ".tmp", "w") as fh:
-            json.dump(cmd, fh)
-        os.replace(path + ".tmp", path)
+        cid = write_command(self.cmd_dir, cmd)
         self.pending[cid] = time.time()
         return cid
 

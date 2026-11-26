@@ -915,7 +915,8 @@ class Desk:
             except Exception as ex:
                 msg = f"error: {ex}"
             self.results[c.get("id", name)] = msg
-            self.log(msg, "cmd")
+            by = c.get("by")
+            self.log(f"{''.join(x for x in by if x.isprintable())[:40]}: {msg}" if isinstance(by, str) and by else msg, "cmd")
         while len(self.results) > 50:
             self.results.pop(next(iter(self.results)))
 
@@ -954,6 +955,8 @@ class Desk:
             return msg
         if op == "rename":
             return self._rename(c)
+        if op == "note":                             # a line for the log from outside (the app's web side)
+            return "".join(x for x in str(c.get("text", "")) if x.isprintable())[:200]
         return f"unknown command {op!r}"
 
     def _armed_with(self, name: str) -> bool:

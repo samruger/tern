@@ -2418,6 +2418,27 @@ class OwnVariants(Rig, unittest.TestCase):
             self.assertEqual((k.slog.sv, k.cfg.live.variant), (1, ""))         # no settings period; live has no part in it
             self.assertEqual(self.desk(d).shadow.own.active(), ["band80-2", "band80-3"])   # kept across a restart
 
+    def test_note_op_and_by_prefix(self):
+        import time
+        with tempfile.TemporaryDirectory() as d:
+            k = self.desk(d)
+            k._shadow()
+            def run(c):
+                with open(os.path.join(k.cmd_dir, f"{time.time():.6f}-{c['id']}.json"), "w") as fh:
+                    json.dump({"ts": time.time(), **c}, fh)
+                k._commands()
+            run({"id": "n1", "op": "note", "text": "engine stopping\x07 now", "by": "app pixel"})
+            self.assertEqual(k.results["n1"], "engine stopping now")        # the phone's result: no prefix
+            self.assertIn("app pixel: engine stopping now", [str(x) for l in k.logs for x in l])
+            run({"id": "n2", "op": "note", "text": "x" * 500})
+            self.assertEqual(len(k.results["n2"]), 200)
+            run({"id": "n3", "op": "variant_on", "variant": "nope", "on": True, "by": "app pixel"})
+            self.assertEqual(k.results["n3"], "no variant 'nope'")
+            self.assertIn("app pixel: no variant 'nope'", [str(x) for l in k.logs for x in l])
+            run({"id": "n4", "op": "note", "text": "plain"})
+            self.assertNotIn("None", k.results["n4"])
+            self.assertFalse([1 for l in k.logs for x in l if str(x).startswith("None:") or str(x).startswith(": ")])
+
     def test_the_band_may_move_past_where_it_was(self):
         with tempfile.TemporaryDirectory() as d:
             k = self.desk(d)
@@ -4734,6 +4755,116 @@ class WebApp(unittest.TestCase):
         self.set_web()
         r, b = self.post("/act", self.signed({"op": "set", "key": "gate.min_days", "value": 1}), ck)
         self.assertEqual((r.status, b["error"]), (403, "live needs your fingerprint"))
+
+    def cmd_files(self):
+        d = os.path.join(self.run_dir, "cmd")
+        out = []
+        for n in sorted(os.listdir(d)) if os.path.isdir(d) else []:
+            if n.endswith(".json"):
+                with open(os.path.join(d, n)) as fh:
+                    out.append(json.load(fh))
+        return out
+
+    def act(self, ck, cmd, which="everyday"):
+        return self.post("/act", self.signed(cmd, which=which), ck)
+
+    def test_act_writes_engine_commands_like_the_screen(self):
+        from unittest import mock
+        from tern import dash
+        ck = self.app_cookie()
+        cases = [
+            ({"op": "live", "on": True, "variant": "base", "junk": 1}, {"op": "live", "on": True, "variant": "base"}),
+            ({"op": "variant_new", "from": "base", "name": "mine", "rule": {"band_lo": 0.8}, "id": "evil", "x": 1},
+             {"op": "variant_new", "from": "base", "name": "mine", "rule": {"band_lo": 0.8}}),
+            ({"op": "rename", "variant": "a", "name": "b", "z": 1}, {"op": "rename", "variant": "a", "name": "b"}),
+            ({"op": "variant_delete", "variant": "a", "z": 1}, {"op": "variant_delete", "variant": "a"}),
+            ({"op": "variant_on", "variant": "a", "on": False}, {"op": "variant_on", "variant": "a", "on": False}),
+            ({"op": "set", "key": "gate.min_days", "value": 1}, {"op": "set", "key": "gate.min_days", "value": 1}),
+        ]
+        with mock.patch.object(dash, "engine_alive", return_value=True):
+            for cmd, want in cases:
+                before = len(self.cmd_files())
+                r, b = self.act(ck, cmd, "live" if cmd["op"] == "live" else "everyday")
+                self.assertEqual(r.status, 200, b)
+                files = self.cmd_files()
+                self.assertEqual(len(files), before + 1)
+                got = files[-1]
+                self.assertEqual(got.pop("by"), "app pixel")
+                self.assertEqual(got.pop("id"), b["id"])
+                self.assertNotEqual(got["ts"], None)
+                got.pop("ts")
+                self.assertEqual(got, want)
+                self.assertEqual(set(b), {"id", "say"})
+            names = os.listdir(os.path.join(self.run_dir, "cmd"))
+            self.assertFalse([n for n in names if n.endswith(".tmp")])
+
+    def test_act_unknown_and_engine_down(self):
+        from unittest import mock
+        from tern import dash
+        ck = self.app_cookie()
+        with mock.patch.object(dash, "engine_alive", return_value=True):
+            for bad in ({"op": "rm"}, {"op": 5}, {}, {"op": "engine"}, {"op": "report_save"}):
+                r, b = self.act(ck, bad)
+                self.assertEqual((r.status, b["error"]), (403, "unknown command"), bad)
+        with mock.patch.object(dash, "engine_alive", return_value=False):
+            r, b = self.act(ck, {"op": "live", "on": False})
+        self.assertEqual((r.status, b["say"]), (200, "the engine isn't running: start it first"))
+        self.assertEqual(self.cmd_files(), [])
+
+    def test_act_engine_start_stop_and_report_note(self):
+        from unittest import mock
+        from tern import dash
+        ck = self.app_cookie()
+        with mock.patch.object(dash, "engine_alive", return_value=True), \
+                mock.patch.object(dash, "stop_engine", return_value="stopping the engine: it saves first") as stop:
+            r, b = self.act(ck, {"op": "engine", "run": False})
+            self.assertEqual((r.status, b["say"]), (200, "stopping the engine: it saves first"))
+            stop.assert_called_once_with(self.run_dir, None)
+        notes = self.cmd_files()
+        self.assertEqual([(c["op"], c["by"]) for c in notes], [("note", "app pixel")])
+        self.assertIn("stopping", notes[0]["text"])
+        for n in os.listdir(os.path.join(self.run_dir, "cmd")):
+            os.remove(os.path.join(self.run_dir, "cmd", n))
+        with mock.patch.object(dash, "engine_alive", return_value=False), \
+                mock.patch.object(dash, "start_engine", return_value="engine started in the background") as start:
+            r, b = self.act(ck, {"op": "engine", "run": True})
+            self.assertEqual((r.status, b["say"]), (200, "engine started in the background"))
+            start.assert_called_once_with(self.run_dir)
+        self.assertEqual([c["op"] for c in self.cmd_files()], ["note"])
+
+    def test_act_report_save(self):
+        from unittest import mock
+        from tern import reports
+        ck = self.app_cookie()
+        with mock.patch.object(reports, "save", return_value="report-x.txt") as sv:
+            r, b = self.act(ck, {"op": "report_save", "report": "r1"})
+            sv.assert_called_once_with(self.run_dir, "r1")
+        self.assertEqual((r.status, b["say"]), (200, "saved report report-x.txt"))
+        self.assertEqual([c.get("text") for c in self.cmd_files()], ["saved report report-x.txt"])
+        with mock.patch.object(reports, "save", side_effect=LookupError("no report 'q'")):
+            r, b = self.act(ck, {"op": "report_save", "report": "q"})
+        self.assertEqual((r.status, b["error"]), (403, "no report 'q'"))
+        r, b = self.act(ck, {"op": "report_save", "report": 5})
+        self.assertEqual((r.status, b["error"]), (403, "unknown command"))
+
+    def test_phone_returns_the_results_of_this_apps_commands(self):
+        import time
+        from unittest import mock
+        from tern import dash
+        from tern.engine import live_dir
+        ck = self.app_cookie()
+        with mock.patch.object(dash, "engine_alive", return_value=True):
+            r, b = self.act(ck, {"op": "live", "on": False})
+        cid = b["id"]
+        r, p = self.post("/phone", b"{}", ck)
+        self.assertEqual(p["results"], {})                      # the engine hasn't answered
+        with open(os.path.join(live_dir(self.run_dir), "status.json"), "w") as fh:
+            json.dump({"results": {cid: "disarmed", "other": "not mine"}}, fh)
+        time.sleep(0.3)
+        r, p = self.post("/phone", b"{}", ck)
+        self.assertEqual(p["results"], {cid: "disarmed"})
+        r, p = self.post("/phone", b"{}", self.browser_cookie())
+        self.assertNotIn("results", p)
 
     def test_pairing_endpoints(self):
         r, b = self.post("/app/pair", b'{"code": 1}')

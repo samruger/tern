@@ -34,6 +34,7 @@ from . import config as cfgmod
 from . import dash
 from . import devices
 from . import phone
+from . import reports
 from . import webauth
 from .engine import live_dir
 
@@ -240,6 +241,12 @@ class WebScreen(dash.Screen):
         return {"rows": self.s.runs(), "prefs": self.prefs}
 
 
+# the engine ops an app may send, and the fields each keeps (what the screen sends for it)
+ENGINE_OPS = {"live": ("on", "variant"), "variant_new": ("from", "name", "rule"), "rename": ("variant", "name"),
+              "variant_delete": ("variant",), "variant_on": ("variant", "on"), "set": ("key", "value")}
+RESULT_KEEP = 60.0
+
+
 class Hub:
     """The browser tabs' screens, one shared parse of the status file, and view-web.json for the engine."""
 
@@ -253,6 +260,7 @@ class Hub:
         self.checked = 0.0
         self.alive_v, self.alive_at = False, 0.0
         self.view_sent, self.view_at = None, 0.0
+        self.sent: dict[str, dict[str, float]] = {}   # app device id -> {command id: when sent}
 
     def status(self) -> dict:
         with self.lock:
@@ -335,15 +343,61 @@ class Hub:
         return {"sid": sid, **out}
 
     def act(self, device: dict, cmd: dict) -> dict:
-        """A signed command from a paired phone. Nothing is accepted yet."""
-        raise devices.Refused("unknown command")
+        """A signed command from a paired phone. Engine ops go to the engine the way the screen's do, with `by`;
+        engine and report_save are done here. Returns {"id", "say"}; the engine's answer comes back in /phone's results."""
+        op, by = cmd.get("op"), f"app {device['name']}"
+        cmd_dir = os.path.join(self.runtime, "cmd")
+
+        def note(text: str) -> str:
+            return dash.write_command(cmd_dir, {"op": "note", "text": text, "by": by})
+
+        if op in ENGINE_OPS:
+            if not dash.engine_alive(self.runtime):
+                return {"id": "", "say": "the engine isn't running: start it first"}
+            out = {k: cmd[k] for k in ENGINE_OPS[op] if k in cmd}
+            os.makedirs(cmd_dir, exist_ok=True)
+            cid = dash.write_command(cmd_dir, {"op": op, **out, "by": by})
+            say = "sent"
+        elif op == "engine" and isinstance(cmd.get("run"), bool):
+            os.makedirs(cmd_dir, exist_ok=True)
+            if cmd["run"]:
+                say = dash.start_engine(self.runtime)
+                cid = note("engine started from the app")        # waits in the folder for the engine to come up
+            else:
+                cid = note("stopping the engine from the app") if dash.engine_alive(self.runtime) else ""
+                say = dash.stop_engine(self.runtime, self.status().get("pid"))
+        elif op == "report_save" and isinstance(cmd.get("report"), str):
+            try:
+                say = "saved report " + reports.save(self.runtime, cmd["report"])
+            except LookupError as ex:
+                raise devices.Refused(str(ex)) from None
+            os.makedirs(cmd_dir, exist_ok=True)
+            cid = note(say)
+        else:
+            raise devices.Refused("unknown command")
+        if cid:
+            with self.lock:
+                mine = self.sent.setdefault(device["id"], {})
+                mine[cid] = time.time()
+        return {"id": cid, "say": say}
+
+    def results_for(self, device_id: str) -> dict:
+        """The engine's answers to the commands this app sent in the last minute."""
+        now = time.time()
+        with self.lock:
+            mine = self.sent.get(device_id, {})
+            for k in [k for k, t in mine.items() if now - t > RESULT_KEEP]:
+                del mine[k]
+            ids = list(mine)
+        res = self.status().get("results") or {}
+        return {k: res[k] for k in ids if k in res}
 
     def armed(self, cfg=None) -> bool:
         """Live is armed if config.json says so or the engine's status does (no status file: config alone decides)."""
         st = self.status()
         return bool((cfg is not None and cfg.live.enabled) or st.get("live_enabled") or st.get("mode") == "live")
 
-    def phone(self, req: dict) -> dict:
+    def phone(self, req: dict, device_id: str | None = None) -> dict:
         """A phone page's data. `set`: what the viewer just picked (coin, chart, variant, theme, log filter)."""
         sid, (scr, lock, _) = self.session(req.get("sid"), MIN_H, MIN_W, req.get("prefs"))
         with lock:
@@ -356,7 +410,8 @@ class Hub:
             out = phone.page(scr, req)
             scr.prefs = scr.current_prefs()
         self.publish()
-        return {"sid": sid, "prefs": scr.prefs, **out}
+        extra = {"results": self.results_for(device_id)} if device_id else {}
+        return {"sid": sid, "prefs": scr.prefs, **out, **extra}
 
 
 # ---------------------------------------------------------------- the page's look: foot's colors and font
@@ -770,7 +825,10 @@ def serve(runtime: str = cfgmod.RUNTIME, host: str = "127.0.0.1", port: int = 87
                 req = json.loads(data or b"{}")
                 if not isinstance(req, dict):
                     raise ValueError("not an object")
-                out = (hub.phone if self.path == "/phone" else hub.handle)(req)
+                if self.path == "/phone":
+                    out = hub.phone(req, self.app_device() if self.app_session else None)
+                else:
+                    out = hub.handle(req)
                 if self.app_session and self.path == "/phone":
                     out["control"] = True
                 body = json.dumps(out, separators=(",", ":"), ensure_ascii=False).encode()
