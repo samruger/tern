@@ -32,6 +32,7 @@ from urllib.parse import parse_qs
 
 from . import config as cfgmod
 from . import dash
+from . import devices
 from . import phone
 from . import webauth
 from .engine import live_dir
@@ -333,6 +334,14 @@ class Hub:
         self.publish()
         return {"sid": sid, **out}
 
+    def act(self, device: dict, cmd: dict) -> dict:
+        """A signed command from a paired phone. Nothing is accepted yet."""
+        raise devices.Refused("unknown command")
+
+    def armed(self) -> bool:
+        st = self.status()
+        return bool(st.get("live_enabled") or st.get("mode") == "live")
+
     def phone(self, req: dict) -> dict:
         """A phone page's data. `set`: what the viewer just picked (coin, chart, variant, theme, log filter)."""
         sid, (scr, lock, _) = self.session(req.get("sid"), MIN_H, MIN_W, req.get("prefs"))
@@ -518,6 +527,26 @@ def serve(runtime: str = cfgmod.RUNTIME, host: str = "127.0.0.1", port: int = 87
     limiter, guard = webauth.Limiter(), threading.Lock()
     cookie_name = "__Host-" + webauth.COOKIE if tls else webauth.COOKIE   # __Host-: only this host, https, path /
     hub = Hub(runtime)
+    devs = devices.Devices(devices.FILE)         # the one for this process (a second would fight over its file lock)
+    app_cookie = "__Host-tern_a" if tls else "tern_a"
+    pair_limiter = webauth.Limiter()
+    conf_state = {"stamp": None, "cfg": cfgmod.Config()}
+    conf_lock = threading.Lock()
+
+    def conf() -> cfgmod.Config:
+        """config.json, read again when it changes, so the switches apply without a restart."""
+        path = os.path.join(runtime, "config.json")
+        try:
+            s = os.stat(path)
+            stamp = (s.st_mtime_ns, s.st_size, s.st_ino)
+        except OSError:
+            stamp = None
+        with conf_lock:
+            if stamp is None or stamp != conf_state["stamp"]:
+                conf_state["cfg"] = cfgmod.load(runtime, conf_state["cfg"])
+                conf_state["stamp"] = stamp
+            return conf_state["cfg"]
+
     look = {**_foot_colors(), "attr": {"bold": curses.A_BOLD, "dim": curses.A_DIM, "reverse": curses.A_REVERSE}}
     fonts = _font_files()
     look["fonts"] = sorted(fonts)
@@ -527,6 +556,7 @@ def serve(runtime: str = cfgmod.RUNTIME, host: str = "127.0.0.1", port: int = 87
         server_version = "tern-web"
         sys_version = ""
         protocol_version = "HTTP/1.1"           # keep the connection: no TLS handshake per frame
+        app_session = False
 
         def log_message(self, format, *args):           # quiet: a request every quarter second per tab
             pass
@@ -544,6 +574,8 @@ def serve(runtime: str = cfgmod.RUNTIME, host: str = "127.0.0.1", port: int = 87
             self.send_header("X-Frame-Options", "DENY")
             self.send_header("Referrer-Policy", "no-referrer")
             self.send_header("Content-Security-Policy", CSP)
+            if self.app_session:
+                self.send_header("X-Tern-App", "1")
             for k, v in (extra or {}).items():
                 self.send_header(k, v)
             self.end_headers()
@@ -564,11 +596,36 @@ def serve(runtime: str = cfgmod.RUNTIME, host: str = "127.0.0.1", port: int = 87
                 return None
             return jar[name].value if name in jar else None
 
+        def app_device(self) -> str | None:
+            """The paired phone this request's app cookie belongs to, while the app is on."""
+            if not conf().web.app:
+                return None
+            return devs.session_device(self.cookie_value(app_cookie), time.time())
+
         def signed_in(self) -> bool:
+            """An app session (with the app on), or a browser (with browsers on, and its password if there is one)."""
+            self.app_session = self.app_device() is not None
+            if self.app_session:
+                return True
+            if not conf().web.enabled:
+                return False
             if auth is None:
                 return True
             value = self.cookie_value(cookie_name)
             return value is not None and auth.valid(value)
+
+        def browsers_off(self) -> bool:
+            """Answer 403 if browsers are off and this request isn't an app session."""
+            if conf().web.enabled or self.app_session:
+                return False
+            self.reply(403, b"the browser page is turned off (settings, WEB)", "text/plain")
+            return True
+
+        def json_reply(self, code: int, obj: dict, extra: dict | None = None) -> None:
+            self.reply(code, json.dumps(obj, separators=(",", ":"), ensure_ascii=False).encode(), "application/json; charset=utf-8", extra=extra)
+
+        def refuse(self, text: str) -> None:
+            self.json_reply(403, {"error": text, "now": time.time()})
 
         def ui(self) -> str:
             """Which page this browser gets: the one it chose, else a phone's to phones."""
@@ -580,14 +637,19 @@ def serve(runtime: str = cfgmod.RUNTIME, host: str = "127.0.0.1", port: int = 87
 
         def do_GET(self):
             path = self.path.split("?", 1)[0]
+            self.app_session = False
             if path == "/login":
-                return self.redirect("/") if self.signed_in() else self.login_page()
+                if self.signed_in():
+                    return self.redirect("/")
+                return self.browsers_off() or self.login_page()
             if path == "/logout":
                 return self.redirect("/login", self.cookie("", 0))
             if not self.signed_in():
+                if self.browsers_off():
+                    return
                 return self.redirect("/login") if path == "/" else self.reply(401, b"sign in", "text/plain")
             if path == "/":
-                with open(phone.PAGE if self.ui() == "phone" else PAGE, "rb") as fh:
+                with open(phone.PAGE if self.app_session or self.ui() == "phone" else PAGE, "rb") as fh:
                     self.reply(200, fh.read(), "text/html; charset=utf-8", extra={"Vary": "User-Agent, Sec-CH-UA-Mobile, Cookie"})
             elif path.startswith("/ui/") and path[4:] in phone.UI:   # the other one, from now on
                 self.redirect("/", f"{phone.UI_COOKIE}={path[4:]}; Max-Age=31536000; Path=/; HttpOnly; SameSite=Strict" + ("; Secure" if tls else ""))
@@ -610,6 +672,69 @@ def serve(runtime: str = cfgmod.RUNTIME, host: str = "127.0.0.1", port: int = 87
                 return None
             return self.rfile.read(n)
 
+        def do_app(self, data: bytes):
+            """The app's own endpoints: JSON in and out, signed by the phone's keys, never the password cookie."""
+            self.app_session = False
+            if not conf().web.app:
+                return self.refuse("the app is turned off (settings, WEB)")
+            try:
+                req = json.loads(data or b"{}")
+                if not isinstance(req, dict):
+                    raise ValueError("not an object")
+            except ValueError:
+                return self.json_reply(400, {"error": "the request was malformed"})
+            live, now, ip = hub.fast, time.time(), self.client_address[0]
+            try:
+                if self.path == "/app/pair":
+                    parts = [req.get(k) for k in ("code", "name", "everyday", "live", "sig")]
+                    if not all(isinstance(x, str) for x in parts):
+                        raise devices.Refused("the request was malformed")
+                    with guard:
+                        wait, stamp = pair_limiter.attempt(ip)
+                    if wait:
+                        raise devices.Refused(f"too many tries: wait {int(wait // 60) + 1} min")
+                    try:
+                        oid = devices.offer(live, *parts, now)
+                        shown = devices.words(parts[2], parts[3])
+                    except ValueError:
+                        raise devices.Refused("the request was malformed")
+                    with guard:
+                        pair_limiter.ok(ip, stamp)
+                    return self.json_reply(200, {"offer": oid, "words": shown})
+                if self.path == "/app/paired":
+                    if not isinstance(req.get("offer"), str):
+                        raise devices.Refused("the request was malformed")
+                    return self.json_reply(200, devices.offer_state(live, req["offer"], now))
+                signed = [req.get(k) for k in ("payload", "sig", "key")]
+                if not all(isinstance(x, str) for x in signed):
+                    raise devices.Refused("the request was malformed")
+                cfg, armed = conf(), hub.armed()
+                if self.path == "/app/session":
+                    dev, cmd = devs.check(*signed, now, cfg, armed)
+                    if cmd != {"op": "session"}:
+                        raise devices.Refused("not a sign-in")
+                    token = devs.session_token(dev["id"], now)
+                    return self.json_reply(200, {"ok": True, "name": dev["name"]}, extra={"Set-Cookie": (
+                        f"{app_cookie}={token}; Max-Age={webauth.TTL}; Path=/; HttpOnly; SameSite=Strict"
+                        + ("; Secure" if tls else ""))})
+                # /act: the app's cookie says who is signed in; the signature says this request is theirs
+                who = self.app_device()
+                if who is None:
+                    raise devices.Refused("sign in again")
+                try:
+                    claimed = json.loads(signed[0]).get("d")
+                except (ValueError, AttributeError):
+                    claimed = None
+                if claimed != who:
+                    raise devices.Refused("this request is for another phone" if claimed else "the request was malformed")
+                dev, cmd = devs.check(*signed, now, cfg, armed)
+                return self.json_reply(200, hub.act(dev, cmd))
+            except devices.Refused as ex:
+                return self.refuse(str(ex))
+            except Exception:
+                traceback.print_exc()
+                return self.json_reply(500, {"error": "tern web hit an error", "now": time.time()})
+
         def do_login(self, data: bytes):
             ip = self.client_address[0]
             pw = parse_qs(data.decode(errors="replace")).get("password", [""])[0]
@@ -628,17 +753,25 @@ def serve(runtime: str = cfgmod.RUNTIME, host: str = "127.0.0.1", port: int = 87
             data = self.body()
             if data is None:
                 return self.reply(413, b"too big", "text/plain")
+            self.app_session = False
+            if self.path in ("/app/pair", "/app/paired", "/app/session", "/act"):
+                return self.do_app(data)
             if self.path == "/login" and auth is not None:
-                return self.do_login(data)
+                return self.browsers_off() or self.do_login(data)
             if self.path not in ("/frame", "/phone"):
                 return self.reply(404, b"not found", "text/plain")
             if not self.signed_in():
+                if self.browsers_off():
+                    return
                 return self.reply(401, b"sign in", "text/plain")
             try:
                 req = json.loads(data or b"{}")
                 if not isinstance(req, dict):
                     raise ValueError("not an object")
-                body = json.dumps((hub.phone if self.path == "/phone" else hub.handle)(req), separators=(",", ":"), ensure_ascii=False).encode()
+                out = (hub.phone if self.path == "/phone" else hub.handle)(req)
+                if self.app_session and self.path == "/phone":
+                    out["control"] = True
+                body = json.dumps(out, separators=(",", ":"), ensure_ascii=False).encode()
             except (ValueError, TypeError) as ex:
                 return self.reply(400, str(ex).encode(), "text/plain")
             except Exception:

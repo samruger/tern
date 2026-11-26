@@ -4586,6 +4586,155 @@ class WebLogin(unittest.TestCase):
                 self.assertEqual(sorted(wrong).count(401), webauth.PER_IP)       # the right password cleared the earlier one
 
 
+class WebApp(unittest.TestCase):
+    """tern web for the paired app: its sign-in, signed commands, and the browsers / app switches."""
+
+    def setUp(self):
+        import http.client, socket, ssl, threading, time
+        from unittest import mock
+        from tern import config as cfgmod, devices, web, webauth
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        d = self.d = self.tmp.name
+        files = {"AUTH_FILE": os.path.join(d, "web.json"), "CERT_FILE": os.path.join(d, "c.pem"),
+                 "KEY_FILE": os.path.join(d, "k.pem")}
+        p = mock.patch.multiple(webauth, **files); p.start(); self.addCleanup(p.stop)
+        p = mock.patch.object(devices, "FILE", os.path.join(d, "app-devices.json")); p.start(); self.addCleanup(p.stop)
+        webauth.set_password("correct horse battery")
+        webauth.make_cert([])
+        self.run_dir = os.path.join(d, "run"); os.makedirs(self.run_dir)
+        self.cfg = cfgmod.Config()
+        self.cfg.web.app = True
+        self.set_web()
+        pubs = {}
+        for which in ("everyday", "live"):
+            subprocess.run(["openssl", "ecparam", "-name", "prime256v1", "-genkey", "-noout", "-out", which + ".pem"],
+                           cwd=d, check=True, capture_output=True)
+            subprocess.run(["openssl", "pkey", "-in", which + ".pem", "-pubout", "-outform", "DER", "-out", which + ".der"],
+                           cwd=d, check=True, capture_output=True)
+            pubs[which] = base64.b64encode(pathlib.Path(d, which + ".der").read_bytes()).decode()
+        self.dev = devices.Devices(devices.FILE).add("pixel", pubs["everyday"], pubs["live"])
+        self.n = 0
+        with socket.socket() as sk:
+            sk.bind(("127.0.0.1", 0)); port = sk.getsockname()[1]
+        threading.Thread(target=web.serve, args=(self.run_dir, "127.0.0.1", port), daemon=True).start()
+        for _ in range(50):
+            try:
+                socket.create_connection(("127.0.0.1", port), 0.2).close(); break
+            except OSError:
+                time.sleep(0.1)
+        ctx = ssl.create_default_context(cafile=files["CERT_FILE"])
+        self.c = http.client.HTTPSConnection("localhost", port, context=ctx, timeout=10)
+        self.addCleanup(self.c.close)
+
+    def set_web(self, **kw):
+        from tern import config as cfgmod
+        for k, v in kw.items():
+            setattr(self.cfg.web, k, v)
+        cfgmod.save(self.cfg, self.run_dir)
+        st = os.stat(os.path.join(self.run_dir, "config.json"))
+        os.utime(os.path.join(self.run_dir, "config.json"), ns=(st.st_atime_ns, st.st_mtime_ns + 10**9 * getattr(self, "bump", 1)))
+        self.bump = getattr(self, "bump", 1) + 1
+
+    def ask(self, method, path, body=None, headers=None):
+        self.c.request(method, path, body, headers or {})
+        r = self.c.getresponse(); return r, r.read()
+
+    def sign(self, text, which="everyday", dev=None):
+        pathlib.Path(self.d, "msg").write_bytes(text.encode())
+        subprocess.run(["openssl", "dgst", "-sha256", "-sign", which + ".pem", "-out", "sig.der", "msg"],
+                       cwd=self.d, check=True, capture_output=True)
+        return base64.b64encode(pathlib.Path(self.d, "sig.der").read_bytes()).decode()
+
+    def signed(self, cmd, n=None, ts=None, which="everyday", key=None):
+        import time
+        if n is None:
+            self.n += 1; n = self.n
+        payload = json.dumps({"d": self.dev, "n": n, "ts": time.time() if ts is None else ts, "cmd": cmd})
+        return json.dumps({"payload": payload, "sig": self.sign(payload, which), "key": key or which}).encode()
+
+    def post(self, path, body, cookie=None):
+        r, b = self.ask("POST", path, body, {"Cookie": cookie} if cookie else {})
+        return r, json.loads(b) if b[:1] == b"{" else b
+
+    def app_cookie(self):
+        r, b = self.post("/app/session", self.signed({"op": "session"}))
+        self.assertEqual((r.status, b.get("ok"), b.get("name")), (200, True, "pixel"))
+        ck = r.getheader("Set-Cookie")
+        for flag in ("__Host-tern_a=", "HttpOnly", "Secure", "SameSite=Strict", f"Max-Age={30 * 86400}"):
+            self.assertIn(flag, ck)
+        return ck.split(";", 1)[0]
+
+    def browser_cookie(self):
+        r, _ = self.ask("POST", "/login", b"password=correct+horse+battery", {"Content-Type": "application/x-www-form-urlencoded"})
+        self.assertEqual(r.status, 303)
+        return r.getheader("Set-Cookie").split(";", 1)[0]
+
+    def test_app_session_then_view(self):
+        ck = self.app_cookie()
+        r, b = self.post("/phone", b"{}", ck)
+        self.assertEqual((r.status, b.get("control"), r.getheader("X-Tern-App")), (200, True, "1"))
+        r, page = self.ask("GET", "/", headers={"Cookie": ck, "User-Agent": "Mozilla/5.0 X11 Linux"})   # a desktop UA still gets the phone page
+        self.assertEqual(r.status, 200)
+        self.assertIn(b"phone", page.lower())
+        r, b = self.post("/phone", b"{}", self.browser_cookie())
+        self.assertEqual(r.status, 200)
+        self.assertNotIn("control", b)
+        self.assertIsNone(r.getheader("X-Tern-App"))
+
+    def test_act_needs_both_cookie_and_signature(self):
+        ck = self.app_cookie()
+        r, b = self.post("/act", self.signed({"op": "x"}), ck)            # past auth: only the command is unknown
+        self.assertEqual((r.status, b["error"]), (403, "unknown command"))
+        body = json.loads(self.signed({"op": "x"}))
+        body["sig"] = self.sign(body["payload"], "live")                  # signed by another key
+        r, b = self.post("/act", json.dumps(body).encode(), ck)
+        self.assertEqual((r.status, b["error"]), (403, "not signed by this phone's key"))
+        r, b = self.post("/act", self.signed({"op": "x"}), self.browser_cookie())   # the password cookie does not act
+        self.assertEqual((r.status, b["error"]), (403, "sign in again"))
+        r, b = self.post("/act", self.signed({"op": "x"}))
+        self.assertEqual(r.status, 403)
+        one = self.signed({"op": "x"})
+        self.post("/act", one, ck)
+        r, b = self.post("/act", one, ck)
+        self.assertEqual((r.status, b["error"]), (403, "sent twice: refused"))
+
+    def test_clock_message(self):
+        import time
+        r, b = self.post("/app/session", self.signed({"op": "session"}, ts=time.time() - 90))
+        self.assertEqual(r.status, 403)
+        self.assertIn("90 s", b["error"])
+        self.assertAlmostEqual(b["now"], time.time(), delta=5)
+
+    def test_browsers_off(self):
+        ck, bck = self.app_cookie(), self.browser_cookie()
+        self.set_web(enabled=False)
+        r, b = self.ask("GET", "/")
+        self.assertEqual((r.status, b), (403, b"the browser page is turned off (settings, WEB)"))
+        self.assertEqual(self.ask("GET", "/login")[0].status, 403)
+        self.assertEqual(self.ask("POST", "/login", b"password=correct+horse+battery")[0].status, 403)
+        self.assertEqual(self.post("/phone", b"{}", bck)[0].status, 403)
+        r, b = self.post("/phone", b"{}", ck)
+        self.assertEqual((r.status, b.get("control")), (200, True))
+        r, b = self.post("/act", self.signed({"op": "x"}), ck)
+        self.assertEqual((r.status, b["error"]), (403, "unknown command"))
+
+    def test_app_off(self):
+        ck = self.app_cookie()
+        self.set_web(app=False)
+        for path in ("/app/pair", "/app/paired", "/app/session", "/act"):
+            r, b = self.post(path, b"{}", ck)
+            self.assertEqual((r.status, "off" in b["error"]), (403, True), path)
+        self.assertEqual(self.post("/phone", b"{}", ck)[0].status, 401)   # the app cookie is dead too
+        self.assertEqual(self.post("/phone", b"{}", self.browser_cookie())[0].status, 200)
+
+    def test_pairing_endpoints(self):
+        r, b = self.post("/app/pair", b'{"code": 1}')
+        self.assertEqual(r.status, 403)
+        self.assertEqual(self.post("/app/paired", b'{"offer": "nope"}')[1], {"state": "unknown"})
+        self.assertEqual(self.post("/app/pair", b"[]")[0].status, 400)
+
+
 class ReviewFixes2(Rig, unittest.TestCase):
     """From the review of 2026-11-23: one list, tabs, themes."""
 
