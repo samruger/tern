@@ -11,6 +11,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from tern.book import Book, taker_fee
 from tern.sign import load_key, signature
+from tern import sign
 from tern.strategy import due_slot, signals
 from tern.dash import braille, by_time
 from tern import webctl
@@ -207,6 +208,71 @@ class State(unittest.TestCase):
             with open(os.path.join(d, "config.json"), "w") as fh:
                 fh.write("{bad")
             self.assertEqual(config.load(d, cur).strategy.contracts, 9)
+
+
+class P256(unittest.TestCase):
+    def sh(self, d, *args):
+        subprocess.run(["openssl", *args], cwd=d, check=True,
+                       capture_output=True)
+
+    def keypair(self, d, name):
+        self.sh(d, "ecparam", "-name", "prime256v1", "-genkey", "-noout",
+                "-out", name + ".pem")
+        self.sh(d, "pkey", "-in", name + ".pem", "-pubout",
+                "-outform", "DER", "-out", name + ".der")
+        return pathlib.Path(d, name + ".der").read_bytes()
+
+    def test_verifies_openssl_signatures(self):
+        n = 0xFFFFFFFF00000000FFFFFFFFFFFFFFFFBCE6FAADA7179E84F3B9CAC2FC632551
+
+        def enc(r, s):
+            def i(v):
+                b = v.to_bytes(33, "big").lstrip(b"\0") or b"\0"
+                if b[0] & 0x80:
+                    b = b"\0" + b
+                return b"\x02" + bytes([len(b)]) + b
+            body = i(r) + i(s)
+            return b"\x30" + bytes([len(body)]) + body
+
+        with tempfile.TemporaryDirectory() as d:
+            pub = self.keypair(d, "k")
+            other = self.keypair(d, "o")
+            for _ in range(20):
+                msg = os.urandom(40)
+                pathlib.Path(d, "msg").write_bytes(msg)
+                self.sh(d, "dgst", "-sha256", "-sign", "k.pem",
+                        "-out", "sig.der", "msg")
+                sig = pathlib.Path(d, "sig.der").read_bytes()
+                self.assertTrue(sign.p256_verify(pub, msg, sig))
+                self.assertFalse(sign.p256_verify(pub, msg + b"x", sig))
+                bad = bytearray(sig); bad[-1] ^= 1
+                self.assertFalse(sign.p256_verify(pub, msg, bytes(bad)))
+                self.assertFalse(sign.p256_verify(other, msg, sig))
+            self.assertFalse(sign.p256_verify(pub, msg, enc(0, 5)))
+            self.assertFalse(sign.p256_verify(pub, msg, enc(5, n)))
+            self.assertFalse(sign.p256_verify(pub, msg, b""))
+            self.assertFalse(sign.p256_verify(b"junk", msg, sig))
+
+    def test_rejects_bad_keys(self):
+        with tempfile.TemporaryDirectory() as d:
+            pub = self.keypair(d, "k")
+            self.sh(d, "genpkey", "-algorithm", "ed25519", "-out", "e.pem")
+            self.sh(d, "pkey", "-in", "e.pem", "-pubout",
+                    "-outform", "DER", "-out", "e.der")
+            ed = pathlib.Path(d, "e.der").read_bytes()
+        self.assertEqual(len(sign.p256_key(pub)), 2)
+        with self.assertRaises(ValueError):
+            sign.p256_key(ed)
+        off = bytearray(pub); off[-1] ^= 1
+        with self.assertRaises(ValueError):
+            sign.p256_key(bytes(off))
+        # compressed point: 33 bytes, so the two length bytes shrink
+        head = bytearray(pub[:26]); head[1] = 0x39; head[24] = 0x22
+        comp = bytes(head) + bytes([2 + (pub[-1] & 1)]) + pub[27:59]
+        with self.assertRaises(ValueError):
+            sign.p256_key(comp)
+        with self.assertRaises(ValueError):
+            sign.p256_key(pub[:-5])
 
 
 class Shutdown(unittest.TestCase):

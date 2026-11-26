@@ -160,6 +160,91 @@ class Ed25519Key:
         return R + int.to_bytes(s, 32, "little")
 
 
+# ---------------------------------------------------------------- P-256 ECDSA, verify only
+
+OID_EC = "1.2.840.10045.2.1"
+OID_P256 = "1.2.840.10045.3.1.7"
+
+_PP = 2 ** 256 - 2 ** 224 + 2 ** 192 + 2 ** 96 - 1
+_PB = 0x5AC635D8AA3A93E7B3EBBD55769886BC651D06B0CC53B0F63BCE3C3E27D2604B
+_PN = 0xFFFFFFFF00000000FFFFFFFFFFFFFFFFBCE6FAADA7179E84F3B9CAC2FC632551
+_PG = (0x6B17D1F2E12C4247F8BCE6E563A440F277037D812DEB33A0F4A13945D898C296,
+       0x4FE342E2FE1A7F9B8EE7EB4A7C0F9E162BCE33576B315ECECBB6406837BF51F5)
+
+
+def _padd(a, b):
+    """Add two affine points on the curve. None is the point at infinity."""
+    if a is None:
+        return b
+    if b is None:
+        return a
+    if a[0] == b[0]:
+        if (a[1] + b[1]) % _PP == 0:
+            return None
+        m = (3 * a[0] * a[0] - 3) * pow(2 * a[1], -1, _PP) % _PP
+    else:
+        m = (b[1] - a[1]) * pow(b[0] - a[0], -1, _PP) % _PP
+    x = (m * m - a[0] - b[0]) % _PP
+    return x, (m * (a[0] - x) - a[1]) % _PP
+
+
+def _pmul(k: int, pt):
+    out = None
+    while k:
+        if k & 1:
+            out = _padd(out, pt)
+        pt = _padd(pt, pt)
+        k >>= 1
+    return out
+
+
+def p256_key(spki_der: bytes) -> tuple[int, int]:
+    """Public point (x, y) from a P-256 SubjectPublicKeyInfo. ValueError if not."""
+    try:
+        tag, body, end = _der(spki_der)
+        if tag != 0x30 or end != len(spki_der):
+            raise ValueError
+        (t1, algo), (t2, bits) = _seq(body)
+        (t3, o1), (t4, o2) = _seq(algo)
+        if (t1, t2, t3, t4) != (0x30, 0x03, 0x06, 0x06):
+            raise ValueError
+        if _oid(o1) != OID_EC or _oid(o2) != OID_P256:
+            raise ValueError
+        if len(bits) != 66 or bits[0] != 0 or bits[1] != 4:
+            raise ValueError
+    except (ValueError, IndexError, TypeError):
+        raise ValueError("not a P-256 public key") from None
+    x = int.from_bytes(bits[2:34], "big")
+    y = int.from_bytes(bits[34:], "big")
+    if x >= _PP or y >= _PP:
+        raise ValueError("not a P-256 public key")
+    if (y * y - (x * x * x - 3 * x + _PB)) % _PP:
+        raise ValueError("point is not on the curve")
+    return x, y
+
+
+def p256_verify(spki_der: bytes, msg: bytes, sig_der: bytes) -> bool:
+    """True if sig_der (DER r, s) signs msg with SHA-256. Never raises."""
+    try:
+        q = p256_key(spki_der)
+        tag, body, end = _der(sig_der)
+        if tag != 0x30 or end != len(sig_der):
+            return False
+        (t1, rb), (t2, sb) = _seq(body)
+        if t1 != 0x02 or t2 != 0x02 or not rb or not sb:
+            return False
+        r = int.from_bytes(rb, "big")
+        s = int.from_bytes(sb, "big")
+        if not (0 < r < _PN and 0 < s < _PN):
+            return False
+        e = int.from_bytes(hashlib.sha256(msg).digest(), "big")
+        w = pow(s, -1, _PN)
+        pt = _padd(_pmul(e * w % _PN, _PG), _pmul(r * w % _PN, q))
+        return pt is not None and pt[0] % _PN == r
+    except (ValueError, IndexError, TypeError):
+        return False
+
+
 # ---------------------------------------------------------------- loading
 
 def load_key(pem_text: str):
