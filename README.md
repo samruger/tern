@@ -398,23 +398,42 @@ the desk is on paper or live; the menu lists the pages, with how things stand be
 
 ### Android app
 
-`android/` is a small app that shows the phone pages full screen: one WebView, no libraries, 36 KB. Android 10 or newer.
+`android/` is a small app that shows the phone pages full screen: one WebView, no libraries, 56 KB. Android 10 or newer. It is
+view only until you pair it (below), and the pages come from your `tern web`, so a change to them needs no new apk. Nothing in the repo points at anyone's
+desk: you build the app and connect it to your own.
 
-```
-python3 android/build.py --home 192.168.1.20:8787 --outside desk.example.com:8787
-adb install -r ~/tern.apk
-```
+1. **Set up remote access** (above): a password, a certificate, and `tern web` open to the network. The app speaks HTTPS only.
+   Allow the port through the firewall; to use the app away from home, forward it on the router too.
+2. **Get the tools:** a JDK (17 or newer) and, from Google, the Android SDK's platform 36 and build-tools, in `$ANDROID_HOME` or
+   `~/.local/share/android-sdk`. No Gradle.
+3. **Build it,** either way. Both write `~/tern.apk`; without a port, an address gets 8787.
 
-- **Building** needs a JDK (17 or newer) and, from Google, the Android SDK's platform 36 and build-tools, in `$ANDROID_HOME`
-  or `~/.local/share/android-sdk`. No Gradle. The addresses are kept in `~/.config/tern/android.json`, outside the repo, and go
-  into the apk with the certificate's fingerprint, so keep that apk to yourself; `--blank` builds one that asks for them.
-- **Signing:** the first build makes a key, `~/.config/tern/android.jks` and its password `android.pass`. Keep copies:
-  Android takes an update only with the same key.
-- **Two addresses,** home and outside. It asks both at once, takes home's if it answers, and looks again when the phone changes
-  networks. A sign-in at one is good at the other. Hold the app's icon for `Addresses`.
+   ```
+   python3 android/build.py --home 192.168.1.20 --outside desk.example.com   # your addresses in it
+   python3 android/build.py --blank                                          # none: the phone asks
+   ```
+
+   With addresses, build it on the computer tern runs on: the fingerprint of its certificate goes in too, and there is nothing to
+   set up on the phone. Keep that apk to yourself. They are kept in `~/.config/tern/android.json` for the next build; `--outside ""`
+   is for none.
+4. **Install it:** `adb install -r ~/tern.apk`, or copy it to the phone and open it.
+5. **Open it** and sign in with your web password. A blank one first asks for the addresses (the one at home, the one from
+   outside, or both), then shows the fingerprint of the certificate it found. Compare that with the computer's, and approve it if
+   they are the same:
+
+   ```
+   openssl x509 -in ~/.config/tern/web-cert.pem -noout -fingerprint -sha256
+   ```
+
+Then:
+
+- **Two addresses:** it asks both at once, takes home's if it answers, and looks again when the phone changes networks. A sign-in
+  at one is good at the other. To change them, hold the app's icon and tap `Addresses`.
 - **The certificate** must be the one in the apk, or the one approved on the phone; no authority's word is taken. Nothing is
-  sent to a server with another, and the app shows its fingerprint. A renewed certificate has to be approved, or the app built again.
-- **View only**, with the same password. The pages come from `tern web`, so a change to them needs no new apk.
+  sent to a server with another: the app says so, and shows its fingerprint. A renewed certificate, Let's Encrypt's included, has
+  to be approved, or the app built again.
+- **Signing:** the first build makes a key, `~/.config/tern/android.jks` and its password `android.pass`. Keep copies: Android
+  takes an update only with the same key. An apk someone else built has another, and the one on the phone has to be uninstalled first.
 
 #### Control from the app
 
