@@ -1877,6 +1877,33 @@ class AppRows(Rig, unittest.TestCase):
             self.assertNotIn(f"app.phone.{phone['id']}", [r.key for r in scr.set_rows()])
 
 
+    def test_a_code_with_the_app_off_says_so(self):
+        with tempfile.TemporaryDirectory() as d:
+            k, scr = self.screen(d)
+            for on in (False, True):
+                k.cfg.web.app = on; self.sync()
+                self.row(scr, "app.pair"); self.press(10)
+                self.assertEqual(scr.modal["type"], "pair")
+                said = "the app is turned off (settings, WEB)" in self.text()
+                self.assertEqual(said, not on)
+                self.press(27)
+
+    def test_a_broken_phones_file_keeps_the_screen(self):
+        with tempfile.TemporaryDirectory() as d:
+            k, scr = self.screen(d)
+            self.row(scr, "app.pair"); self.press(10)
+            code = scr.modal["code"]
+            self.tmp = mock.Mock(); self.tmp.name = d
+            e, l, signer = Devices._phone(self)
+            devices.offer(scr.fast, code, "pixel", e, l, signer(f"pair\n{code}\npixel\n{e}\n{l}", "everyday"), time.time())
+            scr.pair_at = 0; self.sync()
+            self.assertEqual(scr.modal["type"], "offer")
+            with open(self.dpath, "w") as fh:
+                fh.write("{not json")
+            self.press("y")                                                      # no traceback: the screen says it
+            self.assertIsNone(scr.modal)
+            self.assertIn("not answered", self.text())
+
 class Tabs(Rig, unittest.TestCase):
     """One box fills the screen; the others are tabs on its top border, its keys are on its bottom border."""
 
@@ -4415,6 +4442,40 @@ class Phone(Rig, unittest.TestCase):
             self.assertEqual(got["buttons"], ["on", "edit", "rename", "delete", "live"])     # its own, under its own name
             self.assertIn("1 change, not saved", got["draft"])
 
+    CUTS = """
+      const wait = async (f, ms = 8000) => { for (let t = 0; t < ms; t += 50) { const v = f(); if (v) return v; await new Promise(r => setTimeout(r, 50)); } return null; };
+      const $ = s => document.querySelector(s), open = () => $("#sheet") && !$("#sheet").hidden && $("#sheet h2").textContent;
+      const back = () => wait(() => !(history.state && history.state.sheet));
+      const tap = async s => { const b = await wait(() => $(s)); if (b) b.click(); return wait(open); };
+      const out = {};
+      window.addEventListener("load", async () => {
+        location.hash = "#/settings";
+        for (const [key, v] of [["web.port", "1"], ["web.network", "false"], ["web.app", "false"], ["web.enabled", "false"], ["gate.min_days", "1"]]) {
+          await tap(`[data-do="change"][data-v="${key}"]`);
+          const b = $(`#sheet [data-do="nudge"][data-v="${v}"]`); if (b) b.click();
+          out[key] = $("#sheet .box").textContent;
+          history.back(); await back();
+        }
+        const pre = document.createElement("pre"); pre.id = "out"; pre.textContent = JSON.stringify(out); document.body.append(pre);
+      });
+    """
+
+    def test_a_change_that_cuts_the_app_off_says_so(self):
+        import shutil
+        if not shutil.which("chromium"):
+            raise unittest.SkipTest("needs chromium")
+        with tempfile.TemporaryDirectory() as d:
+            k, hub = self.hub(d)
+            k.cfg.web.network, k.cfg.web.app = True, True; self.sync()
+            got, sent = self.browse(hub, d, stub=True, control=True, drive=self.CUTS)
+            line = "This cuts the app off: it can't reach the desk again until someone at the desk sets it back."
+            for key in ("web.port", "web.network", "web.app"):
+                self.assertIn(line, got[key], key)
+            for key in ("web.enabled", "gate.min_days"):
+                self.assertIn("Change", got[key], key)
+                self.assertNotIn(line, got[key], key)
+            self.assertEqual(sent, [])
+
     def test_the_pages_menu_has_help_and_settings(self):
         import re
         from tern import phone
@@ -5360,6 +5421,49 @@ class WebApp(unittest.TestCase):
         r, p = self.post("/phone", b"{}", self.browser_cookie())
         self.assertNotIn("results", p)
 
+    def test_a_request_for_another_phone_is_refused(self):
+        from tern import devices
+        d = self.d
+        pubs = {}
+        for which in ("b-everyday", "b-live"):
+            subprocess.run(["openssl", "ecparam", "-name", "prime256v1", "-genkey", "-noout", "-out", which + ".pem"],
+                           cwd=d, check=True, capture_output=True)
+            subprocess.run(["openssl", "pkey", "-in", which + ".pem", "-pubout", "-outform", "DER", "-out", which + ".der"],
+                           cwd=d, check=True, capture_output=True)
+            pubs[which] = base64.b64encode(pathlib.Path(d, which + ".der").read_bytes()).decode()
+        other = devices.Devices(devices.FILE).add("tablet", pubs["b-everyday"], pubs["b-live"])
+        ck = self.app_cookie()                                            # phone A's cookie
+        payload = json.dumps({"d": other, "n": 1, "ts": time.time(), "cmd": {"op": "live", "on": False}})
+        body = json.dumps({"payload": payload, "sig": self.sign(payload, "b-everyday"), "key": "everyday"}).encode()
+        r, b = self.post("/act", body, ck)                                # signed by B, sent with A's cookie
+        self.assertEqual((r.status, b["error"]), (403, "this request is for another phone"))
+        self.assertEqual(self.cmd_files(), [])
+
+    def test_refusals_are_logged(self):
+        import contextlib, io
+        from unittest import mock
+        from tern import dash
+        ck = self.app_cookie()
+        err = io.StringIO()
+        one = self.signed({"op": "x"})
+        with contextlib.redirect_stderr(err), mock.patch.object(dash, "engine_alive", return_value=True):
+            self.post("/act", one, ck)
+            r, b = self.post("/act", one, ck)                             # a replay
+            self.assertEqual((r.status, b["error"]), (403, "sent twice: refused"))
+            body = json.loads(self.signed({"op": "session"}))
+            body["sig"] = self.sign(body["payload"], "live")
+            r, b = self.post("/app/session", json.dumps(body).encode())
+            self.assertEqual((r.status, b["error"]), (403, "not signed by this phone's key"))
+            self.post("/app/pair", b'{"code": "1"}')
+        lines = err.getvalue().splitlines()
+        self.assertIn("tern web: refused /act from 127.0.0.1: unknown command", lines)
+        self.assertIn("tern web: refused /act from 127.0.0.1: sent twice: refused", lines)
+        self.assertIn("tern web: refused /app/session from 127.0.0.1: not signed by this phone's key", lines)
+        self.assertTrue(any(ln.startswith("tern web: refused /app/pair from 127.0.0.1: ") for ln in lines), lines)
+        notes = [c for c in self.cmd_files() if c["op"] == "note"]       # the desk's log: the first such refusal only, for a minute
+        self.assertEqual([(c["by"], c["text"]) for c in notes],
+                         [("tern web", "refused an app request from 127.0.0.1: sent twice: refused")])
+
     def test_pairing_endpoints(self):
         r, b = self.post("/app/pair", b'{"code": 1}')
         self.assertEqual(r.status, 403)
@@ -6047,6 +6151,44 @@ class Devices(unittest.TestCase):
         self.assertEqual(self.dev.all(), [])
         self.assertEqual(devices.offer_state(live, oid, 100.0 + 302)["state"], "expired")
         self.assertEqual(devices.offer_state(live, oid, 100.0 + 303), {"state": "expired"})
+
+    def test_one_key_for_both_is_refused(self):
+        live = self._live()
+        code = devices.new_code(live, 100.0)
+        e, l, signer = self._phone()
+        with self.assertRaisesRegex(devices.Refused, "one key for both"):
+            devices.offer(live, code, "pixel", e, e, signer(f"pair\n{code}\npixel\n{e}\n{e}", "everyday"), 100.0)
+        self.assertIsNone(devices.offered(live, 100.0))
+
+    def test_a_fourth_phone_hears_why(self):
+        live = self._live()
+        for n in range(devices.MAX):
+            e, l, _ = self._phone()
+            self.dev.add(f"p{n}", e, l)
+        code = devices.new_code(live, 100.0)
+        oid, _ = self._offer(live, code)
+        said = devices.answer(live, oid, True, self.dev, now=101.0)
+        self.assertEqual(devices.offer_state(live, oid, 102.0), {"state": "declined", "why": said})
+        self.assertIn("remove one first", said)
+        code = devices.new_code(live, 200.0)
+        oid, _ = self._offer(live, code, now=200.0)
+        devices.answer(live, oid, False, self.dev, now=201.0)
+        self.assertEqual(devices.offer_state(live, oid, 202.0), {"state": "declined"})   # a plain no
+
+    def test_looking_writes_nothing(self):
+        live = self._live()
+        code = devices.new_code(live, 100.0)
+        self._offer(live, code)
+        with mock.patch.object(webauth, "_private_write") as w:
+            for _ in range(5):
+                devices.offered(live, 101.0)
+            devices.offer_state(live, "nope", 101.0)
+        w.assert_not_called()
+        with mock.patch.object(webauth, "_private_write", wraps=webauth._private_write) as w:
+            with self.assertRaises(devices.Refused):
+                devices.offer(live, "x", "pixel", "a", "b", "c", 101.0)   # another is waiting: nothing changed either
+            devices.new_code(live, 102.0)
+        self.assertEqual(w.call_count, 1)
 
     def test_switches(self):
         from tern import __main__ as cli

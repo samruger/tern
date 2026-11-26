@@ -2390,10 +2390,14 @@ class Screen:
         now = time.time()
         try:
             code = devmod.new_code(self.fast, now)
-        except OSError as ex:
+        except (OSError, ValueError) as ex:
             self.say(f"no code made: {ex}"); return
+        lines = ["", *big(code), "", "type it into the app \u00b7 it lasts 5 minutes \u00b7 esc closes"]
+        if self.set_value("web.app") is False:
+            lines += ["", "the app is turned off (settings, WEB): the phone can't pair until it's on"]
+            self.say("the app is turned off (settings, WEB): turn it on so the phone can pair")
         self.modal = {"type": "pair", "title": "pair a phone", "color": CYAN, "code": code, "until": now + devmod.CODE_TTL,
-                      "lines": ["", *big(code), "", "type it into the app \u00b7 it lasts 5 minutes \u00b7 esc closes"]}
+                      "lines": lines}
 
     def app_row(self):
         """The settings row the cursor is on, if it is one of APP's."""
@@ -2406,8 +2410,11 @@ class Screen:
         name = next((p["name"] for p in self.phones if p["id"] == pid), "that phone")
 
         def remove() -> None:
-            self.say(f"{name} removed" if self.devices.remove(pid) else f"{name} was already gone")
-            self.read_phones()
+            try:
+                self.say(f"{name} removed" if self.devices.remove(pid) else f"{name} was already gone")
+                self.read_phones()
+            except (OSError, ValueError, KeyError) as ex:
+                self.say(f"{name} not removed: {ex}")
         self.confirm(f"remove {name}", [f"Remove {name}? It can send nothing until it is paired again."], remove, "removes it",
                      f"{name} kept", RED)
 
@@ -2915,9 +2922,9 @@ class Screen:
             if m.get("type") == "offer":
                 try:
                     self.say(devmod.answer(self.fast, m["id"], ch in (ord("y"), ord("Y")), self.devices))
-                except OSError as ex:
+                    self.read_phones()
+                except (OSError, ValueError, KeyError) as ex:
                     self.say(f"not answered: {ex}")
-                self.read_phones()
                 return True
             if m.get("type") == "confirm":
                 if ch in (ord("y"), ord("Y")):

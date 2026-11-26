@@ -677,9 +677,10 @@
       const q = { row: r, value: r.value, kept: `${r.label} kept`, view: () => {
         const v = q.value, sec = r.key.includes(".") ? r.key.split(".")[0] + " " : "";
         const loosens = armed() && r.risk && typeof v === "number" && r.value !== null && (v - r.value) * r.risk > 0;
+        const cuts = r.key === "web.port" || ((r.key === "web.app" || r.key === "web.network") && !v);   // the app can't reach the desk after
         const ask = same(v, r.value) ? [el("p.quiet", {}, `${r.label} is ${r.shown}.`)] : loosens ?
           [`${r.risk > 0 ? "Raise" : "Lower"} ${sec}${r.label} from ${r.shown} to ${fmt(r, v)}?`, "Live is armed: this is real money on Kalshi.", "", "type live and tap yes (no cancels):"] :
-          [`Change ${r.label} from ${r.shown} to ${fmt(r, v)}?`];
+          [`Change ${r.label} from ${r.shown} to ${fmt(r, v)}?`, ...(cuts ? ["This cuts the app off: it can't reach the desk again until someone at the desk sets it back."] : [])];
         return { title: loosens ? "LIVE IS ARMED" : `change ${r.label}`, color: loosens ? "dn" : "warn", type: loosens ? "live" : null, does: loosens || same(v, r.value) ? "" : "changes it",
           lines: [about(r.about), editor(r, v), ...ask], loosens };
       }, yes: t => {

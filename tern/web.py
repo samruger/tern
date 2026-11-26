@@ -53,6 +53,10 @@ CONTROL_HINTS = {"r", "L", "P", "q", "space", "D"}
 SESSION_IDLE = 120.0     # seconds without a request before a browser tab's screen is dropped
 VIEW_REFRESH = 10.0      # view-web.json is rewritten at least this often while anyone watches
 MIN_W, MIN_H, MAX_W, MAX_H = 100, 30, 400, 200
+# refusals that mean someone sent what this phone didn't: also a line in the desk's log, at most once a minute
+WARN_REFUSALS = ("not signed by this phone's key", "sent twice: refused", "this request is for another phone",
+                 "bad signature: the phone didn't sign its own keys")
+WARN_EVERY = 60.0
 
 _PAL_SWAP = threading.Lock()
 
@@ -589,6 +593,7 @@ def serve(runtime: str = cfgmod.RUNTIME, host: str = "127.0.0.1", port: int = 87
     app_cookie = "__Host-tern_a" if tls else "tern_a"
     pair_limiter = webauth.Limiter()
     conf_state = {"stamp": None, "cfg": cfgmod.Config()}
+    warned = {"at": 0.0}                         # the last refusal put in the desk's log
     conf_lock = threading.Lock()
 
     def conf() -> cfgmod.Config:
@@ -685,6 +690,26 @@ def serve(runtime: str = cfgmod.RUNTIME, host: str = "127.0.0.1", port: int = 87
         def refuse(self, text: str) -> None:
             self.json_reply(403, {"error": text, "now": time.time()})
 
+        def logged_refusal(self, text: str) -> None:
+            """An app request refused: a line in tern web's journal, and for a bad signature, a replay or another
+            phone's request, a line in the desk's log too (at most once a minute, and only while the engine runs)."""
+            ip = self.client_address[0]
+            print(f"tern web: refused {self.path} from {ip}: {text}", file=sys.stderr, flush=True)
+            now = time.time()
+            with guard:
+                warn = text in WARN_REFUSALS and now - warned["at"] >= WARN_EVERY
+                if warn:
+                    warned["at"] = now
+            if warn and dash.engine_alive(runtime):
+                try:
+                    cmd_dir = os.path.join(runtime, "cmd")
+                    os.makedirs(cmd_dir, exist_ok=True)
+                    dash.write_command(cmd_dir, {"op": "note", "text": f"refused an app request from {ip}: {text}",
+                                                 "by": "tern web"})
+                except OSError:
+                    pass
+            self.refuse(text)
+
         def ui(self) -> str:
             """Which page this browser gets: the one it chose, else a phone's to phones."""
             chose = self.cookie_value(phone.UI_COOKIE)
@@ -734,7 +759,7 @@ def serve(runtime: str = cfgmod.RUNTIME, host: str = "127.0.0.1", port: int = 87
             """The app's own endpoints: JSON in and out, signed by the phone's keys, never the password cookie."""
             self.app_session = False
             if not conf().web.app:
-                return self.refuse("the app is turned off (settings, WEB)")
+                return self.logged_refusal("the app is turned off (settings, WEB)")
             try:
                 req = json.loads(data or b"{}")
                 if not isinstance(req, dict):
@@ -789,7 +814,7 @@ def serve(runtime: str = cfgmod.RUNTIME, host: str = "127.0.0.1", port: int = 87
                 dev, cmd = devs.check(*signed, now, cfg, armed)
                 return self.json_reply(200, hub.act(dev, cmd))
             except devices.Refused as ex:
-                return self.refuse(str(ex))
+                return self.logged_refusal(str(ex))
             except Exception:
                 traceback.print_exc()
                 return self.json_reply(500, {"error": "tern web hit an error", "now": time.time()})

@@ -214,7 +214,7 @@ NAME_MAX = 24
 
 @contextlib.contextmanager
 def _pair(live: str):
-    """The pairing state, loaded; saved (0600, atomically) when the block ends, even in a refusal."""
+    """The pairing state, loaded; saved (0600, atomically) when the block ends, even in a refusal, if it changed."""
     path = os.path.join(live, "app-pair.json")
     fd = os.open(os.path.join(live, "app-pair.lock"), os.O_RDWR | os.O_CREAT, 0o600)
     try:
@@ -224,12 +224,19 @@ def _pair(live: str):
                 st = json.load(fh)
         except (OSError, ValueError):
             st = {}
+        if not isinstance(st, dict):
+            st = {}
+        was = json.dumps(st, sort_keys=True)
+
+        def save() -> None:
+            if json.dumps(st, sort_keys=True) != was:          # the screen looks twice a second: most looks change nothing
+                webauth._private_write(path, json.dumps(st))
         try:
             yield st
         except Refused:
-            webauth._private_write(path, json.dumps(st))      # a refusal still counts (wrong codes)
+            save()                                # a refusal still counts (wrong codes)
             raise
-        webauth._private_write(path, json.dumps(st))
+        save()
     finally:
         os.close(fd)
 
@@ -265,6 +272,8 @@ def offer(live: str, code: str, name: str, everyday_b64: str, live_b64: str, sig
                 st.pop("code", None)
                 raise Refused("too many wrong codes: wait 10 min")
             raise Refused("wrong code")
+        if everyday_b64 == live_b64:
+            raise Refused("the phone sent one key for both: not paired")
         try:
             ok = sign.p256_verify(base64.b64decode(everyday_b64, validate=True),
                                   f"pair\n{code}\n{sent}\n{everyday_b64}\n{live_b64}".encode(),
@@ -304,18 +313,20 @@ def answer(live: str, offer_id: str, yes: bool, devices: "Devices", now: float |
         try:
             o["device"] = devices.add(o["name"], o["everyday"], o["live"])
         except Refused as ex:
-            o["state"] = "declined"
+            o.update(state="declined", why=str(ex))   # the phone shows why
             return str(ex)
         o["state"] = "paired"
         return f"{o['name']} paired"
 
 
 def offer_state(live: str, offer_id: str, now: float) -> dict:
-    """What the phone polls: waiting, paired (with its device id), declined, expired or unknown."""
+    """What the phone polls: waiting, paired (with its device id), declined (with the desk's reason, if it had one),
+    expired or unknown."""
     with _pair(live) as st:
         o = st.get("offer")
         if not o or o["id"] != offer_id:
             return {"state": "unknown"}
         if o["state"] == "waiting" and o["until"] <= now:
             return {"state": "expired"}
-        return {"state": o["state"], **({"device": o["device"]} if o["state"] == "paired" else {})}
+        more = {"device": o["device"]} if o["state"] == "paired" else {"why": o["why"]} if o.get("why") else {}
+        return {"state": o["state"], **more}

@@ -431,9 +431,12 @@ The app has the help, settings and variant editor pages as well, and the same qu
   `~/.config/tern/app-devices.json` (readable by you alone), and the app signs every command it sends. A password, a cookie or the
   apk alone sends nothing.
 - **Fingerprint:** the everyday key needs your fingerprint at most every 5 minutes. The live key needs it every time: arming live,
-  moving it to another variant, and loosening a risky setting while live is armed. Turning live off uses the everyday key.
+  moving it to another variant, and, while live is armed, turning on the variant live trades or loosening a risky setting.
+  Turning live off uses the everyday key.
 - **Safety:** the desk refuses a command that is signed twice, or sent from a phone whose clock is more than 30 seconds off
-  (it says by how many). Every command is logged on the desk as `app <phone name>: <what>`.
+  (it says by how many). Every command is logged on the desk as `app <phone name>: <what>`. Every refusal is logged by tern web
+  (`journalctl --user -u tern-web`), and one with the wrong signature, sent twice or for another phone is noted on the desk as
+  well, at most once a minute.
 - **Changed fingerprints:** if you add or change a fingerprint on the phone, its keys stop working, and the app says to pair again.
 - **Removing a phone:** settings, APP, the phone's row, `D` (asks `y`). It can send nothing from then on.
 - **Switches:** `browsers` and `the app` in settings are separate, so the app can be on with the browser page off.
