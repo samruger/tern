@@ -368,7 +368,7 @@ localhost only) are the same for both. `tern web --config` reads these from `con
 down) when both are off. With `browsers` off the login page and the browser pages are refused, on localhost too; with `the app`
 off the app can neither sign in nor send anything. The engine restarts or stops the service as soon as one changes, from the
 box or by hand in `config.json`, and the box shows whether it is running and where to open it. Firewall and port-forwarding
-rules are not touched: a new port needs its own. The APP rows below are for pairing phones (see Control from the app).
+rules are not touched: a new port needs its own. The APP rows are for pairing phones (see Control from the app).
 
 ### Phones
 
@@ -421,12 +421,14 @@ adb install -r ~/tern.apk
 Version 1.1 of the app can do what the screen does, from a phone you have paired. A browser, even signed in, still cannot.
 The app has the help, settings and variant editor pages as well, and the same questions the screen asks (`y`, or typing `live`).
 
-- **Pairing:** on the desk, settings (`9`), APP, `pair a phone` shows a 6-digit code for 5 minutes. In the app, the menu's `Pair this
-  phone` asks for your fingerprint, then the code and a name for the phone. The desk then shows the phone's name and its key, three groups
-  of four characters, and the app shows the same: if they match, press `y` on the desk. Five wrong codes shut pairing for 10 minutes.
-  At most 3 phones are paired at once.
+- **Pairing:** on the desk, settings (`9`), APP, `pair a phone` shows a 6-digit code for 5 minutes. In the app, hold its icon for
+  `Pair this phone` (an app that is not paired offers it itself the first time it opens). It needs a fingerprint on the phone and
+  sends you to the phone's settings to add one if there is none. Then type the code and a name for the phone. The phone makes its
+  keys and asks for your fingerprint to sign them, and the desk shows the phone's name and its key, three groups of four
+  characters. The app shows the same: if they match, press `y` on the desk. Five wrong codes shut pairing for 10 minutes. At
+  most 3 phones are paired at once.
 - **Keys:** the phone makes two keys in its secure hardware, which never leave it. The desk keeps only their public halves, in
-  `~/.config/tern/app-devices.json` (kept private to you), and the app signs every command it sends. A password, a cookie or the
+  `~/.config/tern/app-devices.json` (readable by you alone), and the app signs every command it sends. A password, a cookie or the
   apk alone sends nothing.
 - **Fingerprint:** the everyday key needs your fingerprint at most every 5 minutes. The live key needs it every time: arming live,
   moving it to another variant, and loosening a risky setting while live is armed. Turning live off uses the everyday key.
