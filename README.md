@@ -511,6 +511,7 @@ The major ones, newest first.
 
 | Date | Change |
 |---|---|
+| 2026-11-26 | **The spot chart holds still:** its columns sit on fixed clock times, so what has passed stays as it was and the chart steps left one column at a time, and its price range is round numbers that widen the moment spot leaves them and shrink only when it fills a third of them. On the screen and the phone pages. |
 | 2026-11-25 | **The paired Android app controls the desk** (app 1.1): everything the screen does, signed on the phone with a key in its secure hardware and your fingerprint, which live asks for every time. Pair a phone from the settings box (APP). The WEB rows are now `browsers` and `the app`, with separate switches. Browsers stay view only. |
 | 2026-11-25 | **Renaming one of your own variants moves its record to the new name**, with the settings log, live and the variants made from it, so the old name is left nowhere. A copy made without a name is called after what its parent is called now (base-6 gives base-8), not its old key. |
 | 2026-11-24 | **Android app:** the phone pages as an app, which finds the desk at home or from outside and takes only its certificate. |

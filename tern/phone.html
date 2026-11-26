@@ -317,7 +317,7 @@
   }
   function spotChart(d, c) {
     const v = c.vals, last = v[v.length - 1];
-    return chart("spot", "mid", { vals: v, t0: c.t0, t1: c.t1, grad: theme.grads.spot, fmt: price, none: "waiting for spot",
+    return chart("spot", "mid", { vals: v, t0: c.t0, t1: c.t1, lo: c.lo ?? undefined, hi: c.hi ?? undefined, grad: theme.grads.spot, fmt: price, none: "waiting for spot",
       marks: c.strike ? [{ v: c.strike, color: pal[theme.warn], fit: true }] : [] }, v.length ? `${d.coin} over ${d.chart}, now $${price(last)}` : "no prices yet");
   }
   function priceLine(d, c) {

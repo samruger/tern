@@ -6,6 +6,7 @@ from __future__ import annotations
 import curses
 import fcntl
 import json
+import math
 import os
 import re
 import textwrap
@@ -224,6 +225,27 @@ def by_time(points: list, t0: float, t1: float, n: int) -> list[float]:
         if last is not None:
             out.append(last)
     return out
+
+
+def by_clock(points: list, span: float, now: float, n: int) -> list[float]:
+    """A chart that scrolls: n columns of span/n seconds each, on fixed clock edges, the last one the column now is in.
+    A column that has ended never changes, so only the right edge moves, and the chart steps left one column at a time."""
+    step = span / max(1, n)
+    k = math.floor(now / step)
+    return by_time(points, (k + 1 - n) * step, (k + 1) * step, n)
+
+
+def steady(held: tuple | None, lo: float, hi: float) -> tuple[float, float]:
+    """A chart's value range that stays put: round numbers just around [lo, hi]. `held` (the last one) is kept while
+    the values are inside it and fill at least a third of it, so it widens the moment they leave and shrinks only by a lot."""
+    if held and held[0] <= lo and hi <= held[1] and (hi - lo) * 3 >= held[1] - held[0]:
+        return held
+    span = hi - lo or abs(hi) * 0.001 or 1.0
+    raw = span / 4
+    mag = 10 ** math.floor(math.log10(raw))
+    step = next(m * mag for m in (1, 2, 2.5, 5, 10) if m * mag >= raw)
+    out = (math.floor((lo - span * 0.04) / step) * step, math.ceil((hi + span * 0.04) / step) * step)
+    return out if out[1] > out[0] else (out[0], out[0] + step)
 
 
 def braille(vals: list[float], w: int, h: int, lo: float, hi: float, filled: bool = True,
@@ -978,6 +1000,17 @@ class Screen:
         first_sec = sec[0][0] if sec else time.time()
         return [[t + 60, p] for t, p in mins if t + 60 < first_sec] + sec
 
+    def spot_range(self, where: str, vals: list, strike: float | None) -> tuple[float, float]:
+        """The spot chart's price range: the prices, and the strike when it is near them, held steady between frames."""
+        lo, hi = min(vals), max(vals)
+        if strike and (hi - lo) and abs(strike - (lo + hi) / 2) < 3 * (hi - lo):
+            lo, hi = min(lo, strike), max(hi, strike)
+        ranges = self.__dict__.setdefault("_ranges", {})   # where -> ((coin, span), range): a new coin or span starts afresh
+        key, held = ranges.get(where, (None, None))
+        now_key = (self.series, self.chart)
+        ranges[where] = (now_key, steady(held if key == now_key else None, lo, hi))
+        return ranges[where][1]
+
     def contract_points(self, ticker: str | None) -> list:
         """A strike's YES price this hour, [ts, price], oldest first."""
         out = []
@@ -994,7 +1027,7 @@ class Screen:
         now = time.time()
         span = CHARTS[self.chart]
         gw = w - 2 - 11
-        vals = by_time(self.spot_points(prod), now - span, now, gw * 2)
+        vals = by_clock(self.spot_points(prod), span, now, gw * 2)
         strike = None
         row = self.row(self.sel)
         if row:
@@ -1003,11 +1036,7 @@ class Screen:
         gh = h - 4
         if not vals:
             self.put(y + h // 2, x + 3, "waiting for spot…", P(self.P.grey)); return
-        lo, hi = min(vals), max(vals)
-        if strike and (hi - lo) and abs(strike - (lo + hi) / 2) < 3 * (hi - lo):
-            lo, hi = min(lo, strike), max(hi, strike)
-        pad = (hi - lo) * 0.08 or vals[-1] * 0.0005
-        lo, hi = lo - pad, hi + pad
+        lo, hi = self.spot_range("desk", vals, strike)
         # the price, what it did in this span, and where the strike is
         head: list = [(f"{prod.split('-')[0]} ${px(vals[-1])}", P(P.c("sym"), bold=True))]
         chg = vals[-1] / vals[0] - 1 if vals[0] else 0.0

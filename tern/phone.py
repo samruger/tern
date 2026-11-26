@@ -115,9 +115,11 @@ def hour(scr) -> dict:
 
 def spot_chart(scr) -> dict:
     now, span = time.time(), dash.CHARTS[scr.chart]
-    vals = dash.by_time(scr.spot_points(cfgmod.SERIES[scr.series]), now - span, now, POINTS)
+    vals = dash.by_clock(scr.spot_points(cfgmod.SERIES[scr.series]), span, now, POINTS)
     row = scr.row(scr.sel)
-    return {"vals": vals, "t0": now - span * len(vals) / POINTS, "t1": now, "strike": dash.strike_of(row["k"]) if row else None}
+    strike = dash.strike_of(row["k"]) if row else None
+    lo, hi = scr.spot_range("phone", vals, strike) if vals else (None, None)
+    return {"vals": vals, "t0": now - span * len(vals) / POINTS, "t1": now, "strike": strike, "lo": lo, "hi": hi}
 
 
 def bet(ticker: str, q: float) -> dict:

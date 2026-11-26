@@ -18,7 +18,7 @@ from tern.book import Book, taker_fee
 from tern.sign import load_key, signature
 from tern import sign
 from tern.strategy import due_slot, signals
-from tern.dash import braille, by_time
+from tern.dash import braille, by_clock, by_time, steady
 from tern import config as cfgmod, devices, webauth, webctl
 
 webctl.ENABLED = False           # no test starts, stops or asks systemd about the real tern-web
@@ -33,6 +33,9 @@ def setUpModule():
     _RUN["dir"] = tempfile.mkdtemp(prefix="tern-tests-")
     os.environ["XDG_RUNTIME_DIR"] = _RUN["dir"]
     os.environ["TERN_NO_ALERTS"] = "1"          # no desktop pop-ups from test engines
+    from tern import devices
+    _RUN["devices"] = devices.FILE
+    devices.FILE = os.path.join(_RUN["dir"], "app-devices.json")   # never the phones really paired
 
 
 def tearDownModule():
@@ -40,6 +43,8 @@ def tearDownModule():
         os.environ.pop("XDG_RUNTIME_DIR", None)
     else:
         os.environ["XDG_RUNTIME_DIR"] = _RUN["old"]
+    from tern import devices
+    devices.FILE = _RUN["devices"]
     shutil.rmtree(_RUN["dir"], ignore_errors=True)
 
 
@@ -3769,6 +3774,36 @@ class Charts(unittest.TestCase):
         pts = [[10, 1.0], [20, 2.0]]
         self.assertEqual(by_time(pts, 0, 20, 4), [1.0, 1.0, 2.0])          # columns end 5,10,15,20; the empty first is skipped
         self.assertEqual(by_time(pts, 0, 40, 4), [1.0, 2.0, 2.0, 2.0])     # the last value carries forward
+
+    def test_by_clock_moves_only_its_right_edge(self):
+        pts = [[t, float(t % 7)] for t in range(1000)]
+        a, b = by_clock(pts, 300, 900.2, 150), by_clock(pts, 300, 901.5, 150)    # 2 s columns: the same one, a second on
+        self.assertEqual(len(a), 150)
+        self.assertEqual(a[:-1], b[:-1])                                         # what has ended stays as it was
+        c = by_clock(pts, 300, 902.1, 150)                                       # into the next column
+        self.assertEqual(a[1:-1], c[:-2])                                        # all of it one column left
+
+    def test_steady_holds_widens_and_shrinks(self):
+        r = steady(None, 87012.3, 87031.9)
+        self.assertEqual(r, (87010, 87035))                                      # round numbers just around the prices
+        self.assertEqual(steady(r, 87015, 87030), r)                             # inside it: kept
+        wide = steady(r, 87010, 87050)
+        self.assertTrue(wide[0] <= 87010 and wide[1] >= 87050 and wide != r)    # out of it: wider at once
+        self.assertNotEqual(steady(r, 87020, 87021), r)                          # a third of it or less: smaller
+        lo, hi = steady(None, 5.0, 5.0)
+        self.assertTrue(lo < 5.0 < hi)                                           # flat prices still get a range
+
+    def test_spot_range_is_per_chart_and_span(self):
+        scr = type("S", (), {"series": "KXBTCD", "chart": "15m"})()
+        from tern.dash import Screen
+        held = Screen.spot_range(scr, "phone", [100.0, 110.0], None)
+        self.assertEqual(Screen.spot_range(scr, "phone", [101.0, 109.0], None), held)
+        self.assertEqual(Screen.spot_range(scr, "desk", [101.0, 109.0], None), steady(None, 101.0, 109.0))
+        scr.chart = "1h"
+        self.assertEqual(Screen.spot_range(scr, "phone", [101.0, 109.0], None), steady(None, 101.0, 109.0))
+        scr.chart = "15m"
+        lo, hi = Screen.spot_range(scr, "phone", [100.0, 110.0], 112.0)          # a strike near the prices is in view
+        self.assertTrue(lo <= 100.0 and hi >= 112.0)
 
 
 class Web(unittest.TestCase):
